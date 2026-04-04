@@ -63,27 +63,31 @@ async function main() {
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    // Request pairing code once the socket is open to the server (qr event fires when ready)
+    if (
+      usePairingCode &&
+      qr &&
+      !pairingCodeRequested &&
+      !sock.authState.creds.registered
+    ) {
+      pairingCodeRequested = true;
+      sock
+        .requestPairingCode(phone!)
+        .then((code) => {
+          console.log(`\nPAIRING_CODE: ${code}`);
+          const codePath = path.join(STORE_DIR, 'pairing-code.txt');
+          fs.writeFileSync(codePath, code);
+        })
+        .catch((err) => {
+          console.error('Failed to get pairing code:', err.message);
+        });
+      return; // Don't write QR when using pairing code
+    }
+
+    if (qr && !usePairingCode) {
       // Write QR data to file for external rendering (browser, image, etc.)
       fs.mkdirSync(path.dirname(QR_DATA_PATH), { recursive: true });
       fs.writeFileSync(QR_DATA_PATH, qr);
-
-      // Request pairing code on first qr event (socket is now ready)
-      if (usePairingCode && !pairingCodeRequested) {
-        pairingCodeRequested = true;
-        sock
-          .requestPairingCode(phone!)
-          .then((code) => {
-            console.log(`\nPAIRING_CODE: ${code}`);
-            const codePath = path.join(STORE_DIR, 'pairing-code.txt');
-            fs.writeFileSync(codePath, code);
-          })
-          .catch((err) => {
-            console.error('Failed to request pairing code:', err.message);
-          });
-        return; // Skip QR instructions when using pairing code
-      }
-
       qrcode.generate(qr, { small: true });
       console.log(`\nQR data written to ${QR_DATA_PATH}`);
       console.log('Scan the QR code shown above with WhatsApp.');
