@@ -413,3 +413,79 @@ def test_extract_atoms_ollama_provider_unreachable_returns_empty(mi, monkeypatch
         raise AssertionError("ollama-only provider must not fall back to Gemini")
     monkeypatch.setattr(mi, "_extract_atoms_gemini", _fail_gemini)
     assert mi.extract_atoms("x") == []
+
+
+# ── Timeout vs unreachable classification ─────────────────────────────────────
+# TimeoutError subclasses OSError, so before the fix a slow-but-healthy Ollama
+# was caught by the unreachable branch: strict mode printed an actively false
+# "not reachable", and auto mode silently burned a Gemini call. These tests
+# patch urllib.request.urlopen (NOT the _extract_*_ollama wrappers) so the real
+# function bodies run and _OLLAMA_LAST_FAILURE actually propagates to the
+# caller — mocking the wrapper would bypass the flag and pass vacuously.
+
+
+def test_ollama_entities_timeout_returns_none_and_warns(mi_auto, capsys):
+    with patch("urllib.request.urlopen", side_effect=TimeoutError()):
+        result = mi_auto._extract_entities_ollama("text")
+    assert result is None
+    err = capsys.readouterr().err
+    assert "timed out" in err
+    assert "DEUS_OLLAMA_TIMEOUT" in err
+
+
+def test_ollama_atoms_timeout_returns_none_and_warns(mi_auto, capsys):
+    with patch("urllib.request.urlopen", side_effect=TimeoutError()):
+        result = mi_auto._extract_atoms_ollama("text")
+    assert result is None
+    err = capsys.readouterr().err
+    assert "timed out" in err
+    assert "DEUS_OLLAMA_TIMEOUT" in err
+
+
+def test_entities_strict_timeout_does_not_claim_unreachable(mi_ollama, capsys):
+    """Regression guard: a timeout must not print the false 'not reachable'."""
+    with patch("urllib.request.urlopen", side_effect=TimeoutError()):
+        with patch.object(mi_ollama, "_extract_entities_and_relations_gemini") as mock_gemini:
+            result = mi_ollama.extract_entities_and_relations("some content")
+
+    mock_gemini.assert_not_called()
+    assert result == {"entities": [], "relationships": []}
+    err = capsys.readouterr().err
+    assert "not reachable" not in err
+    assert "timed out" in err
+
+
+def test_atoms_strict_timeout_does_not_claim_unreachable(mi, monkeypatch, capsys):
+    """Regression guard, atom path. ATOM_PROVIDER is independent of mi_ollama."""
+    monkeypatch.setattr(mi, "ATOM_PROVIDER", "ollama")
+    with patch("urllib.request.urlopen", side_effect=TimeoutError()):
+        with patch.object(mi, "_extract_atoms_gemini") as mock_gemini:
+            result = mi.extract_atoms("some content")
+
+    mock_gemini.assert_not_called()
+    assert result == []
+    err = capsys.readouterr().err
+    assert "not reachable" not in err
+    assert "timed out" in err
+
+
+def test_entities_strict_unreachable_still_reports_unreachable(mi_ollama, capsys):
+    """Guards against over-suppressing the message for a genuine outage."""
+    with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()):
+        with patch.object(mi_ollama, "_extract_entities_and_relations_gemini") as mock_gemini:
+            result = mi_ollama.extract_entities_and_relations("some content")
+
+    mock_gemini.assert_not_called()
+    assert result == {"entities": [], "relationships": []}
+    assert "not reachable" in capsys.readouterr().err
+
+
+def test_atoms_strict_unreachable_still_reports_unreachable(mi, monkeypatch, capsys):
+    monkeypatch.setattr(mi, "ATOM_PROVIDER", "ollama")
+    with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()):
+        with patch.object(mi, "_extract_atoms_gemini") as mock_gemini:
+            result = mi.extract_atoms("some content")
+
+    mock_gemini.assert_not_called()
+    assert result == []
+    assert "not reachable" in capsys.readouterr().err

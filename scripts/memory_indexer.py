@@ -64,6 +64,21 @@ ENTITY_PROVIDER = os.environ.get("DEUS_ENTITY_PROVIDER", "auto")
 # without a Gemini key; falls back to the Gemini cascade when Ollama is down.
 ATOM_PROVIDER = os.environ.get("DEUS_ATOM_PROVIDER", "auto")
 
+# Seconds to wait on an Ollama /api/generate call. Matches the 300s already used
+# for structurally identical constrained-decoding calls in evolution/judge/
+# (ollama_judge.py:104, llama_cpp_judge.py:84). The previous hard-coded 60s left
+# no margin: a real session log on a loaded 4-core host straddles it, so a
+# healthy-but-slow Ollama tripped the timeout and was misread as unreachable.
+OLLAMA_TIMEOUT = int(os.environ.get("DEUS_OLLAMA_TIMEOUT", "300"))
+
+# Why a timed-out Ollama call is distinguished from an unreachable one: both
+# return None (the "caller may fall back to Gemini" sentinel), so without this
+# the routing functions cannot tell them apart and print "Ollama not reachable"
+# on a timeout — actively false, and it hides the real cause. Set on every
+# Ollama failure and reset at the top of each low-level call, so a stale value
+# can never be read. Single-threaded CLI; no concurrency guard needed.
+_OLLAMA_LAST_FAILURE: "str | None" = None  # "timeout" | "unreachable"
+
 
 def _load_vault_path() -> Path:
     """Load vault path with per-instance precedence.
@@ -2029,6 +2044,9 @@ def _extract_atoms_ollama(content: str) -> "list[dict] | None":
     """
     import urllib.request  # lazy: only needed when the Ollama path is taken
 
+    global _OLLAMA_LAST_FAILURE
+    _OLLAMA_LAST_FAILURE = None
+
     prompt = _atom_prompt(content)
     ollama_url = os.environ.get("DEUS_OLLAMA_URL", "http://localhost:11434")
     # DEUS_OLLAMA_ATOM_MODEL: per-task Ollama model override (LIA-170).
@@ -2073,7 +2091,7 @@ def _extract_atoms_ollama(content: str) -> "list[dict] | None":
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
             data = json.loads(resp.read().decode())
         raw = data.get("response", "").strip()
         result = json.loads(raw)
@@ -2083,7 +2101,22 @@ def _extract_atoms_ollama(content: str) -> "list[dict] | None":
     except urllib.error.HTTPError as exc:
         print(f"  WARN: Ollama atom extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
         return []
+    # MUST precede the OSError branch: TimeoutError subclasses OSError, so the
+    # order here is what stops a slow-but-healthy Ollama being read as "down".
+    # Scope: a timeout awaiting the response arrives as a bare TimeoutError and
+    # is caught here. A timeout during connect/send is wrapped by urllib's
+    # do_open into URLError (an OSError, not a TimeoutError) and still falls
+    # through as unreachable — negligible against a localhost Ollama.
+    except TimeoutError:
+        _OLLAMA_LAST_FAILURE = "timeout"
+        print(
+            f"  WARN: Ollama atom extraction timed out after {OLLAMA_TIMEOUT}s — "
+            f"Ollama is reachable but slow; raise DEUS_OLLAMA_TIMEOUT.",
+            file=sys.stderr,
+        )
+        return None
     except (ConnectionRefusedError, OSError):
+        _OLLAMA_LAST_FAILURE = "unreachable"
         return None
     except json.JSONDecodeError as exc:
         print(f"  WARN: Ollama atom extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
@@ -2138,10 +2171,13 @@ def extract_atoms(content: str) -> list[dict]:
 
     if ollama_result is None:
         if provider == "ollama":
-            print(
-                "  WARN: DEUS_ATOM_PROVIDER=ollama but Ollama not reachable.",
-                file=sys.stderr,
-            )
+            # A timeout already printed its own accurate warning downstairs;
+            # printing "not reachable" too would contradict it.
+            if _OLLAMA_LAST_FAILURE != "timeout":
+                print(
+                    "  WARN: DEUS_ATOM_PROVIDER=ollama but Ollama not reachable.",
+                    file=sys.stderr,
+                )
             return []
         # auto: fall back to Gemini.
         return _extract_atoms_gemini(content)
@@ -2332,6 +2368,9 @@ def _extract_entities_ollama(content: str) -> "dict | None":
     """
     import urllib.request
 
+    global _OLLAMA_LAST_FAILURE
+    _OLLAMA_LAST_FAILURE = None
+
     prompt = _ent_rel_prompt(content)
     ollama_url = os.environ.get("DEUS_OLLAMA_URL", "http://localhost:11434")
     ollama_model = os.environ.get("DEUS_OLLAMA_ENTITY_MODEL", "gemma4:e4b")
@@ -2383,7 +2422,7 @@ def _extract_entities_ollama(content: str) -> "dict | None":
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
             data = json.loads(resp.read().decode())
         raw = data.get("response", "").strip()
         result = json.loads(raw)
@@ -2404,7 +2443,17 @@ def _extract_entities_ollama(content: str) -> "dict | None":
     except urllib.error.HTTPError as exc:
         print(f"  WARN: Ollama entity extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
         return {"entities": [], "relationships": []}
+    # MUST precede the OSError branch — see the atom path for the full rationale.
+    except TimeoutError:
+        _OLLAMA_LAST_FAILURE = "timeout"
+        print(
+            f"  WARN: Ollama entity extraction timed out after {OLLAMA_TIMEOUT}s — "
+            f"Ollama is reachable but slow; raise DEUS_OLLAMA_TIMEOUT.",
+            file=sys.stderr,
+        )
+        return None
     except (ConnectionRefusedError, OSError):
+        _OLLAMA_LAST_FAILURE = "unreachable"
         return None
     except json.JSONDecodeError as exc:
         print(f"  WARN: Ollama entity extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
@@ -2459,10 +2508,12 @@ def extract_entities_and_relations(content: str) -> dict:
 
     if ollama_result is None:
         if provider == "ollama":
-            print(
-                "  WARN: DEUS_ENTITY_PROVIDER=ollama but Ollama not reachable.",
-                file=sys.stderr,
-            )
+            # See the atom path: a timeout has already reported itself accurately.
+            if _OLLAMA_LAST_FAILURE != "timeout":
+                print(
+                    "  WARN: DEUS_ENTITY_PROVIDER=ollama but Ollama not reachable.",
+                    file=sys.stderr,
+                )
             return {"entities": [], "relationships": []}
         # auto: fall back to Gemini.
         return _extract_entities_and_relations_gemini(content)

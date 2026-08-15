@@ -81,6 +81,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EMBEDDING_PROVIDER` | `auto` | Embedding backend: `auto`, `gemini`, or `ollama` |
 | `DEUS_ATOM_PROVIDER` | `auto` | Atom-extraction backend: `auto` (Ollama first, Gemini fallback), `ollama`, or `gemini`. `auto` lets `--extract`/`--add` run without a Gemini key when Ollama is up |
 | `DEUS_OLLAMA_ATOM_MODEL` | `gemma4:e4b` | Ollama model used for atom extraction (auto/ollama) |
+| `DEUS_OLLAMA_TIMEOUT` | `300` | Seconds to wait on an Ollama atom/entity extraction call. Raise it on slow or heavily loaded hosts: exceeding it aborts the local extraction, and in `auto` mode falls back to Gemini. **Bulk ingestion (`--add-dir --extract`) should lower it**: each file costs up to 2× this value (atoms + entities), so a wedged Ollama stalls a 20-file run for ~3.3h at the default before Gemini fallback finishes |
 
 ## Evolution / Eval
 
