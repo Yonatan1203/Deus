@@ -131,7 +131,8 @@ interface Channel {
 | `src/channels/registry.ts` | Channel factory registry |
 | `src/channels/index.ts` | Barrel imports that trigger channel self-registration |
 | `src/types.ts` | `Channel` interface, `ChannelOpts`, message types |
-| `src/index.ts` | Orchestrator — instantiates channels, runs message loop |
+| `src/index.ts` | Entry point — startup gate, channel instantiation, scheduler, IPC |
+| `src/message-orchestrator.ts` | Message loop, trigger detection, cursor management, agent dispatch |
 | `src/router.ts` | Finds the owning channel for a JID, formats messages |
 
 ### Adding a New Channel
@@ -163,7 +164,8 @@ deus/
 ├── .gitignore
 │
 ├── src/
-│   ├── index.ts                   # Orchestrator: state, message loop, agent invocation
+│   ├── index.ts                   # Entry point: startup gate, channels, scheduler, IPC
+│   ├── message-orchestrator.ts    # Message loop, trigger detection, agent dispatch
 │   ├── channels/
 │   │   ├── registry.ts            # Channel factory registry
 │   │   └── index.ts               # Barrel imports for channel self-registration
