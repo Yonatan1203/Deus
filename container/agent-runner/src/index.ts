@@ -38,6 +38,10 @@ import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import { createToolCallLogHook } from './tool-call-log.js';
 import { writeAvailableTools } from './available-tools-log.js';
 import { buildAllowedTools, computeTeamsNeeded } from './allowed-tools.js';
+import {
+  DEFAULT_APIFY_ACTORS,
+  buildApifyMcpServerConfig,
+} from './apify-mcp.js';
 import { subagentNudgeAppend } from './subagent-nudge.js';
 import { readDisciplineNudgeAppend } from './read-discipline-nudge.js';
 import {
@@ -828,6 +832,24 @@ async function runQuery(
     log('Linear MCP: enabled (API key found)');
   }
 
+  // Apify Actors MCP: scraper actors exposed as individual tools. Gated on the
+  // token the host injects (container-runner.ts) — no token, no server, no
+  // tools. NOTE: `--tools <actor-ids>` does NOT cap the manifest at those
+  // actors — the server auto-injects storage/run helper tools alongside them
+  // (see apify-mcp.ts), which is why allowedTools names each permitted tool
+  // explicitly instead of a wildcard. DEUS_APIFY_ACTORS overrides the default
+  // set without a container rebuild.
+  const apifyActors = (
+    process.env.DEUS_APIFY_ACTORS?.trim() || DEFAULT_APIFY_ACTORS
+  )
+    .split(',')
+    .map((a) => a.trim())
+    .filter(Boolean);
+  const hasApifyMcp = !!process.env.APIFY_TOKEN && apifyActors.length > 0;
+  if (hasApifyMcp) {
+    log(`Apify MCP: enabled (actors: ${apifyActors.join(', ')})`);
+  }
+
   // CLAUDE.md probe: log fingerprint before every query() call.
   // Compare across turns in the same session — if len= appears N times for
   // N turns, the SDK re-reads the file on every resumed call (lazy loading is worth it).
@@ -866,6 +888,8 @@ async function runQuery(
     teamsNeeded,
     hasGcalMcp,
     hasLinearMcp,
+    hasApifyMcp,
+    apifyActors,
     profile: toolProfile,
     curatedTools,
   });
@@ -996,6 +1020,18 @@ async function runQuery(
                   LINEAR_API_KEY: process.env.LINEAR_API_KEY ?? '',
                 },
               },
+            }
+          : {}),
+        // Apify Actors MCP — stdio server from the globally-installed package
+        // (container/Dockerfile), same shape as Linear. Config built by
+        // apify-mcp.ts (absolute path not npx, telemetry disabled) from the
+        // same actor list that derives allowedTools, so the two cannot drift.
+        ...(hasApifyMcp
+          ? {
+              apify: buildApifyMcpServerConfig(
+                apifyActors,
+                process.env.APIFY_TOKEN ?? '',
+              ),
             }
           : {}),
       },

@@ -38,11 +38,17 @@ import {
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 
-function redactContainerArgs(args: string[]): string {
+// Exported as a test seam only (same precedent as buildContainerArgs) — the
+// apify-redaction oracle asserts every injected credential is scrubbed before
+// args reach a log line. Adding a credential injection below without adding
+// its pattern here writes the secret cleartext to container-*.log on any
+// non-zero exit.
+export function redactContainerArgs(args: string[]): string {
   return args
     .join(' ')
     .replace(/DEUS_PROXY_TOKEN=[0-9a-f]+/g, 'DEUS_PROXY_TOKEN=[REDACTED]')
-    .replace(/LINEAR_API_KEY=\S+/g, 'LINEAR_API_KEY=[REDACTED]');
+    .replace(/LINEAR_API_KEY=\S+/g, 'LINEAR_API_KEY=[REDACTED]')
+    .replace(/APIFY_TOKEN=\S+/g, 'APIFY_TOKEN=[REDACTED]');
 }
 import {
   CONTAINER_HOST_GATEWAY,
@@ -195,6 +201,36 @@ export function buildContainerArgs(
       } else {
         logger.warn(
           'LINEAR_API_KEY contains invalid characters; Linear MCP disabled for this container',
+        );
+      }
+    }
+
+    // Apify Actors MCP token (Instagram / TikTok / Facebook Ads scrapers).
+    // Same R2 rule as Linear: never injected into a publicIngress (webhook)
+    // container — those reach curated actions host-brokered through the tool
+    // proxy instead. Charset-validated so a malformed value cannot break out
+    // of the `-e KEY=VALUE` argv slot.
+    const apifyToken = process.env.APIFY_TOKEN;
+    if (apifyToken) {
+      if (/^[A-Za-z0-9_-]+$/.test(apifyToken)) {
+        args.push('-e', `APIFY_TOKEN=${apifyToken}`);
+        // Optional actor-set override. Charset-bounded to what an Apify
+        // actor id can contain (`username/name`, dots/dashes/underscores)
+        // plus the comma separator — a malformed list is dropped, falling
+        // back to the container's built-in three-scraper default.
+        const apifyActors = process.env.DEUS_APIFY_ACTORS?.trim();
+        if (apifyActors) {
+          if (/^[A-Za-z0-9_./~-]+(,[A-Za-z0-9_./~-]+)*$/.test(apifyActors)) {
+            args.push('-e', `DEUS_APIFY_ACTORS=${apifyActors}`);
+          } else {
+            logger.warn(
+              'DEUS_APIFY_ACTORS is malformed; falling back to the default Apify actor set',
+            );
+          }
+        }
+      } else {
+        logger.warn(
+          'APIFY_TOKEN contains invalid characters; Apify MCP disabled for this container',
         );
       }
     }

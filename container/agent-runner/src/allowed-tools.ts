@@ -6,6 +6,8 @@
 // also matches the existing helper-module pattern (doom-loop-detector.ts,
 // context-registry.ts).
 
+import { apifyAllowedTools } from './apify-mcp.js';
+
 // Keywords that signal the prompt requires multi-agent *team* orchestration.
 // When none are present and no external project is mounted, the team tools
 // (TeamCreate, TeamDelete) are excluded from allowedTools to save ~200 tokens
@@ -85,6 +87,18 @@ export interface AllowedToolsOpts {
   /** Linear MCP server is available for this run. */
   hasLinearMcp: boolean;
   /**
+   * Apify Actors MCP (Instagram / TikTok / Facebook Ads scrapers). Optional —
+   * an absent flag means "no APIFY_TOKEN on the host", which is the correct
+   * default, and keeps every existing call site compiling unchanged.
+   */
+  hasApifyMcp?: boolean;
+  /**
+   * The configured Apify actor ids (index.ts's parsed DEUS_APIFY_ACTORS or the
+   * DEFAULT_APIFY_ACTORS fallback). Required when hasApifyMcp is true — the
+   * allowlist entries are derived per-actor (apify-mcp.ts), never a wildcard.
+   */
+  apifyActors?: string[];
+  /**
    * LIA-315 Phase 2: execution profile. 'webhook' returns the reduced-privilege
    * manifest (WEBHOOK_BASE + curatedTools ∩ SAFE_CURATED). 'full' or undefined
    * returns the standard manifest (byte-identical to pre-Phase-2 behavior).
@@ -104,7 +118,15 @@ export interface AllowedToolsOpts {
  * any other value (incl. undefined) returns the standard full manifest.
  */
 export function buildAllowedTools(opts: AllowedToolsOpts): string[] {
-  const { teamsNeeded, hasGcalMcp, hasLinearMcp, profile, curatedTools } = opts;
+  const {
+    teamsNeeded,
+    hasGcalMcp,
+    hasLinearMcp,
+    hasApifyMcp,
+    apifyActors,
+    profile,
+    curatedTools,
+  } = opts;
   if (profile === 'webhook') {
     // Reduced-privilege: minimal base + only the curated tools on the SAFE_CURATED
     // allowlist. Unsafe/unknown curated names drop silently (no info leak).
@@ -134,5 +156,12 @@ export function buildAllowedTools(opts: AllowedToolsOpts): string[] {
     'mcp__deus__*',
     ...(hasGcalMcp ? ['mcp__gcal__*'] : []),
     ...(hasLinearMcp ? ['mcp__linear__*'] : []),
+    // Explicit per-tool entries, never `mcp__apify__*`: the server's manifest
+    // is wider than its --tools flag suggests (it auto-injects storage/run
+    // helpers taking arbitrary ids), so a wildcard grants tools this run was
+    // never meant to have — and would silently re-widen on a server upgrade.
+    ...(hasApifyMcp && apifyActors?.length
+      ? apifyAllowedTools(apifyActors)
+      : []),
   ];
 }

@@ -50,6 +50,63 @@ describe('buildAllowedTools', () => {
     expect(both).toContain('mcp__linear__*');
   });
 
+  const APIFY_ACTORS = [
+    'apify/instagram-scraper',
+    'clockworks/tiktok-scraper',
+    'apify/facebook-ads-scraper',
+  ];
+  const APIFY_EXPECTED = [
+    'mcp__apify__apify--instagram-scraper',
+    'mcp__apify__clockworks--tiktok-scraper',
+    'mcp__apify__apify--facebook-ads-scraper',
+    'mcp__apify__get-dataset-items',
+    'mcp__apify__get-actor-run',
+  ];
+
+  it('offers the explicit apify tool entries when hasApifyMcp is set', () => {
+    const tools = buildAllowedTools({
+      ...base,
+      teamsNeeded: false,
+      hasApifyMcp: true,
+      apifyActors: APIFY_ACTORS,
+    });
+    expect(tools).toEqual(expect.arrayContaining(APIFY_EXPECTED));
+    // Never a wildcard, and never the excluded auto-injected tools — the
+    // server manifest is wider than --tools suggests (arbitrary-id storage
+    // and run tools), so membership must be exact.
+    expect(tools).not.toContain('mcp__apify__*');
+    expect(tools).not.toContain('mcp__apify__abort-actor-run');
+    expect(tools).not.toContain('mcp__apify__get-key-value-store-record');
+  });
+
+  it('offers no apify entries when the flag is off, absent, or actors are missing', () => {
+    // Omitted flag must behave as "no APIFY_TOKEN on the host" — a default-on
+    // Apify manifest would offer scraper tools to every container.
+    const noApify = (tools: string[]) =>
+      expect(tools.filter((t) => t.startsWith('mcp__apify__'))).toEqual([]);
+    noApify(buildAllowedTools({ ...base, teamsNeeded: false }));
+    noApify(
+      buildAllowedTools({ ...base, teamsNeeded: false, hasApifyMcp: false }),
+    );
+    // Flag set but no actor list: nothing to derive entries from — stay closed.
+    noApify(
+      buildAllowedTools({ ...base, teamsNeeded: false, hasApifyMcp: true }),
+    );
+  });
+
+  it('never offers apify tools under the webhook profile (LIA-315 R2)', () => {
+    // publicIngress containers get no APIFY_TOKEN injected, but the manifest
+    // must not offer any apify entry even if the flag were somehow set.
+    const webhook = buildAllowedTools({
+      ...base,
+      teamsNeeded: false,
+      hasApifyMcp: true,
+      apifyActors: APIFY_ACTORS,
+      profile: 'webhook',
+    });
+    expect(webhook.filter((t) => t.startsWith('mcp__apify__'))).toEqual([]);
+  });
+
   it('always includes the core + deus MCP tools', () => {
     const tools = buildAllowedTools({ ...base, teamsNeeded: false });
     expect(tools).toEqual(

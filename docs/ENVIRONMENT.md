@@ -178,6 +178,24 @@ Group/task effort overrides:
 - Resolution order is: task override, group override, `DEUS_AGENT_EFFORT`, then `low`.
 - Effort currently applies to the Claude backend only. OpenAI backend logs and ignores the value.
 
+## Apify Scrapers
+
+Apify Actors MCP for host-side Claude Code sessions and container agents. The
+server's tool manifest holds the configured actor tools PLUS auto-injected
+storage/run helpers; container agents are granted an explicit per-tool
+allowlist (`container/agent-runner/src/apify-mcp.ts`) — the three actor tools
+and the two result-retrieval helpers, never a wildcard. The token is never
+injected into `publicIngress` (webhook) containers, and is redacted from
+container failure logs. Use a scoped token (run-only on the configured actors,
+own-run storage access) so the arbitrary-id storage tools are inert at the API
+layer. See `.claude/skills/add-apify/SKILL.md` for setup, and
+`docs/decisions/scraped-content-trust-tier.md` for the trust model.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APIFY_TOKEN` | -- | Apify API token (`apify_api_...`). Create as a SCOPED token — Apify Console > Settings > API & Integrations |
+| `DEUS_APIFY_ACTORS` | `apify/instagram-scraper,clockworks/tiktok-scraper,apify/facebook-ads-scraper` | Comma-separated actor ids exposed as tools. The container allowlist is derived from this same list, so an override cannot desynchronize them |
+
 ## Linear Automation
 
 | Variable | Default | Description |
