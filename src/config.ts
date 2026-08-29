@@ -18,6 +18,8 @@ const envConfig = readEnvFile([
   'DEUS_AGENT_BACKEND',
   'DEUS_CONTEXT_FILE_MAX_CHARS',
   'DEUS_OPENAI_MODEL',
+  'DEUS_TRANSCRIPTION_MODEL',
+  'DEUS_TRANSCRIPTION_HOURLY_CAP',
   'LLAMA_CPP_BASE_URL',
   'LLAMA_CPP_PORT',
   'LLAMA_CPP_MODEL',
@@ -283,6 +285,20 @@ export const DEFAULT_AGENT_RUNTIME: AgentRuntimeId =
 
 export const DEUS_OPENAI_MODEL =
   process.env.DEUS_OPENAI_MODEL || envConfig.DEUS_OPENAI_MODEL || '';
+
+// WhatsApp voice-note transcription (host-side, via the OpenAI auth provider).
+// The model runs against OPENAI_BASE_URL/v1/audio/transcriptions; the cap is a
+// per-chat sliding-window budget on paid calls. See docs/ENVIRONMENT.md.
+export const DEUS_TRANSCRIPTION_MODEL =
+  process.env.DEUS_TRANSCRIPTION_MODEL ||
+  envConfig.DEUS_TRANSCRIPTION_MODEL ||
+  'gpt-4o-transcribe';
+export const DEUS_TRANSCRIPTION_HOURLY_CAP = parseInt(
+  process.env.DEUS_TRANSCRIPTION_HOURLY_CAP ||
+    envConfig.DEUS_TRANSCRIPTION_HOURLY_CAP ||
+    '30',
+  10,
+);
 
 // llama.cpp local-server endpoint configuration. Host-side values only —
 // the container receives translated values via OPENAI_BASE_URL-style env

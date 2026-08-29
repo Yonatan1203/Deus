@@ -21,6 +21,8 @@ import {
   INGRESS_SOURCE_RATE_REFILL_MS,
   INGRESS_TUNNEL_ENABLED,
   INGRESS_WEBHOOK_ENABLED,
+  DEUS_TRANSCRIPTION_HOURLY_CAP,
+  DEUS_TRANSCRIPTION_MODEL,
   MAX_MESSAGE_LENGTH,
   NGROK_STATIC_DOMAIN,
   PROJECT_ROOT,
@@ -62,6 +64,7 @@ import {
 import { RouterState, getAvailableGroups } from './router-state.js';
 import {
   isSenderAllowed,
+  isTriggerAllowed,
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
@@ -75,6 +78,10 @@ import { logReactionSignal } from './evolution-client.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { processImage } from './image.js';
+import {
+  createAudioResolver,
+  sweepAudioTmpDir,
+} from './openai-transcription.js';
 import { logger } from './logger.js';
 import { initRuntimeRegistry } from './agent-runtimes/registry.js';
 import { createClaudeRuntime } from './agent-runtimes/claude-backend.js';
@@ -100,6 +107,7 @@ export { getAvailableGroups } from './router-state.js';
 async function main(): Promise<void> {
   ensureContainerRuntimeRunning();
   cleanupOrphans();
+  sweepAudioTmpDir();
 
   // Validate prerequisites before heavy initialization.
   const startupReport = runStartupChecks();
@@ -239,6 +247,11 @@ async function main(): Promise<void> {
     }
   }
 
+  const audioResolver = createAudioResolver({
+    hourlyCap: DEUS_TRANSCRIPTION_HOURLY_CAP,
+    model: DEUS_TRANSCRIPTION_MODEL,
+  });
+
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: async (chatJid: string, msg: NewMessage) => {
@@ -270,6 +283,24 @@ async function main(): Promise<void> {
           }
           return;
         }
+      }
+
+      // Voice notes / audio files: the channel only downloaded the media.
+      // Transcribe here (host holds the key), and only for a registered chat
+      // whose sender may trigger the agent — same authority the orchestrator
+      // applies to text (message-orchestrator.ts). Runs BEFORE truncation so
+      // long transcripts are bounded by MAX_MESSAGE_LENGTH like any message.
+      if (msg.audio) {
+        const audioRef = msg.audio;
+        delete msg.audio;
+        const allowed =
+          !!state.registeredGroups[chatJid] &&
+          (!!msg.is_from_me ||
+            isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist()));
+        msg.content = await audioResolver.resolve(audioRef, {
+          chatJid,
+          allowed,
+        });
       }
 
       // Truncate oversized messages to prevent abuse / memory exhaustion

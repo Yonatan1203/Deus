@@ -39,6 +39,14 @@ import type {
 } from '@deus-ai/channel-core';
 import { resizeAndEncode } from '@deus-ai/channel-core';
 
+import {
+  AUDIO_TMP_DIR,
+  MAX_TRANSCRIBE_BYTES,
+  VOICE_PLACEHOLDER,
+  audioTempPath,
+  classifyAudio,
+  tooLargePlaceholder,
+} from './audio.js';
 import { ReconnectController } from './reconnect-backoff.js';
 
 // ── Config from env vars ──────────────────────────────────────────────────────
@@ -401,6 +409,58 @@ export class WhatsAppProvider implements ChannelProvider {
             }
           }
 
+          // Voice notes / audio files: download locally (no credentials, no
+          // egress — same posture as images) and hand the host a reference.
+          // The host validates the reference, gates the paid transcription
+          // on registration + sender allowlist, and unlinks the file.
+          let audioMeta: Record<string, unknown> | undefined;
+          if (!content && !imageData) {
+            const audio = classifyAudio(normalized);
+            if (audio) {
+              if (audio.fileLength > MAX_TRANSCRIBE_BYTES) {
+                content = tooLargePlaceholder(audio.fileLength);
+              } else {
+                const tmpPath = audioTempPath(msg.key.id || '', audio.mimetype);
+                if (!tmpPath) {
+                  content = '[Voice Message - unsupported audio format]';
+                } else {
+                  try {
+                    const stream = await downloadContentFromMessage(
+                      audio.message as DownloadableMessage,
+                      audio.mediaType,
+                    );
+                    const chunks: Buffer[] = [];
+                    for await (const chunk of stream) chunks.push(chunk);
+                    const raw = Buffer.concat(chunks);
+                    if (raw.length > MAX_TRANSCRIBE_BYTES) {
+                      content = tooLargePlaceholder(raw.length);
+                    } else {
+                      fs.mkdirSync(AUDIO_TMP_DIR, {
+                        recursive: true,
+                        mode: 0o700,
+                      });
+                      fs.writeFileSync(tmpPath, raw, { mode: 0o600 });
+                      content = VOICE_PLACEHOLDER;
+                      audioMeta = {
+                        path: tmpPath,
+                        mimetype: audio.mimetype,
+                        fileName: audio.fileName,
+                        isVoiceNote: audio.isVoiceNote,
+                        bytes: raw.length,
+                      };
+                    }
+                  } catch (err) {
+                    logger.warn(
+                      { err, msgId: msg.key.id },
+                      'Audio download failed',
+                    );
+                    content = '[Voice Message - download failed]';
+                  }
+                }
+              }
+            }
+          }
+
           if (!content && !imageData) continue;
 
           const sender = msg.key.participant || msg.key.remoteJid || '';
@@ -414,6 +474,7 @@ export class WhatsAppProvider implements ChannelProvider {
             is_bot_message: isBotMessage,
           };
           if (imageData) metadata.imageData = imageData;
+          if (audioMeta) metadata.audio = audioMeta;
 
           this.onMessage({
             id: msg.key.id || '',

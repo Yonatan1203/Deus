@@ -4,56 +4,66 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 
 ## Required
 
-| Variable | Description |
-|----------|-------------|
+| Variable                  | Description                                              |
+| ------------------------- | -------------------------------------------------------- |
 | `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token for Claude Code (or use `ANTHROPIC_API_KEY`) |
-| `ANTHROPIC_API_KEY` | Alternative to OAuth token for Claude auth |
-| `TZ` | Timezone override (e.g. `Asia/Jerusalem`) |
+| `ANTHROPIC_API_KEY`       | Alternative to OAuth token for Claude auth               |
+| `TZ`                      | Timezone override (e.g. `Asia/Jerusalem`)                |
 
 ## Channels
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | — | Telegram bot token from @BotFather |
-| `ASSISTANT_NAME` | `Deus` | Display name used in Telegram and logs |
+| Variable                   | Default | Description                                       |
+| -------------------------- | ------- | ------------------------------------------------- |
+| `TELEGRAM_BOT_TOKEN`       | —       | Telegram bot token from @BotFather                |
+| `ASSISTANT_NAME`           | `Deus`  | Display name used in Telegram and logs            |
 | `ASSISTANT_HAS_OWN_NUMBER` | `false` | Whether the assistant has its own WhatsApp number |
-| `SLACK_BOT_TOKEN` | — | Slack bot token |
-| `SLACK_APP_TOKEN` | — | Slack app-level token |
-| `DISCORD_BOT_TOKEN` | — | Discord bot token |
+| `SLACK_BOT_TOKEN`          | —       | Slack bot token                                   |
+| `SLACK_APP_TOKEN`          | —       | Slack app-level token                             |
+| `DISCORD_BOT_TOKEN`        | —       | Discord bot token                                 |
 
 ## AI / API Keys
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEUS_AGENT_BACKEND` | `claude` | Default container agent backend: `claude` or `openai` |
-| `DEUS_AGENT_EFFORT` | `low` | Default agent reasoning effort: `low`, `medium`, `high`, or `max`. Per-group override via `/settings effort=X`. |
-| `DEUS_CLI_AGENT` | `DEUS_AGENT_BACKEND` | Default `deus` global command agent: `claude`, `codex`, or `openai` |
-| `DEUS_OPENAI_MODEL` | `gpt-4o` | Default OpenAI model for the `openai` agent backend |
-| `DEUS_CODEX_MODEL` | `DEUS_OPENAI_MODEL` | Optional Codex CLI model override for the `deus codex` launcher |
-| `DEUS_CONTEXT_FILE_MAX_CHARS` | `20000` | Per-file cap for registered agent context surfaces before provider tokenization |
-| `OPENAI_API_KEY` | — | OpenAI API key for the `openai` agent backend and Whisper transcription |
-| `OPENAI_BASE_URL` | `https://api.openai.com` | Optional OpenAI-compatible upstream base URL for the credential proxy |
-| `GEMINI_API_KEY` | — | Gemini API key for embeddings, memory indexer, and production judge |
+| Variable                      | Default                  | Description                                                                                                                                                                                                                                                                        |
+| ----------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEUS_AGENT_BACKEND`          | `claude`                 | Default container agent backend: `claude` or `openai`                                                                                                                                                                                                                              |
+| `DEUS_AGENT_EFFORT`           | `low`                    | Default agent reasoning effort: `low`, `medium`, `high`, or `max`. Per-group override via `/settings effort=X`.                                                                                                                                                                    |
+| `DEUS_CLI_AGENT`              | `DEUS_AGENT_BACKEND`     | Default `deus` global command agent: `claude`, `codex`, or `openai`                                                                                                                                                                                                                |
+| `DEUS_OPENAI_MODEL`           | `gpt-4o`                 | Default OpenAI model for the `openai` agent backend                                                                                                                                                                                                                                |
+| `DEUS_CODEX_MODEL`            | `DEUS_OPENAI_MODEL`      | Optional Codex CLI model override for the `deus codex` launcher                                                                                                                                                                                                                    |
+| `DEUS_CONTEXT_FILE_MAX_CHARS` | `20000`                  | Per-file cap for registered agent context surfaces before provider tokenization                                                                                                                                                                                                    |
+| `OPENAI_API_KEY`              | —                        | OpenAI API key. Enables the `openai` agent backend, host-side WhatsApp voice-note transcription (see below), and — on the `claude` backend — the container `OPENAI_BASE_URL` route through the credential proxy. Read once at startup: rotating the key requires a service restart |
+| `OPENAI_BASE_URL`             | `https://api.openai.com` | Optional OpenAI-compatible upstream **origin** (no `/v1` suffix) for the credential proxy and voice transcription. A non-OpenAI value receives the raw key                                                                                                                         |
+| `GEMINI_API_KEY`              | —                        | Gemini API key for embeddings, memory indexer, and production judge                                                                                                                                                                                                                |
 
 ## Voice Transcription
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WHISPER_LANG` | `en` | Language code for Whisper transcription |
-| `WHISPER_BIN` | `whisper-cli` | Path to whisper binary |
-| `WHISPER_MODEL` | — | Whisper model path (auto-detected if empty) |
+WhatsApp voice notes and `audio/*` attachments in **registered** chats are
+transcribed on the host through the OpenAI transcription API when
+`OPENAI_API_KEY` is set (the audio is uploaded to OpenAI; group participants
+should be told). The channel process only downloads the media; the paid call
+runs only for senders allowed to trigger the agent, under a per-chat hourly
+cap, and the temp file is deleted afterwards. Without a key the agent sees
+`[Voice Message - transcription unavailable]`.
+
+| Variable                        | Default             | Description                                                           |
+| ------------------------------- | ------------------- | --------------------------------------------------------------------- |
+| `DEUS_TRANSCRIPTION_MODEL`      | `gpt-4o-transcribe` | OpenAI transcription model (`gpt-4o-mini-transcribe`, `whisper-1`, …) |
+| `DEUS_TRANSCRIPTION_HOURLY_CAP` | `30`                | Max paid transcriptions per chat per hour                             |
+| `WHISPER_LANG`                  | `en`                | `deus listen` (CLI, local whisper.cpp) only: language code            |
+| `WHISPER_BIN`                   | `whisper-cli`       | `deus listen` only: path to whisper binary                            |
+| `WHISPER_MODEL`                 | —                   | `deus listen` only: whisper model path (auto-detected if empty)       |
 
 ## Container Runtime
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CONTAINER_RUNTIME` | `docker` | Container binary: `docker`, `container`, `podman` |
-| `CONTAINER_IMAGE` | `deus-agent:latest` | Container image for agent sandboxes |
-| `CONTAINER_TIMEOUT` | `1800000` | Container execution timeout in ms (30 min) |
-| `MAX_CONCURRENT_CONTAINERS` | `5` | Max parallel agent containers |
-| `IDLE_TIMEOUT` | `1800000` | Idle container shutdown timeout in ms |
-| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` | Max output size per container in bytes (10 MB) |
-| `DEUS_INSTANCE_ID` | derived from the install path | Identifies this install so orphan cleanup only stops its *own* containers (LIA-491) |
+| Variable                    | Default                       | Description                                                                         |
+| --------------------------- | ----------------------------- | ----------------------------------------------------------------------------------- |
+| `CONTAINER_RUNTIME`         | `docker`                      | Container binary: `docker`, `container`, `podman`                                   |
+| `CONTAINER_IMAGE`           | `deus-agent:latest`           | Container image for agent sandboxes                                                 |
+| `CONTAINER_TIMEOUT`         | `1800000`                     | Container execution timeout in ms (30 min)                                          |
+| `MAX_CONCURRENT_CONTAINERS` | `5`                           | Max parallel agent containers                                                       |
+| `IDLE_TIMEOUT`              | `1800000`                     | Idle container shutdown timeout in ms                                               |
+| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760`                    | Max output size per container in bytes (10 MB)                                      |
+| `DEUS_INSTANCE_ID`          | derived from the install path | Identifies this install so orphan cleanup only stops its _own_ containers (LIA-491) |
 
 ### `DEUS_INSTANCE_ID`
 
@@ -73,96 +83,96 @@ and are reported at startup rather than stopped — remove them manually if stal
 
 ## Credential Proxy
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CREDENTIAL_PROXY_PORT` | `3001` | Port for the credential injection proxy |
-| `CREDENTIAL_PROXY_HOST` | — | Bind address for proxy (empty = auto-detect) |
-| `DEUS_AUTH_PROVIDER` | (auto-detect) | Force a specific auth provider for the credential proxy: `anthropic` or `openai` |
-| `DEUS_PROXY_MAX_BODY_BYTES` | `33554432` (32MB) | Max buffered request body in bytes; bounds host memory (LIA-236) |
-| `DEUS_PROXY_UPSTREAM_TIMEOUT_MS` | `600000` (10m) | Upstream socket inactivity timeout in ms; a black-holed upstream past this is destroyed → 502 (LIA-236) |
+| Variable                         | Default           | Description                                                                                             |
+| -------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------- |
+| `CREDENTIAL_PROXY_PORT`          | `3001`            | Port for the credential injection proxy                                                                 |
+| `CREDENTIAL_PROXY_HOST`          | —                 | Bind address for proxy (empty = auto-detect)                                                            |
+| `DEUS_AUTH_PROVIDER`             | (auto-detect)     | Force a specific auth provider for the credential proxy: `anthropic` or `openai`                        |
+| `DEUS_PROXY_MAX_BODY_BYTES`      | `33554432` (32MB) | Max buffered request body in bytes; bounds host memory (LIA-236)                                        |
+| `DEUS_PROXY_UPSTREAM_TIMEOUT_MS` | `600000` (10m)    | Upstream socket inactivity timeout in ms; a black-holed upstream past this is destroyed → 502 (LIA-236) |
 
 ## Ollama / Local Models
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `gemma4:e4b` | Default Ollama judge model (override per-surface with `EVOLUTION_OLLAMA_JUDGE_MODEL`) |
-| `EVOLUTION_OLLAMA_JUDGE_MODEL` | (falls back to `OLLAMA_MODEL`) | Per-surface override for the evolution-loop Ollama judge model (mirrors `LLAMA_CPP_JUDGE_MODEL`). The override model must be pulled in Ollama or judge construction fails |
-| `EVOLUTION_JUDGE_NUM_CTX` | `8192` | Context window sent with every Ollama judge call. Set explicitly because Ollama's own default is 4096 while a real eval prompt runs ~4000 tokens — at the default, the prompt or the response truncates depending on the host's Ollama build and judge scores stop being comparable across machines (LIA-558) |
-| `OLLAMA_EMBED_MODEL` | `embeddinggemma` | Ollama embedding model |
-| `LLAMA_CPP_BASE_URL` | `http://localhost:8080/v1` | llama.cpp HTTP base URL (OpenAI-compatible `/v1` prefix); consumed by evolution-loop providers |
-| `LLAMA_CPP_MODEL` | (empty — server default) | Catch-all model override. Empty = use whatever llama-server has loaded (single-model) OR auto-pick (router mode) |
-| `LLAMA_CPP_AGENT_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the agent runtime (chat surface). Used in router mode with multiple GGUFs |
-| `LLAMA_CPP_GEN_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop generative provider (Reflexion, principle extraction) |
-| `LLAMA_CPP_JUDGE_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop judge provider |
-| `LLAMA_CPP_EMBED_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for embeddings (reserved; embedding swap is ADR-gated per Phase 4) |
-| `EMBEDDING_PROVIDER` | `auto` | Embedding backend: `auto`, `gemini`, or `ollama` |
-| `DEUS_ATOM_PROVIDER` | `auto` | Atom-extraction backend: `auto` (Ollama first, Gemini fallback), `ollama`, or `gemini`. `auto` lets `--extract`/`--add` run without a Gemini key when Ollama is up |
-| `DEUS_OLLAMA_ATOM_MODEL` | `gemma4:e4b` | Ollama model used for atom extraction (auto/ollama) |
+| Variable                       | Default                           | Description                                                                                                                                                                                                                                                                                                   |
+| ------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OLLAMA_HOST`                  | `http://localhost:11434`          | Ollama server URL                                                                                                                                                                                                                                                                                             |
+| `OLLAMA_MODEL`                 | `gemma4:e4b`                      | Default Ollama judge model (override per-surface with `EVOLUTION_OLLAMA_JUDGE_MODEL`)                                                                                                                                                                                                                         |
+| `EVOLUTION_OLLAMA_JUDGE_MODEL` | (falls back to `OLLAMA_MODEL`)    | Per-surface override for the evolution-loop Ollama judge model (mirrors `LLAMA_CPP_JUDGE_MODEL`). The override model must be pulled in Ollama or judge construction fails                                                                                                                                     |
+| `EVOLUTION_JUDGE_NUM_CTX`      | `8192`                            | Context window sent with every Ollama judge call. Set explicitly because Ollama's own default is 4096 while a real eval prompt runs ~4000 tokens — at the default, the prompt or the response truncates depending on the host's Ollama build and judge scores stop being comparable across machines (LIA-558) |
+| `OLLAMA_EMBED_MODEL`           | `embeddinggemma`                  | Ollama embedding model                                                                                                                                                                                                                                                                                        |
+| `LLAMA_CPP_BASE_URL`           | `http://localhost:8080/v1`        | llama.cpp HTTP base URL (OpenAI-compatible `/v1` prefix); consumed by evolution-loop providers                                                                                                                                                                                                                |
+| `LLAMA_CPP_MODEL`              | (empty — server default)          | Catch-all model override. Empty = use whatever llama-server has loaded (single-model) OR auto-pick (router mode)                                                                                                                                                                                              |
+| `LLAMA_CPP_AGENT_MODEL`        | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the agent runtime (chat surface). Used in router mode with multiple GGUFs                                                                                                                                                                                                            |
+| `LLAMA_CPP_GEN_MODEL`          | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop generative provider (Reflexion, principle extraction)                                                                                                                                                                                                             |
+| `LLAMA_CPP_JUDGE_MODEL`        | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop judge provider                                                                                                                                                                                                                                                    |
+| `LLAMA_CPP_EMBED_MODEL`        | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for embeddings (reserved; embedding swap is ADR-gated per Phase 4)                                                                                                                                                                                                                       |
+| `EMBEDDING_PROVIDER`           | `auto`                            | Embedding backend: `auto`, `gemini`, or `ollama`                                                                                                                                                                                                                                                              |
+| `DEUS_ATOM_PROVIDER`           | `auto`                            | Atom-extraction backend: `auto` (Ollama first, Gemini fallback), `ollama`, or `gemini`. `auto` lets `--extract`/`--add` run without a Gemini key when Ollama is up                                                                                                                                            |
+| `DEUS_OLLAMA_ATOM_MODEL`       | `gemma4:e4b`                      | Ollama model used for atom extraction (auto/ollama)                                                                                                                                                                                                                                                           |
 
 ## Evolution / Eval
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EVOLUTION_ENABLED` | `1` | Toggle evolution loop: `1` or `0` |
-| `EVOLUTION_PYTHON` | `python3` | Python binary path for evolution subprocess |
-| `EVOLUTION_REFLECTION_THRESHOLD` | `0.6` | Interactions scoring below this trigger corrective reflections |
-| `EVOLUTION_POSITIVE_THRESHOLD` | `0.85` | Interactions scoring above this trigger positive pattern extraction |
-| `EVOLUTION_JUDGE_MODEL` | `models/gemini-3.1-flash-lite` | Gemini model used for judging and principle extraction |
-| `EVOLUTION_JUDGE_MAX_PROMPT_CHARS` | `2000` | Max chars of user prompt sent to Gemini judge (caps payload + PII exposure) |
-| `EVOLUTION_JUDGE_MAX_RESPONSE_CHARS` | `2000` | Max chars of agent response sent to Gemini judge |
-| `EVOLUTION_JUDGE_PROVIDER` | (auto-detect) | Force a specific judge provider: `ollama`, `gemini`, `claude`, `mock`, `llama-cpp`, `openai` |
-| `EVOLUTION_GEN_PROVIDER` | (auto-detect) | Force a specific generative provider: `gemini`, `ollama`, `mock`, `llama-cpp` |
-| `EVOLUTION_OPENAI_JUDGE_ENABLED` | (unset) | Opt-in gate for the OpenAI judge provider — required in addition to a native `codex` CLI install + `codex login`; never auto-selected. macOS only. See `docs/security/data-flows.md` §7 |
-| `EVOLUTION_OPENAI_JUDGE_MODEL` | `gpt-5.6-luna` | Model passed to `codex exec -m` when the `openai` judge provider is active |
-| `DEUS_STORAGE_PROVIDER` | (auto-detect) | Force a specific storage provider: `sqlite` |
-| `EVOLUTION_GEN_MODEL` | `models/gemini-3.1-flash-lite` | Default generative model (Gemini) |
-| `EVOLUTION_MAX_REFLECTIONS` | `3` | Max reflections retrieved per agent query |
-| `EVOLUTION_REFLECTION_DEDUP_L2` | `0.4` | L2 distance threshold for deduplicating similar reflections |
-| `DEUS_EVAL_CONCURRENT` | — | Override eval pre-warm concurrency |
-| `EVOLUTION_AUTO_OPTIMIZE_THRESHOLD` | `50` | Auto-optimize after this many new scored interactions (0 = disabled) |
-| `EVOLUTION_PRINCIPLES_COOLDOWN_HOURS` | `24` | Cooldown between principle extractions in hours |
-| `DEUS_EVOLUTION_DB` | `~/.deus/evolution.db` | Path to the evolution SQLite database (interactions, reflections, scores) |
-| `EVOLUTION_SKIP_GROUPS` | — | Comma-separated group folders to exclude from evolution tracking (e.g. automated agents) |
+| Variable                              | Default                        | Description                                                                                                                                                                             |
+| ------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EVOLUTION_ENABLED`                   | `1`                            | Toggle evolution loop: `1` or `0`                                                                                                                                                       |
+| `EVOLUTION_PYTHON`                    | `python3`                      | Python binary path for evolution subprocess                                                                                                                                             |
+| `EVOLUTION_REFLECTION_THRESHOLD`      | `0.6`                          | Interactions scoring below this trigger corrective reflections                                                                                                                          |
+| `EVOLUTION_POSITIVE_THRESHOLD`        | `0.85`                         | Interactions scoring above this trigger positive pattern extraction                                                                                                                     |
+| `EVOLUTION_JUDGE_MODEL`               | `models/gemini-3.1-flash-lite` | Gemini model used for judging and principle extraction                                                                                                                                  |
+| `EVOLUTION_JUDGE_MAX_PROMPT_CHARS`    | `2000`                         | Max chars of user prompt sent to Gemini judge (caps payload + PII exposure)                                                                                                             |
+| `EVOLUTION_JUDGE_MAX_RESPONSE_CHARS`  | `2000`                         | Max chars of agent response sent to Gemini judge                                                                                                                                        |
+| `EVOLUTION_JUDGE_PROVIDER`            | (auto-detect)                  | Force a specific judge provider: `ollama`, `gemini`, `claude`, `mock`, `llama-cpp`, `openai`                                                                                            |
+| `EVOLUTION_GEN_PROVIDER`              | (auto-detect)                  | Force a specific generative provider: `gemini`, `ollama`, `mock`, `llama-cpp`                                                                                                           |
+| `EVOLUTION_OPENAI_JUDGE_ENABLED`      | (unset)                        | Opt-in gate for the OpenAI judge provider — required in addition to a native `codex` CLI install + `codex login`; never auto-selected. macOS only. See `docs/security/data-flows.md` §7 |
+| `EVOLUTION_OPENAI_JUDGE_MODEL`        | `gpt-5.6-luna`                 | Model passed to `codex exec -m` when the `openai` judge provider is active                                                                                                              |
+| `DEUS_STORAGE_PROVIDER`               | (auto-detect)                  | Force a specific storage provider: `sqlite`                                                                                                                                             |
+| `EVOLUTION_GEN_MODEL`                 | `models/gemini-3.1-flash-lite` | Default generative model (Gemini)                                                                                                                                                       |
+| `EVOLUTION_MAX_REFLECTIONS`           | `3`                            | Max reflections retrieved per agent query                                                                                                                                               |
+| `EVOLUTION_REFLECTION_DEDUP_L2`       | `0.4`                          | L2 distance threshold for deduplicating similar reflections                                                                                                                             |
+| `DEUS_EVAL_CONCURRENT`                | —                              | Override eval pre-warm concurrency                                                                                                                                                      |
+| `EVOLUTION_AUTO_OPTIMIZE_THRESHOLD`   | `50`                           | Auto-optimize after this many new scored interactions (0 = disabled)                                                                                                                    |
+| `EVOLUTION_PRINCIPLES_COOLDOWN_HOURS` | `24`                           | Cooldown between principle extractions in hours                                                                                                                                         |
+| `DEUS_EVOLUTION_DB`                   | `~/.deus/evolution.db`         | Path to the evolution SQLite database (interactions, reflections, scores)                                                                                                               |
+| `EVOLUTION_SKIP_GROUPS`               | —                              | Comma-separated group folders to exclude from evolution tracking (e.g. automated agents)                                                                                                |
 
 ## Eval
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEUS_EVAL_IMAGE` | — | Docker image for eval containers |
-| `DEUS_EVAL_TIMEOUT` | — | Eval container timeout in seconds |
-| `EVAL_JUDGE` | auto-detect | Judge backend: `ollama`, `gemini`, or `mock` |
-| `CREDENTIAL_PROXY_URL` | `http://localhost:3001` | Full proxy URL override |
+| Variable               | Default                 | Description                                  |
+| ---------------------- | ----------------------- | -------------------------------------------- |
+| `DEUS_EVAL_IMAGE`      | —                       | Docker image for eval containers             |
+| `DEUS_EVAL_TIMEOUT`    | —                       | Eval container timeout in seconds            |
+| `EVAL_JUDGE`           | auto-detect             | Judge backend: `ollama`, `gemini`, or `mock` |
+| `CREDENTIAL_PROXY_URL` | `http://localhost:3001` | Full proxy URL override                      |
 
 ## DSPy Optimizer
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EVOLUTION_DSPY_MIN_SAMPLES` | `20` | Minimum scored interactions before optimizer can run |
-| `EVOLUTION_DSPY_MIN_DOMAIN_SAMPLES` | `10` | Minimum domain-specific samples for domain optimization |
-| `DSPY_OLLAMA_MODEL` | `gemma4:e4b` | Ollama model for DSPy optimization |
+| Variable                            | Default      | Description                                             |
+| ----------------------------------- | ------------ | ------------------------------------------------------- |
+| `EVOLUTION_DSPY_MIN_SAMPLES`        | `20`         | Minimum scored interactions before optimizer can run    |
+| `EVOLUTION_DSPY_MIN_DOMAIN_SAMPLES` | `10`         | Minimum domain-specific samples for domain optimization |
+| `DSPY_OLLAMA_MODEL`                 | `gemma4:e4b` | Ollama model for DSPy optimization                      |
 
 ## Memory
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEUS_VAULT_PATH` | — | Vault directory path for session logs and memory |
-| `DEUS_DB` | `~/.deus/memory.db` | Memory indexer SQLite database override |
-| `DEUS_TRANSCRIPT_ARCHIVE_DIR` | `~/.deus/archive/transcripts` | Content-addressed cold store for /compress source-transcript archives (LIA-374) |
-| `DEUS_MEMORY_TREE` | `0` | Enable memory-tree hooks/context loading when set to `1` |
-| `DEUS_MEMORY_TREE_DB` | `~/.deus/memory_tree.db` | Memory-tree SQLite database override |
-| `DEUS_AUTO_MEMORY_DIR` | — | Optional external auto-memory directory indexed under `auto-memory/` |
-| `DEUS_TREE_LOG` | `~/.deus/memory_tree_queries.jsonl` | Memory-tree query telemetry log |
-| `DEUS_TREE_AUDIT` | `~/.deus/memory_tree_audit.jsonl` | Memory-tree audit log |
-| `DEUS_TREE_LOW` | `0.55` | Initial low-confidence threshold for memory-tree retrieval |
-| `DEUS_TREE_ABSTAIN` | `0.30` | Initial abstention threshold for memory-tree retrieval |
-| `DEUS_TREE_GAP` | `0.04` | Score-gap threshold for memory-tree abstention |
+| Variable                      | Default                             | Description                                                                     |
+| ----------------------------- | ----------------------------------- | ------------------------------------------------------------------------------- |
+| `DEUS_VAULT_PATH`             | —                                   | Vault directory path for session logs and memory                                |
+| `DEUS_DB`                     | `~/.deus/memory.db`                 | Memory indexer SQLite database override                                         |
+| `DEUS_TRANSCRIPT_ARCHIVE_DIR` | `~/.deus/archive/transcripts`       | Content-addressed cold store for /compress source-transcript archives (LIA-374) |
+| `DEUS_MEMORY_TREE`            | `0`                                 | Enable memory-tree hooks/context loading when set to `1`                        |
+| `DEUS_MEMORY_TREE_DB`         | `~/.deus/memory_tree.db`            | Memory-tree SQLite database override                                            |
+| `DEUS_AUTO_MEMORY_DIR`        | —                                   | Optional external auto-memory directory indexed under `auto-memory/`            |
+| `DEUS_TREE_LOG`               | `~/.deus/memory_tree_queries.jsonl` | Memory-tree query telemetry log                                                 |
+| `DEUS_TREE_AUDIT`             | `~/.deus/memory_tree_audit.jsonl`   | Memory-tree audit log                                                           |
+| `DEUS_TREE_LOW`               | `0.55`                              | Initial low-confidence threshold for memory-tree retrieval                      |
+| `DEUS_TREE_ABSTAIN`           | `0.30`                              | Initial abstention threshold for memory-tree retrieval                          |
+| `DEUS_TREE_GAP`               | `0.04`                              | Score-gap threshold for memory-tree abstention                                  |
 
 ## Sessions
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SESSION_IDLE_RESET_HOURS` | `8` | Reset a group's session after N idle hours (0 = never reset). Per-channel override via `/settings session_idle_hours=N`. |
+| Variable                   | Default | Description                                                                                                              |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `SESSION_IDLE_RESET_HOURS` | `8`     | Reset a group's session after N idle hours (0 = never reset). Per-channel override via `/settings session_idle_hours=N`. |
 
 Group/task backend overrides:
 
@@ -179,32 +189,32 @@ Group/task effort overrides:
 
 ## Linear Automation
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LINEAR_API_TOKEN` | -- | Personal API key (also accepted as `LINEAR_API_KEY`). Generate at Linear Settings > API > Personal API keys |
-| `LINEAR_POLL_INTERVAL_MS` | `30000` | How often the dispatcher polls for "Ready for Agent" issues (ms) |
-| `LINEAR_FETCH_TIMEOUT_MS` | `15000` | Ceiling for a single poll-fetch deadline; effective value is clamped below the poll interval so a hung Linear API call rejects (logged transient, retried next tick) instead of leaking |
-| `LINEAR_TEAM_ID` | auto-discovered | Override if the workspace has multiple teams |
-| `LINEAR_WEBHOOK_SECRET` | -- | HMAC-SHA256 secret for webhook signature verification. Required for gates |
-| `LINEAR_WEBHOOK_PORT` | `3005` | Port the webhook server binds to |
-| `LINEAR_BOT_USER_ID` | auto-discovered | Override the bot user ID used to filter out self-triggered webhook events |
-| `LINEAR_AUTO_MERGE` | `0` | Auto-merge agent PRs after CI passes: `0` (off) or `1` (on) |
+| Variable                  | Default         | Description                                                                                                                                                                             |
+| ------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LINEAR_API_TOKEN`        | --              | Personal API key (also accepted as `LINEAR_API_KEY`). Generate at Linear Settings > API > Personal API keys                                                                             |
+| `LINEAR_POLL_INTERVAL_MS` | `30000`         | How often the dispatcher polls for "Ready for Agent" issues (ms)                                                                                                                        |
+| `LINEAR_FETCH_TIMEOUT_MS` | `15000`         | Ceiling for a single poll-fetch deadline; effective value is clamped below the poll interval so a hung Linear API call rejects (logged transient, retried next tick) instead of leaking |
+| `LINEAR_TEAM_ID`          | auto-discovered | Override if the workspace has multiple teams                                                                                                                                            |
+| `LINEAR_WEBHOOK_SECRET`   | --              | HMAC-SHA256 secret for webhook signature verification. Required for gates                                                                                                               |
+| `LINEAR_WEBHOOK_PORT`     | `3005`          | Port the webhook server binds to                                                                                                                                                        |
+| `LINEAR_BOT_USER_ID`      | auto-discovered | Override the bot user ID used to filter out self-triggered webhook events                                                                                                               |
+| `LINEAR_AUTO_MERGE`       | `0`             | Auto-merge agent PRs after CI passes: `0` (off) or `1` (on)                                                                                                                             |
 
 ## GitHub
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GITHUB_TOKEN` | -- | Personal access token for `gh` CLI (tool proxy injects into container agent calls) |
-| `GITHUB_REPO` | auto-derived | Repository slug (`owner/repo`). Auto-derived from `git remote` if not set |
+| Variable       | Default      | Description                                                                        |
+| -------------- | ------------ | ---------------------------------------------------------------------------------- |
+| `GITHUB_TOKEN` | --           | Personal access token for `gh` CLI (tool proxy injects into container agent calls) |
+| `GITHUB_REPO`  | auto-derived | Repository slug (`owner/repo`). Auto-derived from `git remote` if not set          |
 
 ## Safety
 
-| Variable | Default | Description |
-|----------|---------|-------------|
+| Variable             | Default | Description                                                     |
+| -------------------- | ------- | --------------------------------------------------------------- |
 | `MAX_MESSAGE_LENGTH` | `50000` | Max characters per incoming message (truncates, doesn't reject) |
 
 ## Logging
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOG_LEVEL` | `info` | Logging level: `debug`, `info`, `warn`, `error` |
+| Variable    | Default | Description                                     |
+| ----------- | ------- | ----------------------------------------------- |
+| `LOG_LEVEL` | `info`  | Logging level: `debug`, `info`, `warn`, `error` |
