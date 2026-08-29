@@ -95,6 +95,66 @@ describe('McpChannelAdapter', () => {
     expect(opts.onMessage).not.toHaveBeenCalled();
   });
 
+  it('maps metadata.audio to msg.audio with a minimal shape check', () => {
+    const opts = makeOpts();
+    new McpChannelAdapter(opts);
+    const handler = capturedHandlers[capturedHandlers.length - 1];
+
+    const base = {
+      id: 'm1',
+      chat_id: 'group@g.us',
+      sender: 'alice@c.us',
+      sender_name: 'Alice',
+      content: '[Voice Message]',
+      timestamp: '1',
+    };
+    handler({
+      params: {
+        logger: 'incoming_message',
+        data: {
+          ...base,
+          metadata: {
+            audio: {
+              path: '/tmp/deus-whatsapp-audio/m1.ogg',
+              mimetype: 'audio/ogg',
+              isVoiceNote: true,
+              bytes: 10,
+              fileName: 42, // wrong type → dropped
+            },
+          },
+        },
+      },
+    });
+    expect(opts.onMessage).toHaveBeenLastCalledWith(
+      'group@g.us',
+      expect.objectContaining({
+        audio: {
+          path: '/tmp/deus-whatsapp-audio/m1.ogg',
+          mimetype: 'audio/ogg',
+          isVoiceNote: true,
+          bytes: 10,
+          fileName: undefined,
+        },
+      }),
+    );
+
+    // Malformed audio metadata is ignored, the message still flows.
+    handler({
+      params: {
+        logger: 'incoming_message',
+        data: {
+          ...base,
+          id: 'm2',
+          metadata: { audio: { mimetype: 'audio/ogg' } },
+        },
+      },
+    });
+    expect(opts.onMessage).toHaveBeenLastCalledWith(
+      'group@g.us',
+      expect.objectContaining({ id: 'm2', audio: undefined }),
+    );
+  });
+
   it('should dispatch incoming_reaction to onReaction callback', () => {
     const opts = makeOpts();
     new McpChannelAdapter(opts);

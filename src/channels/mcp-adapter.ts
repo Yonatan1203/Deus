@@ -14,6 +14,7 @@ import { RetryableError } from '../errors/index.js';
 import { logger } from '../logger.js';
 import type {
   Channel,
+  AudioAttachmentRef,
   NewMessage,
   NewReaction,
   OnChatMetadata,
@@ -47,6 +48,27 @@ export class McpChannelAdapter implements Channel {
   private transport: StdioClientTransport;
   private connected = false;
   private opts: McpChannelAdapterOpts;
+
+  /**
+   * Minimal shape check on the channel-supplied audio reference. The channel
+   * process is a separate, credential-less child; the host's real boundary
+   * control is `validateAudioRef` in src/openai-transcription.ts (realpath
+   * containment, mimetype allow-map, size from fs.stat).
+   */
+  static toAudioRef(raw: unknown): AudioAttachmentRef | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const a = raw as Record<string, unknown>;
+    if (typeof a.path !== 'string' || typeof a.mimetype !== 'string') {
+      return undefined;
+    }
+    return {
+      path: a.path,
+      mimetype: a.mimetype,
+      fileName: typeof a.fileName === 'string' ? a.fileName : undefined,
+      isVoiceNote: a.isVoiceNote === true,
+      bytes: typeof a.bytes === 'number' ? a.bytes : undefined,
+    };
+  }
 
   constructor(opts: McpChannelAdapterOpts) {
     this.opts = opts;
@@ -103,6 +125,7 @@ export class McpChannelAdapter implements Channel {
           is_from_me: data.is_from_me as boolean | undefined,
           is_bot_message: meta?.is_bot_message as boolean | undefined,
           imageData: meta?.imageData as string | undefined,
+          audio: McpChannelAdapter.toAudioRef(meta?.audio),
         };
 
         // Chat metadata MUST be emitted before the message: messages.chat_jid

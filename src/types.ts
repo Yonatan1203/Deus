@@ -90,6 +90,22 @@ export interface NewMessage {
   is_bot_message?: boolean;
   /** Resized JPEG as base64. Ephemeral — not stored in DB. */
   imageData?: string;
+  /**
+   * Reference to a downloaded voice note / audio file, produced by a channel
+   * process. Untrusted until validated by src/openai-transcription.ts.
+   * Ephemeral — not stored in DB.
+   */
+  audio?: AudioAttachmentRef;
+}
+
+export interface AudioAttachmentRef {
+  /** Absolute path inside the dedicated audio temp dir (host re-validates). */
+  path: string;
+  mimetype: string;
+  fileName?: string;
+  isVoiceNote?: boolean;
+  /** Advisory only — the host re-derives the size from the file. */
+  bytes?: number;
 }
 
 export interface NewReaction {
