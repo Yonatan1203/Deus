@@ -40,6 +40,7 @@ import { writeAvailableTools } from './available-tools-log.js';
 import { buildAllowedTools, computeTeamsNeeded } from './allowed-tools.js';
 import { subagentNudgeAppend } from './subagent-nudge.js';
 import { readDisciplineNudgeAppend } from './read-discipline-nudge.js';
+import { openaiProxyAppend } from './openai-proxy-nudge.js';
 import {
   ReadOversizeNudgeTracker,
   createReadOversizeNudgeHook,
@@ -890,7 +891,21 @@ async function runQuery(
     enabled: process.env.DEUS_READ_DISCIPLINE_NUDGE !== '0', // LIA-379
     hasProject,
   });
-  const fullSystemAppend = [systemAppend, subagentNudge, readDisciplineNudge]
+  // OpenAI image/audio route via the credential proxy: the host injects
+  // OPENAI_BASE_URL only for normal groups with a host-side OpenAI key
+  // (container-runner.ts); the webhook profile has no Bash/curl, so it never
+  // gets the recipe.
+  const openaiProxyNudge = openaiProxyAppend({
+    openaiBaseUrl: process.env.OPENAI_BASE_URL,
+    hasProxyToken: !!process.env.DEUS_PROXY_TOKEN,
+    toolProfile,
+  });
+  const fullSystemAppend = [
+    systemAppend,
+    subagentNudge,
+    readDisciplineNudge,
+    openaiProxyNudge,
+  ]
     .filter(Boolean)
     .join('\n\n');
 

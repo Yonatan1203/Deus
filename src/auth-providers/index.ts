@@ -24,6 +24,21 @@ import { OpenAIAuthProvider } from './openai.js';
  * Ensure the default Anthropic provider is registered.
  * Safe to call multiple times — skips if already registered.
  */
+/**
+ * Whether the credential proxy can serve `/openai/*` — i.e. the host holds
+ * OpenAI credentials. Used by container-runner to decide whether to advertise
+ * the route (`OPENAI_BASE_URL`) to normal-group containers on the Claude
+ * backend. Never exposes the secret itself.
+ */
+export function hasOpenAIProxyCredentials(): boolean {
+  ensureDefaultProviders();
+  try {
+    return AuthProviderRegistry.default().get('openai').isAvailable();
+  } catch {
+    return false;
+  }
+}
+
 export function ensureDefaultProviders(): void {
   const registry = AuthProviderRegistry.default();
   if (!registry.listProviders().includes('anthropic')) {

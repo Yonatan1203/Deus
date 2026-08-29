@@ -86,6 +86,15 @@ export function validateGroupToken(token: string): string | null {
 }
 
 /**
+ * Whether a token was minted through the scoped (publicIngress) path. The
+ * credential proxy uses this to confine such tokens to the Anthropic provider;
+ * the tool-proxy's per-tool scope check never covered provider routes.
+ */
+export function isScopedToken(token: string): boolean {
+  return tokenScopes.has(token);
+}
+
+/**
  * Whether a token may invoke a given tool. Scoped (publicIngress) tokens are
  * restricted to their curated set; unscoped (normal-group) tokens are
  * unrestricted. Enforced in the tool-proxy (Phase 2, LIA-315). A scoped token

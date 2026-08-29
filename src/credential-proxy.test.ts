@@ -6,9 +6,15 @@ vi.mock('./config.js', () => ({
   DEUS_PROXY_AUTH_ENABLED: true,
 }));
 
+const SCOPED_PROXY_TOKEN = 'scoped-token-webhook-xyz';
 vi.mock('./group-tokens.js', () => ({
   validateGroupToken: (token: string) =>
-    token === 'test-proxy-token-abc123' ? 'test-group' : null,
+    token === 'test-proxy-token-abc123'
+      ? 'test-group'
+      : token === 'scoped-token-webhook-xyz'
+        ? 'webhook-group'
+        : null,
+  isScopedToken: (token: string) => token === 'scoped-token-webhook-xyz',
 }));
 
 const mockEnv: Record<string, string> = {};
@@ -190,6 +196,47 @@ describe('credential-proxy', () => {
       'Bearer sk-openai-real-key',
     );
     expect(lastUpstreamHeaders['x-api-key']).toBeUndefined();
+  });
+
+  it('denies a scoped (publicIngress) token any non-Anthropic provider route', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant-real-key',
+      OPENAI_API_KEY: 'sk-openai-real-key',
+      OPENAI_BASE_URL: `http://127.0.0.1:${upstreamPort}`,
+    });
+
+    const denied = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/openai/v1/images/generations',
+        headers: {
+          'content-type': 'application/json',
+          'x-deus-proxy-token': SCOPED_PROXY_TOKEN,
+        },
+      },
+      '{}',
+    );
+    expect(denied.statusCode).toBe(403);
+    // Nothing reached upstream with the real key.
+    expect(lastUpstreamHeaders['authorization']).toBeUndefined();
+
+    // The same scoped token still reaches Anthropic (unprefixed default route).
+    const allowed = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': 'placeholder',
+          'x-deus-proxy-token': SCOPED_PROXY_TOKEN,
+        },
+      },
+      '{}',
+    );
+    expect(allowed.statusCode).toBe(200);
+    expect(lastUpstreamHeaders['x-api-key']).toBe('sk-ant-real-key');
   });
 
   it('OAuth mode replaces Authorization when container sends one', async () => {

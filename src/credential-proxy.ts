@@ -22,7 +22,7 @@ import { execFile } from 'child_process';
 import path from 'path';
 import { DEUS_PROXY_AUTH_ENABLED } from './config.js';
 import { envPositiveInt } from './env-utils.js';
-import { validateGroupToken } from './group-tokens.js';
+import { isScopedToken, validateGroupToken } from './group-tokens.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { createRateLimiter } from './rate-limiter.js';
@@ -255,9 +255,15 @@ export function startCredentialProxy(
         // Also keys the /memory/query rate limiter per authenticated group;
         // null when auth is off (falls back to the socket address). (LIA-244)
         let groupFolder: string | null = null;
+        // Scoped (publicIngress) tokens are confined to the Anthropic provider
+        // once the route is known below — the tool-proxy's per-tool scope never
+        // covered provider routes, so /openai/* would otherwise be reachable
+        // from a reduced-privilege container.
+        let scopedToken = false;
         if (DEUS_PROXY_AUTH_ENABLED) {
           const token = req.headers['x-deus-proxy-token'] as string | undefined;
           groupFolder = token ? validateGroupToken(token) : null;
+          scopedToken = !!token && !!groupFolder && isScopedToken(token);
           if (!groupFolder) {
             logger.error(
               { statusCode: 401, url: req.url, hasToken: !!token },
@@ -388,6 +394,19 @@ export function startCredentialProxy(
           );
           res.writeHead(502);
           res.end('No provider available');
+          return;
+        }
+
+        // Allowlist-shaped: only the Anthropic provider is permitted for a
+        // scoped token; an unprefixed URL resolves to Anthropic, so this fails
+        // closed for every other registered provider.
+        if (scopedToken && provider.name !== 'anthropic') {
+          logger.warn(
+            { url: req.url, group: groupFolder, provider: provider.name },
+            'Credential proxy denied non-Anthropic provider for scoped token',
+          );
+          res.writeHead(403);
+          res.end('Forbidden');
           return;
         }
 
