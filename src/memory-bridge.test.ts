@@ -9,6 +9,7 @@ vi.mock('./config.js', () => ({
 }));
 
 vi.mock('./group-tokens.js', () => ({
+  isScopedToken: () => false,
   validateGroupToken: (token: string) =>
     token === 'test-proxy-token-abc123'
       ? 'test-group'

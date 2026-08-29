@@ -49,6 +49,12 @@ vi.mock('./config.js', () => ({
 vi.mock('./group-tokens.js', () => ({
   getOrCreateGroupToken: (folder?: string) =>
     `token-for-${folder ?? '_anonymous'}`,
+  getOrCreateScopedToken: (folder: string) => `scoped-token-for-${folder}`,
+}));
+
+// Host-side OpenAI credential presence (never the secret). Default: absent.
+vi.mock('./auth-providers/index.js', () => ({
+  hasOpenAIProxyCredentials: vi.fn(() => false),
 }));
 const TEST_PROXY_TOKEN = 'token-for-main-group';
 
@@ -1000,6 +1006,7 @@ describe('ContainerOutputSchema Zod validation', () => {
 import * as childProcess from 'child_process';
 import * as fsMod from 'fs';
 import { getProjectById } from './db.js';
+import { hasOpenAIProxyCredentials } from './auth-providers/index.js';
 
 // Helpers to parse mounts out of spawn args
 // spawn receives: ['run', '-i', '--rm', '--name', name, ...mountArgs, image]
@@ -2043,6 +2050,92 @@ describe.skipIf(onWindows)('OpenAI backend container env', () => {
     expect(args).toContain('DEUS_CONTEXT_FILE_MAX_CHARS=12345');
     expect(args.join(' ')).not.toContain('ANTHROPIC_BASE_URL=');
     expect(args.join(' ')).not.toContain('ANTHROPIC_API_KEY=');
+  });
+
+  async function spawnArgsFor(
+    group: RegisteredGroup,
+    backend: 'claude' | 'openai' | 'llama-cpp',
+  ): Promise<string[]> {
+    setImmediate(() => fakeProc.emit('close', 0));
+    await runContainerAgent(
+      group,
+      {
+        prompt: 'test',
+        backend,
+        groupFolder: group.folder,
+        chatJid: 'x@g.us',
+        isControlGroup: true,
+      },
+      () => {},
+    );
+    const spawnMock = vi.mocked(childProcess.spawn);
+    const lastCall = spawnMock.mock.calls[spawnMock.mock.calls.length - 1];
+    return lastCall[1] as string[];
+  }
+
+  afterEach(() => {
+    // Host-credential presence is per-test state; never leak "true" into the
+    // parity/llama-cpp suites that assert the OpenAI env is absent.
+    vi.mocked(hasOpenAIProxyCredentials).mockReturnValue(false);
+  });
+
+  it('advertises the OpenAI proxy route to a claude-backend container when the host has OpenAI credentials', async () => {
+    vi.mocked(hasOpenAIProxyCredentials).mockReturnValue(true);
+    const group: RegisteredGroup = {
+      name: 'Main',
+      folder: 'main-group',
+      trigger: '@Deus',
+      added_at: new Date().toISOString(),
+      isControlGroup: true,
+    };
+
+    const args = await spawnArgsFor(group, 'claude');
+
+    // Same placeholder shape as the openai backend; the proxy injects the key.
+    expect(args).toContain(
+      'OPENAI_BASE_URL=http://host.docker.internal:3001/openai',
+    );
+    expect(args).toContain('OPENAI_API_KEY=placeholder');
+    // Anthropic routing is untouched.
+    expect(args).toContain(
+      'ANTHROPIC_BASE_URL=http://host.docker.internal:3001',
+    );
+    // Never the real key.
+    expect(args.join(' ')).not.toMatch(/OPENAI_API_KEY=(?!placeholder)/);
+  });
+
+  it('does not advertise the OpenAI route when the host has no OpenAI credentials', async () => {
+    vi.mocked(hasOpenAIProxyCredentials).mockReturnValue(false);
+    const group: RegisteredGroup = {
+      name: 'Main',
+      folder: 'main-group',
+      trigger: '@Deus',
+      added_at: new Date().toISOString(),
+      isControlGroup: true,
+    };
+
+    const args = await spawnArgsFor(group, 'claude');
+
+    expect(args.join(' ')).not.toContain('OPENAI_BASE_URL=');
+    expect(args.join(' ')).not.toContain('OPENAI_API_KEY=');
+  });
+
+  it('never advertises the OpenAI route to a publicIngress (reduced-privilege) container', async () => {
+    vi.mocked(hasOpenAIProxyCredentials).mockReturnValue(true);
+    const group: RegisteredGroup = {
+      name: 'Webhook',
+      folder: 'webhook-group',
+      trigger: '@Deus',
+      added_at: new Date().toISOString(),
+      isControlGroup: false,
+      containerConfig: { publicIngress: true, curatedTools: [] },
+    };
+
+    const args = await spawnArgsFor(group, 'claude');
+
+    expect(args).toContain('DEUS_TOOL_PROFILE=webhook');
+    expect(args.join(' ')).not.toContain('OPENAI_BASE_URL=');
+    expect(args.join(' ')).not.toContain('OPENAI_API_KEY=');
   });
 });
 

@@ -51,6 +51,7 @@ import {
   readonlyMountArgs,
 } from './container-runtime.js';
 import { forceKillProcess } from './platform.js';
+import { hasOpenAIProxyCredentials } from './auth-providers/index.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { buildVolumeMounts } from './container-mounter.js';
 import { RegisteredGroup } from './types.js';
@@ -260,6 +261,20 @@ export function buildContainerArgs(
     const authMode = detectAuthMode();
     if (authMode === 'api-key') {
       args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    }
+
+    // Advertise the credential proxy's OpenAI route (image generation, audio
+    // transcription) to NORMAL groups only, when the host holds an OpenAI key.
+    // Same placeholder shape as the openai backend above; the proxy injects the
+    // real key. publicIngress containers are reduced-privilege (LIA-315): they
+    // never get this env, and the proxy additionally denies their scoped token
+    // any non-Anthropic provider route.
+    if (!isPublicIngress && hasOpenAIProxyCredentials()) {
+      args.push(
+        '-e',
+        `OPENAI_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/openai`,
+      );
+      args.push('-e', 'OPENAI_API_KEY=placeholder');
     }
   }
 
