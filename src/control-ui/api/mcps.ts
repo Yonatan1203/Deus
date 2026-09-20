@@ -16,7 +16,7 @@ const exists = (...p: string[]) => fs.existsSync(path.join(...p));
 
 // How each channel package signals "credentials present" — mirrors what the
 // channel factories in src/channels/mcp-*.ts check before they start.
-const CHANNEL_CONFIGURED: Record<
+export const CHANNEL_CONFIGURED: Record<
   string,
   (root: string, envHas: (k: string) => boolean) => boolean
 > = {

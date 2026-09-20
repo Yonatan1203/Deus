@@ -20,9 +20,11 @@ import {
   getPipelineEvents,
   getSession,
   getTaskById,
+  getTaskRunLogs,
   insertPipelineEventRow,
   listSessionRows,
   logPipelineEvent,
+  logTaskRun,
   reconcileIssueCache,
   setAutoCompressWatermark,
   setRegisteredGroup,
@@ -1004,5 +1006,37 @@ describe('control-ui session rows', () => {
     expect(rows[1].orphaned_at).not.toBeNull();
     expect(rows[0].orphaned_at).toBeNull();
     expect(rows[0].metadata).toEqual({ cost_usd: 0.12, tokens: 345 });
+  });
+});
+
+describe('control-ui task run logs', () => {
+  it('lists runs newest first, truncated, with a limit', () => {
+    createTask({
+      id: 'task-r',
+      group_folder: 'main',
+      chat_jid: 'g@x',
+      prompt: 'p',
+      schedule_type: 'once',
+      schedule_value: '2024-06-01T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: null,
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+    for (const i of [1, 2, 3]) {
+      logTaskRun({
+        task_id: 'task-r',
+        run_at: `2024-06-0${i}T00:00:00.000Z`,
+        duration_ms: i,
+        status: 'success',
+        result: i === 3 ? 'x'.repeat(10_000) : `r${i}`,
+        error: null,
+      });
+    }
+    const runs = getTaskRunLogs('task-r', 2);
+    expect(runs).toHaveLength(2);
+    expect(runs[0].result).toHaveLength(4096);
+    expect(runs[1].result).toBe('r2');
+    expect(getTaskRunLogs('nope', 5)).toEqual([]);
   });
 });

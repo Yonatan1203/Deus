@@ -46,6 +46,13 @@ describe('control-ui sessions', () => {
       clearSession: vi.fn(),
       stopContainer: vi.fn(),
       groupFolderPath: (f: string) => f,
+      getAllTasks: () => [],
+      getTaskById: () => undefined,
+      createTask: () => {},
+      updateTask: () => {},
+      deleteTask: () => {},
+      getTaskRunLogs: () => [],
+      onTasksChanged: () => {},
     };
     const out = listSessions(store, runtime);
     expect(out[0].active_container).toEqual({ name: 'deus-a-1', jid: 'a@x' });
@@ -63,6 +70,13 @@ describe('control-ui sessions', () => {
       clearSession: clear,
       stopContainer: stop,
       groupFolderPath: (f: string) => f,
+      getAllTasks: () => [],
+      getTaskById: () => undefined,
+      createTask: () => {},
+      updateTask: () => {},
+      deleteTask: () => {},
+      getTaskRunLogs: () => [],
+      onTasksChanged: () => {},
     };
     const rt = {
       queue: {

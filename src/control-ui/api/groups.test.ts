@@ -43,6 +43,13 @@ const store = {
     if (!/^[a-z]+$/.test(f)) throw new Error('bad');
     return path.join(root, f);
   },
+  getAllTasks: () => [],
+  getTaskById: () => undefined,
+  createTask: () => {},
+  updateTask: () => {},
+  deleteTask: () => {},
+  getTaskRunLogs: () => [],
+  onTasksChanged: () => {},
 };
 
 describe('control-ui groups', () => {

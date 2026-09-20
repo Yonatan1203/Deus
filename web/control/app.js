@@ -5,6 +5,9 @@ import * as wardens from './views/wardens.js';
 import * as mcps from './views/mcps.js';
 import * as sessions from './views/sessions.js';
 import * as groups from './views/groups.js';
+import * as tasks from './views/tasks.js';
+import * as channels from './views/channels.js';
+import * as memory from './views/memory.js';
 
 const TOKEN_KEY = 'deus_ctl_token';
 const CHAT_KEY = 'deus_ctl_chat';
@@ -15,6 +18,9 @@ const VIEWS = {
   mcps: { title: 'MCPs', icon: '▦', render: mcps.render },
   sessions: { title: 'Sessions', icon: '▤', render: sessions.render },
   groups: { title: 'Groups', icon: '▣', render: groups.render },
+  tasks: { title: 'Tasks', icon: '◷', render: tasks.render },
+  channels: { title: 'Channels', icon: '⌁', render: channels.render },
+  memory: { title: 'Memory', icon: '▥', render: memory.render },
 };
 const DEFAULT_VIEW = 'chat';
 const $ = (id) => document.getElementById(id);
@@ -128,7 +134,7 @@ async function connectEvents() {
   source.onerror = () => {
     if (!pollTimer) pollTimer = setInterval(() => bus.dispatchEvent(new CustomEvent('refresh')), 10_000);
   };
-  for (const type of ['warden', 'session', 'group', 'queue']) {
+  for (const type of ['warden', 'session', 'group', 'queue', 'task', 'memory']) {
     source.addEventListener(type, (e) =>
       bus.dispatchEvent(new CustomEvent(type, { detail: JSON.parse(e.data) })));
   }

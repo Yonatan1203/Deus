@@ -24,6 +24,7 @@ import {
 } from '../web-turn.js';
 import type { RuntimeEventSink } from '../agent-runtimes/types.js';
 import type { ControlStore } from './store.js';
+import type { ScheduledTask, TaskRunLog } from '../types.js';
 
 const PASSWORD = 'correct-horse';
 const H = { 'Content-Type': 'application/json' };
@@ -141,6 +142,33 @@ function fakeStore(root: string): ControlStore {
       if (!/^[a-z]+$/.test(f)) throw new Error('bad');
       return path.join(root, 'groups', f);
     },
+    ...taskStore(),
+  };
+}
+
+// In-memory task store so route tests can assert persistence.
+function taskStore() {
+  const tasks = new Map<string, ScheduledTask>();
+  const runs = new Map<string, TaskRunLog[]>();
+  return {
+    tasks,
+    runs,
+    getAllTasks: () => [...tasks.values()],
+    getTaskById: (id: string) => tasks.get(id),
+    createTask: vi.fn((t: Omit<ScheduledTask, 'last_run' | 'last_result'>) => {
+      tasks.set(t.id, { ...t, last_run: null, last_result: null });
+    }),
+    updateTask: vi.fn((id: string, u: Partial<ScheduledTask>) => {
+      const t = tasks.get(id);
+      if (t) tasks.set(id, { ...t, ...u });
+    }),
+    deleteTask: vi.fn((id: string) => {
+      tasks.delete(id);
+      runs.delete(id);
+    }),
+    getTaskRunLogs: (id: string, limit: number) =>
+      (runs.get(id) ?? []).slice(0, limit),
+    onTasksChanged: vi.fn(),
   };
 }
 
@@ -822,5 +850,468 @@ describe('control-ui server — chat, sessions, groups', () => {
       setTimeout(() => reject(new Error('no queue frame')), 2000);
     });
     expect(frames).toContain('event: queue');
+  });
+});
+
+describe('control-ui server — tasks, channels, memory', () => {
+  const TASK = {
+    group_folder: 'main',
+    chat_jid: 'main@x',
+    prompt: 'p',
+    schedule_type: 'interval',
+    schedule_value: '60000',
+  };
+
+  it('creates, updates, runs, lists runs and deletes tasks with the guards', async () => {
+    const { runtime } = fakeRuntime();
+    const store = fakeStore(root);
+    await boot({ runtime, store });
+    const { auth } = await login();
+    const post = (body: unknown, extra: Record<string, string> = {}) =>
+      request({
+        method: 'POST',
+        path: '/api/v1/tasks',
+        headers: { ...auth, ...H, ...extra },
+        body: JSON.stringify(body),
+      });
+    const created = await post(TASK);
+    expect(created.status).toBe(201);
+    const task = JSON.parse(created.text);
+    expect(task.id).toMatch(/^task-\d+-[a-z0-9]{6}$/);
+    expect(task.chat_jid).toBe('main@x');
+    expect(
+      (store as unknown as { onTasksChanged: ReturnType<typeof vi.fn> })
+        .onTasksChanged,
+    ).toHaveBeenCalled();
+    const list = JSON.parse(
+      (await request({ method: 'GET', path: '/api/v1/tasks', headers: auth }))
+        .text,
+    );
+    expect(list.map((t: { id: string }) => t.id)).toEqual([task.id]);
+    const patch = await request({
+      method: 'PATCH',
+      path: `/api/v1/tasks/${task.id}`,
+      headers: { ...auth, ...H },
+      body: '{"schedule_value":"120000"}',
+    });
+    expect(patch.status).toBe(200);
+    expect(new Date(JSON.parse(patch.text).next_run).getTime()).toBe(
+      clock + 120_000,
+    );
+    expect(
+      (
+        await request({
+          method: 'PATCH',
+          path: `/api/v1/tasks/${task.id}`,
+          headers: { ...auth, ...H },
+          body: '{"schedule_value":"1000"}',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request({
+          method: 'PATCH',
+          path: `/api/v1/tasks/${task.id}`,
+          headers: { ...auth, ...H },
+          body: '{"status":"completed"}',
+        })
+      ).status,
+    ).toBe(400);
+    const run = await request({
+      method: 'POST',
+      path: `/api/v1/tasks/${task.id}/run`,
+      headers: auth,
+    });
+    expect(run.status).toBe(200);
+    expect(new Date(JSON.parse(run.text).next_run).getTime()).toBe(clock);
+    expect(
+      (
+        await request({
+          method: 'PATCH',
+          path: `/api/v1/tasks/${task.id}`,
+          headers: { ...auth, ...H },
+          body: '{"status":"paused"}',
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: `/api/v1/tasks/${task.id}/run`,
+          headers: auth,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      JSON.parse(
+        (
+          await request({
+            method: 'GET',
+            path: `/api/v1/tasks/${task.id}/runs`,
+            headers: auth,
+          })
+        ).text,
+      ),
+    ).toEqual([]);
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: `/api/v1/tasks/${task.id}`,
+          headers: auth,
+        })
+      ).status,
+    ).toBe(428);
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: `/api/v1/tasks/${task.id}`,
+          headers: { ...auth, 'X-Confirm': task.id },
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: `/api/v1/tasks/${task.id}`,
+          headers: { ...auth, 'X-Confirm': task.id },
+        })
+      ).status,
+    ).toBe(404);
+    // Validation failures (each still spends limiter budget — attempts are attempts).
+    expect(
+      (await post({ ...TASK, schedule_value: 'bad', schedule_type: 'cron' }))
+        .status,
+    ).toBe(400);
+    expect((await post({ ...TASK, group_folder: 'nope' })).status).toBe(404);
+    expect((await post({ ...TASK, chat_jid: 'other@x' })).status).toBe(400);
+    // 6 mutations so far (create, run, run→409, 3 invalid creates) → the shared limiter trips.
+    expect((await post({ ...TASK, schedule_value: '1000' })).status).toBe(429);
+  });
+
+  it('caps active tasks and refuses task mutations in read-only mode', async () => {
+    const { runtime } = fakeRuntime();
+    const store = fakeStore(root);
+    for (let i = 0; i < 100; i++) {
+      store.createTask({
+        id: `task-${i}`,
+        group_folder: 'main',
+        chat_jid: 'main@x',
+        prompt: 'p',
+        schedule_type: 'once',
+        schedule_value: '2030-01-01',
+        context_mode: 'isolated',
+        next_run: null,
+        status: 'active',
+        created_at: '',
+      });
+    }
+    await boot({ runtime, store });
+    const { auth } = await login();
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/tasks',
+          headers: { ...auth, ...H },
+          body: JSON.stringify(TASK),
+        })
+      ).status,
+    ).toBe(429);
+    await new Promise<void>((r) => server.close(() => r()));
+    await boot({ runtime, store: fakeStore(root), readOnly: true });
+    const ro = await login();
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/tasks',
+          headers: { ...ro.auth, ...H },
+          body: JSON.stringify(TASK),
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/tasks/task-1/run',
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/tasks',
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it('lists channels with wiring and pairing state and gates the QR', async () => {
+    const { runtime } = fakeRuntime();
+    const authDir = path.join(root, 'wa', 'auth');
+    fs.mkdirSync(authDir, { recursive: true });
+    fs.writeFileSync(path.join(root, 'wa', 'qr-data.txt'), 'example-qr');
+    const telegram = {
+      name: 'telegram',
+      isConnected: () => true,
+      ownsJid: (jid: string) => jid === 'main@x',
+    } as unknown as import('../types.js').Channel;
+    await boot({
+      runtime,
+      store: fakeStore(root),
+      channels: () => [telegram],
+      whatsappAuthDir: authDir,
+    });
+    const { auth } = await login();
+    const list = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/channels',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(list).toHaveLength(8);
+    expect(
+      list.find((c: { name: string }) => c.name === 'telegram'),
+    ).toMatchObject({ connected: true, groups: ['main'] });
+    expect(
+      list.find((c: { name: string }) => c.name === 'whatsapp').pairing,
+    ).toEqual({
+      needs_pairing: true,
+      qr_available: true,
+      pairing_code_available: false,
+    });
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/channels/whatsapp/qr',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(428);
+    const qr = await request({
+      method: 'POST',
+      path: '/api/v1/channels/whatsapp/qr',
+      headers: { ...auth, 'X-Confirm': 'whatsapp' },
+    });
+    expect(qr.status).toBe(200);
+    expect(JSON.parse(qr.text).qr).toBe('example-qr');
+    fs.writeFileSync(path.join(authDir, 'creds.json'), '{}');
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/channels/whatsapp/qr',
+          headers: { ...auth, 'X-Confirm': 'whatsapp' },
+        })
+      ).status,
+    ).toBe(409);
+    await new Promise<void>((r) => server.close(() => r()));
+    await boot({
+      runtime,
+      store: fakeStore(root),
+      channels: () => [],
+      whatsappAuthDir: authDir,
+      readOnly: true,
+    });
+    const ro = await login();
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/channels/whatsapp/qr',
+          headers: { ...ro.auth, 'X-Confirm': 'whatsapp' },
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it('browses and writes memory within the roots and policies', async () => {
+    const vault = path.join(root, 'vault');
+    fs.mkdirSync(path.join(vault, 'memory'), { recursive: true });
+    fs.mkdirSync(path.join(vault, 'Persona'), { recursive: true });
+    fs.writeFileSync(path.join(vault, 'CLAUDE.md'), '# core');
+    fs.writeFileSync(path.join(vault, 'memory', 'a.md'), '# a');
+    fs.writeFileSync(path.join(vault, 'Persona', 'p.md'), '# p');
+    fs.writeFileSync(path.join(root, 'groups', 'main', 'brand.md'), '# b');
+    const { runtime } = fakeRuntime();
+    await boot({ runtime, store: fakeStore(root), vaultPath: vault });
+    const { auth } = await login();
+    const tree = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/memory/tree',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(
+      tree.map((e: { root: string; path: string }) => `${e.root}:${e.path}`),
+    ).toEqual([
+      'groups:main/CLAUDE.md',
+      'groups:main/brand.md',
+      'vault:CLAUDE.md',
+      'vault:Persona/p.md',
+      'vault:memory/a.md',
+    ]);
+    expect(
+      JSON.parse(
+        (
+          await request({
+            method: 'GET',
+            path: '/api/v1/memory/file?root=vault&path=memory/a.md',
+            headers: auth,
+          })
+        ).text,
+      ),
+    ).toMatchObject({ content: '# a' });
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/memory/file?root=vault&path=../groups/main/brand.md',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/memory/file?root=vault&path=memory/a.txt',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    const put = (body: unknown, extra: Record<string, string> = {}) =>
+      request({
+        method: 'PUT',
+        path: '/api/v1/memory/file',
+        headers: { ...auth, ...H, ...extra },
+        body: JSON.stringify(body),
+      });
+    expect(
+      (await put({ root: 'vault', path: 'memory/a.md', content: '# a2' }))
+        .status,
+    ).toBe(428);
+    const ok = await put(
+      { root: 'vault', path: 'memory/a.md', content: '# a2' },
+      { 'X-Confirm-Edit': '1' },
+    );
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(ok.text)).toMatchObject({
+      bytes_before: 3,
+      bytes_after: 4,
+      index_not_updated: true,
+    });
+    expect(
+      (
+        await put(
+          { root: 'vault', path: 'CLAUDE.md', content: 'x' },
+          { 'X-Confirm-Edit': '1' },
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await put(
+          { root: 'vault', path: 'Persona/p.md', content: 'x' },
+          { 'X-Confirm-Edit': '1' },
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await put(
+          { root: 'groups', path: 'main/CLAUDE.md', content: 'x' },
+          { 'X-Confirm-Edit': '1' },
+        )
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await put(
+          { root: 'groups', path: 'main/missing.md', content: 'x' },
+          { 'X-Confirm-Edit': '1' },
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await put(
+          {
+            root: 'groups',
+            path: 'main/brand.md',
+            content: 'x'.repeat(1_200_000),
+          },
+          { 'X-Confirm-Edit': '1' },
+        )
+      ).status,
+    ).toBe(413);
+    let last = 0;
+    for (let i = 0; i < 12; i++)
+      last = (
+        await put(
+          { root: 'groups', path: 'main/brand.md', content: `# b${i}` },
+          { 'X-Confirm-Edit': '1' },
+        )
+      ).status;
+    expect(last).toBe(429);
+    await new Promise<void>((r) => server.close(() => r()));
+    await boot({
+      runtime,
+      store: fakeStore(root),
+      vaultPath: vault,
+      readOnly: true,
+    });
+    const ro = await login();
+    const roTree = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/memory/tree',
+          headers: ro.auth,
+        })
+      ).text,
+    );
+    expect(roTree.every((e: { root: string }) => e.root === 'groups')).toBe(
+      true,
+    );
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/memory/file?root=vault&path=memory/a.md',
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await request({
+          method: 'PUT',
+          path: '/api/v1/memory/file',
+          headers: { ...ro.auth, ...H, 'X-Confirm-Edit': '1' },
+          body: JSON.stringify({
+            root: 'groups',
+            path: 'main/brand.md',
+            content: 'x',
+          }),
+        })
+      ).status,
+    ).toBe(403);
   });
 });

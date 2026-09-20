@@ -17,16 +17,33 @@ import {
 import { logger } from '../logger.js';
 import { createRateLimiter } from '../rate-limiter.js';
 import { listAgents } from './api/agents.js';
+import { listChannels, whatsappQr } from './api/channels.js';
 import { abortChatTurn, startChatTurn } from './api/chat.js';
 import { listGroups, readClaudeMd, writeClaudeMd } from './api/groups.js';
 import { listMcps } from './api/mcps.js';
+import {
+  memoryTree,
+  readMemoryFile,
+  writeMemoryFile,
+  writePolicy,
+  type RootName,
+} from './api/memory.js';
 import {
   containersForFolder,
   killSession,
   listSessions,
 } from './api/sessions.js';
+import {
+  createTaskFromBody,
+  listTasks,
+  removeTask,
+  runTaskNow,
+  TASK_ID_RE,
+  updateTaskFromBody,
+} from './api/tasks.js';
 import { listWardens, setWardenEnabled } from './api/wardens.js';
 import type { WebTurnDeps } from '../web-turn.js';
+import type { Channel } from '../types.js';
 import type { ControlStore } from './store.js';
 import {
   clearSessionCookie,
@@ -61,6 +78,11 @@ export interface ControlDeps {
   /** Live host objects for chat/sessions/groups; absent → those routes answer 503. */
   runtime?: WebTurnDeps;
   store?: ControlStore;
+  channels?: () => Channel[];
+  /** Vault root for the Memory tab; null/absent → only the repo groups root. */
+  vaultPath?: string | null;
+  /** The WhatsApp adapter's auth dir (qr-data.txt lives in its parent). */
+  whatsappAuthDir?: string;
 }
 
 export interface ControlServerOptions {
@@ -83,6 +105,13 @@ const CLAUDE_MD_MAX_BYTES = 1024 * 1024;
 const CLAUDE_MD_BODY_CAP = Math.floor(CLAUDE_MD_MAX_BYTES * 1.5);
 const CLAUDE_MD_WRITES_PER_MIN = 6;
 const QUEUE_POLL_MS = 2000;
+const TASK_MUTATIONS_PER_MIN = 6;
+const TASK_CREATES_PER_SESSION = 50;
+const ACTIVE_TASK_CAP = 100;
+const SESSION_COUNTERS_MAX = 1000;
+const MEMORY_WRITES_PER_MIN = 12;
+const MEMORY_MAX_BYTES = 1024 * 1024;
+const MEMORY_BODY_CAP = Math.floor(MEMORY_MAX_BYTES * 1.5);
 
 export function readPackageVersion(root: string): string {
   try {
@@ -184,6 +213,19 @@ export function createControlServer(
   const staticHandler = opts.staticHandler ?? serveStatic;
   const loginLimiter = createRateLimiter(LOGIN_RATE_MAX, LOGIN_RATE_WINDOW_MS);
   const claudeMdLimiter = createRateLimiter(CLAUDE_MD_WRITES_PER_MIN, 60_000);
+  const taskLimiter = createRateLimiter(TASK_MUTATIONS_PER_MIN, 60_000);
+  const memoryLimiter = createRateLimiter(MEMORY_WRITES_PER_MIN, 60_000);
+  // Creates per session; cleared with the session store, bounded so it cannot grow forever.
+  const createCounts = new Map<string, number>();
+  const bumpCreateCount = (sid: string): boolean => {
+    const n = (createCounts.get(sid) ?? 0) + 1;
+    if (n > TASK_CREATES_PER_SESSION) return false;
+    if (!createCounts.has(sid) && createCounts.size >= SESSION_COUNTERS_MAX) {
+      createCounts.delete(createCounts.keys().next().value as string);
+    }
+    createCounts.set(sid, n);
+    return true;
+  };
   const router = createRouter();
   const agentsDir = path.join(deps.repoRoot, '.claude', 'agents');
   const wardensDir = path.join(deps.repoRoot, '.claude', 'wardens');
@@ -195,6 +237,7 @@ export function createControlServer(
     const state = credentials.current();
     if (state.rotated) {
       sessions.clear();
+      createCounts.clear();
       backoff.reset();
       logger.warn(
         { event: 'control_ui_credential_rotated' },
@@ -308,6 +351,7 @@ export function createControlServer(
       'Control UI sessions revoked',
     );
     sessions.clear();
+    createCounts.clear();
     ctx.res.setHeader('Set-Cookie', clearSessionCookie(isTls(ctx.req)));
     ctx.res.writeHead(204);
     ctx.res.end();
@@ -531,6 +575,255 @@ export function createControlServer(
     { maxBody: CLAUDE_MD_BODY_CAP },
   );
 
+  // ── Phase 3: tasks, channels, memory ──
+  const sid = (ctx: RequestContext) => ctx.session?.shortId ?? ctx.remoteAddr;
+
+  router.add('GET', '/api/v1/tasks', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    writeJson(ctx.res, 200, listTasks(l.store));
+  });
+  router.add('POST', '/api/v1/tasks', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    if (taskLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many task changes' });
+    if (
+      l.store.getAllTasks().filter((t) => t.status === 'active').length >=
+      ACTIVE_TASK_CAP
+    ) {
+      return writeJson(ctx.res, 429, { error: 'too many active tasks' });
+    }
+    if (!bumpCreateCount(sid(ctx)))
+      return writeJson(ctx.res, 429, {
+        error: 'task creation limit reached for this session',
+      });
+    const r = createTaskFromBody(l.store, l.runtime, ctx.body, now());
+    if (!r.ok) return writeJson(ctx.res, r.status, { error: r.error });
+    logger.warn(
+      {
+        event: 'control_ui_task_create',
+        taskId: r.task.id,
+        folder: r.task.group_folder,
+        chat_jid: r.task.chat_jid,
+        schedule_type: r.task.schedule_type,
+        promptHash: crypto
+          .createHash('sha256')
+          .update(r.task.prompt)
+          .digest('hex')
+          .slice(0, 12),
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI created a scheduled task',
+    );
+    hub.broadcast('task', { id: r.task.id, action: 'created' });
+    writeJson(ctx.res, 201, r.task);
+  });
+  router.add('PATCH', '/api/v1/tasks/:id', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    if (!TASK_ID_RE.test(ctx.params.id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    const before = l.store.getTaskById(ctx.params.id);
+    const r = updateTaskFromBody(l.store, ctx.params.id, ctx.body, now());
+    if (!r.ok) return writeJson(ctx.res, r.status, { error: r.error });
+    logger.info(
+      {
+        event: 'control_ui_task_update',
+        taskId: r.task.id,
+        from: before && {
+          status: before.status,
+          schedule: `${before.schedule_type} ${before.schedule_value}`,
+        },
+        to: {
+          status: r.task.status,
+          schedule: `${r.task.schedule_type} ${r.task.schedule_value}`,
+        },
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI updated a scheduled task',
+    );
+    hub.broadcast('task', { id: r.task.id, action: 'updated' });
+    writeJson(ctx.res, 200, r.task);
+  });
+  router.add('POST', '/api/v1/tasks/:id/run', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    if (!TASK_ID_RE.test(ctx.params.id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    if (taskLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many task changes' });
+    const r = runTaskNow(l.store, ctx.params.id, now());
+    if (!r.ok) return writeJson(ctx.res, r.status, { error: r.error });
+    logger.warn(
+      {
+        event: 'control_ui_task_run',
+        taskId: ctx.params.id,
+        chat_jid: r.chat_jid,
+        promptHash: r.promptHash,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI queued a task to run now',
+    );
+    hub.broadcast('task', { id: ctx.params.id, action: 'run' });
+    writeJson(ctx.res, 200, { next_run: r.next_run });
+  });
+  router.add('DELETE', '/api/v1/tasks/:id', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    const id = ctx.params.id;
+    if (!TASK_ID_RE.test(id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    if (header(ctx.req, 'x-confirm') !== id)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (!removeTask(l.store, id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    logger.warn(
+      {
+        event: 'control_ui_task_delete',
+        taskId: id,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI deleted a scheduled task',
+    );
+    hub.broadcast('task', { id, action: 'deleted' });
+    ctx.res.writeHead(204);
+    ctx.res.end();
+  });
+  router.add('GET', '/api/v1/tasks/:id/runs', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    if (!TASK_ID_RE.test(ctx.params.id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    const limit = Math.min(
+      200,
+      Math.max(
+        1,
+        parseInt(ctx.url.searchParams.get('limit') ?? '50', 10) || 50,
+      ),
+    );
+    writeJson(ctx.res, 200, l.store.getTaskRunLogs(ctx.params.id, limit));
+  });
+
+  router.add('GET', '/api/v1/channels', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    writeJson(
+      ctx.res,
+      200,
+      listChannels({
+        repoRoot: deps.repoRoot,
+        envHas: deps.envHas,
+        channels: deps.channels ?? (() => []),
+        registeredGroups: l.runtime.registeredGroups,
+        whatsappAuthDir:
+          deps.whatsappAuthDir ?? path.join(deps.repoRoot, 'store', 'auth'),
+      }),
+    );
+  });
+  // Credential issuance: a mutation (read-only refuses it), typed confirmation, audited.
+  router.add('POST', '/api/v1/channels/whatsapp/qr', async (ctx) => {
+    if (header(ctx.req, 'x-confirm') !== 'whatsapp')
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    const r = await whatsappQr(
+      deps.whatsappAuthDir ?? path.join(deps.repoRoot, 'store', 'auth'),
+    );
+    logger.warn(
+      {
+        event: 'control_ui_whatsapp_qr',
+        served: 'qr' in r,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI WhatsApp pairing QR requested',
+    );
+    if ('status' in r)
+      return writeJson(ctx.res, r.status, {
+        error: r.status === 409 ? 'already paired' : 'no pairing QR available',
+      });
+    writeJson(ctx.res, 200, r);
+  });
+
+  const memoryRoots = () => ({
+    vault: deps.readOnly ? null : (deps.vaultPath ?? null),
+    groups: path.join(deps.repoRoot, 'groups'),
+  });
+  const rootParam = (v: string | null): RootName | null =>
+    v === 'vault' || v === 'groups' ? v : null;
+  router.add('GET', '/api/v1/memory/tree', (ctx) =>
+    writeJson(ctx.res, 200, memoryTree(memoryRoots())),
+  );
+  router.add('GET', '/api/v1/memory/file', (ctx) => {
+    const root = rootParam(ctx.url.searchParams.get('root'));
+    const rel = ctx.url.searchParams.get('path') ?? '';
+    const doc = root ? readMemoryFile(memoryRoots(), root, rel) : null;
+    if (!doc) return writeJson(ctx.res, 404, { error: 'not found' });
+    logger.info(
+      {
+        event: 'control_ui_memory_read',
+        root,
+        path: rel,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI read a memory file',
+    );
+    writeJson(ctx.res, 200, doc);
+  });
+  router.add(
+    'PUT',
+    '/api/v1/memory/file',
+    (ctx) => {
+      const b = (ctx.body ?? {}) as {
+        root?: unknown;
+        path?: unknown;
+        content?: unknown;
+      };
+      const root = rootParam(typeof b.root === 'string' ? b.root : null);
+      const rel = typeof b.path === 'string' ? b.path : '';
+      if (!root || !rel)
+        return writeJson(ctx.res, 400, { error: 'root and path are required' });
+      if (header(ctx.req, 'x-confirm-edit') !== '1')
+        return writeJson(ctx.res, 428, { error: 'confirmation required' });
+      const policy = writePolicy(root, rel);
+      if (policy === 'read_only')
+        return writeJson(ctx.res, 403, {
+          error: 'read-only from the dashboard',
+        });
+      if (policy === 'use_groups_route') {
+        return writeJson(ctx.res, 409, {
+          error: `use /api/v1/groups/${rel.split('/')[0]}/claude-md`,
+        });
+      }
+      if (typeof b.content !== 'string')
+        return writeJson(ctx.res, 400, { error: 'content must be a string' });
+      if (Buffer.byteLength(b.content) > MEMORY_MAX_BYTES)
+        return writeJson(ctx.res, 413, { error: 'payload too large' });
+      if (memoryLimiter.isRateLimited(sid(ctx), now()))
+        return writeJson(ctx.res, 429, { error: 'too many writes' });
+      const result = writeMemoryFile(memoryRoots(), root, rel, b.content);
+      if (!result) return writeJson(ctx.res, 404, { error: 'not found' });
+      logger.warn(
+        {
+          event: 'control_ui_memory_write',
+          root,
+          path: rel,
+          ...result,
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI wrote a memory file',
+      );
+      hub.broadcast('memory', { root, path: rel });
+      writeJson(ctx.res, 200, result);
+    },
+    { maxBody: MEMORY_BODY_CAP },
+  );
+
   // Poll-and-diff: dashboards see container state change within one tick.
   let lastQueueJson = '';
   const queuePoll = setInterval(() => {
@@ -632,6 +925,8 @@ export function createControlServer(
     clearInterval(queuePoll);
     loginLimiter.dispose();
     claudeMdLimiter.dispose();
+    taskLimiter.dispose();
+    memoryLimiter.dispose();
     hub.close();
   });
   return server;

@@ -44,8 +44,13 @@ Four boundaries, all named because the design is only as strong as the weakest:
 5. **Container → host → browser.** Containers write into host state over IPC —
    `sessions.metadata_json`, run logs, memory files — and the dashboard reads
    that state back. Everything on this path is container-authored: it is
-   projected to typed fields (`metadata` → finite numbers under known keys)
-   or rendered as text nodes, never forwarded verbatim as objects.
+   projected to typed fields (`metadata` → finite numbers under known keys),
+   truncated (run-log text to 4 KB per row) or rendered as text nodes, never
+   forwarded verbatim as objects.
+6. **Dashboard → scheduler → channel → recipients.** A scheduled task's output
+   is sent to a real chat destination. The destination `chat_jid` is chosen
+   explicitly by the operator, validated against the task's group, shown in
+   the form and carried in the audit line — never inferred.
 
 From Phase 2 on a session holder can write agent instruction files, toggle the
 review gates of an autonomous pipeline, and stop containers — the session's
@@ -169,10 +174,13 @@ Odysseus keeps its OpenAI framing on top and its tests must pass unchanged.
   agent that holds rw vault and project mounts and is therefore a superset of
   any dashboard file write. `/me` reports `read_only: true`, the banner reads
   "read-only: the assistant cannot be driven from this dashboard", and the UI
-  hides every write control including the chat composer. Recommended for a
-  phone-only deployment. A per-session capability (view vs control sessions)
-  that would allow this without an env flag is a recorded follow-up, not in
-  scope.
+  hides every write control including the chat composer. Read-only also
+  **excludes the vault** from the Memory tab (only the repo `groups/` root is
+  listed and readable) and refuses the WhatsApp pairing QR — the phone
+  deployment gets neither the personal corpus nor a credential. Recommended
+  for a phone-only deployment. A per-session capability (view vs control
+  sessions) that would allow this without an env flag is a recorded
+  follow-up, not in scope.
 - **What needs no session:** `GET /` and static assets, `manifest.webmanifest`,
   `sw.js`, `POST /auth/login`. Everything under `/api/` is 401 without a valid
   session. Method gate before auth (404/405 first) so route presence never
@@ -217,9 +225,9 @@ security control — the same session can set it.
 | Groups | `GET groups`; `GET groups/:folder/claude-md`; `PUT groups/:folder/claude-md { content }` (1 MB cap, collision-proof `.bak-<ts>-<rand>` with the newest 10 retained, 6/min per session, `X-Confirm: <folder>` — instruction files get their own typed confirmation, distinct from memory files) |
 | Sessions | `GET sessions` (rows with projected `metadata` and the containers per folder); `POST sessions/:folder/kill` (`X-Confirm: <folder>`, folder must be a registered group) → stop every active container serving that folder (one container serves a jid regardless of backend; several jids can share a folder), then orphan every backend's row with reason `control-ui kill`; the dialog lists the containers first |
 | Chat | `POST chat/turns { message, history? }` → SSE stream of `RuntimeEvent`s plus a first `turn_started`; audited with a prompt hash; `DELETE chat/turns/:id` → `queue.closeStdin(mainJid)` (graceful, never `docker kill`) and only for turns the dashboard started — the id is not a secret, ownership is the control. Only final assistant text is replayed as history; it is cleared on logout/401 |
-| Tasks | `GET tasks`; `POST tasks`; `PATCH tasks/:id`; `POST tasks/:id/run` (sets `next_run = now`; the scheduler polls every 60 s — the UI says so); `DELETE tasks/:id` (`X-Confirm`); `GET tasks/:id/runs?limit=50` |
-| Channels | `GET channels`; `GET channels/whatsapp/qr` only while `store/auth/creds.json` is absent |
-| Memory | `GET memory/tree`; `GET memory/file?path=`; `PUT memory/file { path, content }` (`X-Confirm-Edit: 1`, path confined to allowed roots, `.bak-<ts>`) |
+| Tasks | `GET tasks`; `POST tasks` (explicit `chat_jid` validated for the folder; interval ≥ 60 s; 6/min per session; 50 per session); `PATCH tasks/:id`; `POST tasks/:id/run` (sets `next_run = now`; the scheduler polls every 60 s — the UI says so; shares the limiter; audited with a prompt hash); `DELETE tasks/:id` (`X-Confirm`; exposes the pre-existing hard delete, see `docs/decisions/no-db-deletion.md` follow-up); `GET tasks/:id/runs?limit=50` (text truncated to 4 KB) |
+| Channels | `GET channels` (adapters, configured/connected, wired groups, WhatsApp pairing state from the adapter's own `WHATSAPP_AUTH_DIR` resolution); `POST channels/whatsapp/qr` — a mutation (`X-Confirm: whatsapp`, audited, refused in read-only), served only while unpaired (409 once paired); the UI names the revocation path (WhatsApp → Linked devices) |
+| Memory | `GET memory/tree` (roots `vault` and `groups`; vault omitted in read-only; symlinks skipped); `GET memory/file?root=&path=` (realpath-confined, `.md` only, audited); `PUT memory/file { root, path, content }` (`X-Confirm-Edit: 1`, existing files only, 1 MB, `.bak-<ts>-<rand>` newest 10, 12/min per session). Vault `Persona/`, `Atoms/` and the root `CLAUDE.md` are read-only from the dashboard; `groups/**/CLAUDE.md` is refused here in favour of the Groups route; vault writes report `index_not_updated: true` |
 | Containers | `GET containers`; `POST containers/:name/stop` (`X-Confirm`); `POST containers/:name/start`; `POST containers/rebuild` (one at a time, `build` SSE events) |
 | Logs | `GET logs?source=&level=&q=&lines=`; `GET logs/export`; follow via `log` SSE events |
 | System | `GET system` → uptime, load, RAM, disk (`used_pct ≥ 85` raises `alert`), `docker system df` |

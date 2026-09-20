@@ -1,5 +1,5 @@
-const CACHE = 'deus-control-v2';
-const SHELL = ['/', '/app.css', '/app.js', '/dom.js', '/ui.js', '/views/chat.js', '/views/agents.js', '/views/wardens.js', '/views/mcps.js', '/views/sessions.js', '/views/groups.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png'];
+const CACHE = 'deus-control-v3';
+const SHELL = ['/', '/app.css', '/app.js', '/dom.js', '/ui.js', '/views/chat.js', '/views/agents.js', '/views/wardens.js', '/views/mcps.js', '/views/sessions.js', '/views/groups.js', '/views/tasks.js', '/views/channels.js', '/views/memory.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

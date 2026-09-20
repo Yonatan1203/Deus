@@ -30,6 +30,11 @@ for (const [name, viewport] of viewports) {
       await page.fill('.composer-input', 'hello');
       await page.click('.composer-actions .primary');
       await page.waitForSelector('.msg.assistant:not(.live)', { timeout: 20_000 });
+    } else if (tab === 'memory') {
+      // Open the first file so the viewer is part of the capture.
+      await page.waitForSelector('#view .memory-item', { timeout: 10_000 });
+      await page.click('#view .memory-item');
+      await page.waitForSelector('#view .memory-content', { timeout: 10_000 });
     } else {
       await page.waitForSelector('#view .card, #view table, #view .row', { timeout: 10_000 });
     }

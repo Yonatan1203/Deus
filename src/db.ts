@@ -704,6 +704,17 @@ export function updateTaskAfterRun(
   ).run(nextRun, now, lastResult, nextRun, id);
 }
 
+/** Newest-first run logs for the control UI; agent-written text is truncated per row. */
+export function getTaskRunLogs(taskId: string, limit = 50): TaskRunLog[] {
+  return db
+    .prepare(
+      `SELECT task_id, run_at, duration_ms, status,
+              substr(result, 1, 4096) AS result, substr(error, 1, 4096) AS error
+       FROM task_run_logs WHERE task_id = ? ORDER BY run_at DESC, id DESC LIMIT ?`,
+    )
+    .all(taskId, limit) as TaskRunLog[];
+}
+
 export function logTaskRun(log: TaskRunLog): void {
   db.prepare(
     `

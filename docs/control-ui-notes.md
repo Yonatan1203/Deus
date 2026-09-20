@@ -219,6 +219,38 @@ Deviations logged during Phase 2:
 - `Deviation:` a stale fixture process from a failed capture attempt held the capture port and served one misleading re-capture; the launcher script now kills by pid and the capture was repeated.
 - `Deviation:` Phase 2 lands as one commit, for the same gate-hashing reason as Phase 1.
 
+### Phase 3 — 2026-09-20 (Tasks, Channels, Memory)
+
+Environment: the built server started by a throwaway launcher with a fake
+runtime and a **synthetic** store — three placeholder tasks (one paused, one
+with two run logs), a fake connected `telegram` adapter, an unpaired WhatsApp
+auth dir with a fixture `qr-data.txt`, a temp vault and `groups/` with
+placeholder `.md` files, `assistantName: 'Deus'`. Predictions are the ones
+frozen in `docs/superpowers/plans/2026-09-20-control-ui-phase3.md`.
+
+| Check | Predicted | Observed | Disposition |
+|-------|-----------|----------|-------------|
+| Units (`src/control-ui`, `src/db`) | tasks/channels/memory + routes + reader green | 15 files / 134 tests; whole suite 134 files / 2246 tests; tsc 0; eslint 0 errors; prettier clean | PASS |
+| Tasks create | 201 with id pattern, explicit `chat_jid`, `next_run`≈now+60 s; bad cron 400; unregistered folder 404; wrong/missing jid 400; interval 1000 → 400; limiter → 429; 100 active → 429 | all as predicted (integration + unit); the create-count-per-session cap (50) is enforced in code but not driven to 51 in a test — the same `Map` is exercised at count 1 | PASS |
+| Tasks update | recompute; `1000` → 400 (floor on update); `completed` → 400; unknown → 404 | as predicted | PASS |
+| Run now | 200 `next_run = now`; paused → 409; audit with `promptHash` + `chat_jid`; shared limiter | as predicted; limiter trips on the 7th create-or-run | PASS |
+| Delete / runs | 428 → 204 → 404; runs newest first, text ≤ 4096 | as predicted (db unit asserts the 4096 truncation) | PASS |
+| Read-only | task mutations 403; QR 403; vault absent from the tree and 404 on read; memory writes 403 | all 403/404 as predicted | PASS |
+| Channels | 8 adapters; telegram connected + `groups:['main']`; WhatsApp pairing flags from the injected auth dir; QR: 428 without confirm, 200 with `X-Confirm: whatsapp` + audit, 409 once paired | as predicted after fix: first drive returned `ascii: null` (detached `generate` lost `this.error` and threw, swallowed to null — caught by verification-gate); now called through the module object, re-driven `ascii` is a multi-line block (17 lines) and the unit test requires >10 lines | PASS |
+| Memory | tree lists both roots, symlinks/dot-dirs skipped; reads confined (`../`, absolute, symlink, `.txt` → 404) and audited; writes: 428 without `X-Confirm-Edit`, 200 with backup + `index_not_updated` on vault, vault `CLAUDE.md`/`Persona/`/`Atoms/` → 403, `groups/**/CLAUDE.md` → 409, missing → 404, 1.2 MB → 413, 13th → 429; 12 writes keep 10 backups | as predicted | PASS |
+| **Visual** — `docs/control-ui/artifacts/phase3-{tasks,channels,memory}-{mobile,desktop}.png` | task rows with destination, schedule, status/result badges, Runs/Run now/Pause/Delete, a New task form; channel cards with connected/configured/wired-group badges and the confirmed pairing button; memory list + viewer with read-only markers | Tasks (mobile): three cards, `main → main@example.invalid · cron 0 9 * * 1-5`, `active`/`paused`, `last run ok`/`never ran`, ids, actions; Channels (desktop): 8 cards, telegram `connected` + `configured` + `main`/`ops`, whatsapp `needs pairing` + `QR available` + "Show pairing QR"; Memory (desktop): 8 entries with root chips and `read-only` markers, `groups/main/CLAUDE.md` opened with "Edit this file from the Groups tab." The nine tabs overflow the mobile bar and scroll (by design). PNGs checked for jids/phones/paths/instruction text: only `example.invalid` and placeholder copy. | PASS |
+
+Rotation runbook: rotating the password revokes sessions, **not** scheduled
+tasks — after a rotation, review `GET /api/v1/tasks` and the
+`control_ui_task_create` / `control_ui_task_run` audit lines.
+
+Deviations logged during Phase 3:
+- `Deviation:` the task rate limiter counts every attempt, including invalid ones (validation spam spends budget); the integration test was ordered accordingly.
+- `Deviation:` `cron-parser`'s `toISOString()` is nullable, so `resolveNextRun` treats a null as an invalid cron expression.
+- `Deviation:` the memory tree sorts by codepoint, not locale, so listings are identical across hosts.
+- `Deviation:` the screenshot script gained a memory-tab step (opens the first file) because the Memory view has no `.card`/`.row`/`table`.
+- `Deviation:` Phase 3 lands as one commit (gate hashing, as before).
+
 Deviations logged during Phase 1:
 - `Deviation:` `validate()` verifies the secret **before** touching `lastSeen` (threat-modeler round-2 note); the oracle has a case for it.
 - `Deviation:` `redeemTicket()` with a mismatched session id leaves the ticket intact (oracle's reading of the contract; safer for the legitimate client).
