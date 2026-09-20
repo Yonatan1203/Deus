@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-08-15" # reviewed against LIA-491 (src/container-runner.ts naming)
+last_verified: "2026-09-20" # auto-bump @1789896685 | 2026-08-15: reviewed against LIA-491 (src/container-runner.ts naming)
 governs:
   - src/container-runner.ts
   - src/message-orchestrator.ts
