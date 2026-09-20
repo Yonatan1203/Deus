@@ -198,8 +198,9 @@ the LLM, `CLAUDE.md` and memory files from agents. Two architectural controls:
 
 1. **Headers on every response** (static, JSON, SSE):
    `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src
-   'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self';
-   base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+   'self'; font-src 'self'; img-src 'self' data:; connect-src 'self';
+   manifest-src 'self'; base-uri 'none'; form-action 'none';
+   frame-ancestors 'none'` (`font-src` covers the self-hosted Geist files),
    `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
    `X-Content-Type-Options: nosniff`. No inline `<script>` or `<style>` exists
    anywhere in `web/control/` — stated invariant, checked by the CSP itself.

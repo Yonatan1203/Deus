@@ -259,3 +259,43 @@ Deviations logged during Phase 1:
 - `Deviation:` the oracle-author disclosed it glimpsed part of the plan's implementation sketch mid-task before writing; every assertion traces to the Interfaces contract and the spec, and it was run red before `auth.ts` existed.
 - `Deviation:` the 413 path drains the request (`req.resume()` + `Connection: close`) instead of destroying the socket, so the client actually receives the 413.
 - `Deviation:` Phase 1 lands as one commit rather than one per task — the commit gates hash the whole staged diff, so per-task commits would triple the review rounds without adding coverage.
+
+## Visual redesign (v2) — verification record
+
+Trigger: the user judged the Phase 1–3 look "average and very AI created" and
+asked for a proper design workflow; they then delegated the direction choice
+("add the fixes and keep on working until you have ready product"). Plan:
+`docs/superpowers/plans/2026-09-20-control-ui-redesign.md` (plan-reviewer
+SHIP, three warnings folded in).
+
+Direction — **"Console": chroma only for meaning.** Neutral near-black
+surfaces (`--bg #0a0a0b`, `--surface #131316`, hairline `--line`), no brand
+hue; the primary action is inverse-tone (`#ededef` on black); state colours
+(ok/warn/bad/info) are the only hue and every badge carries its label in
+text, so colour is never the sole signal. Type: self-hosted Geist (UI) and
+Geist Mono (ids, times, counts, eyebrow labels) — OFL 1.1, latin subsets,
+52 KB total, `web/control/fonts/OFL.txt`; no CDN, CSP gains only
+`font-src 'self'`. Layout: desktop rail (232 px) with *Operate* / *Configure*
+groups and a status strip (live dot = SSE state, version, mode); mobile
+bottom bar with 4 tabs + **More** (a `<dialog>` sheet), so the bar never
+exceeds five targets. Chat is a document (mono author line, no bubbles,
+tool calls as collapsible rows with a left rule). Icons are stroked SVGs
+built with `createElementNS` from a static path table (`web/control/icons.js`)
+— no markup strings anywhere; the `h()` text-node rule is unchanged. The
+installed-app icon and manifest colours use the same tokens.
+
+| Check | Predicted | Observed | Disposition |
+|-------|-----------|----------|-------------|
+| Render boundary | no `innerHTML`/`outerHTML`/`insertAdjacentHTML` in `web/control/`; icons via `createElementNS` only | `grep -rn "innerHTML\|outerHTML\|insertAdjacentHTML" web/control/` → none; `icons.js` uses `createElementNS` + `setAttribute` only | PASS |
+| CSP / MIME | `font-src 'self'` added, nothing else; `.woff2` served as `font/woff2` | header on `/` reads `default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; …`; `GET /fonts/Geist-latin.woff2` → 200 `font/woff2`; `static.test.ts` asserts both | PASS |
+| Contrast (WCAG, computed) | text ≥ 4.5:1, state dots ≥ 3:1, both schemes | dark: text/surface 15.9, muted/surface 5.6, muted/surface-2 5.2, error text 5.9, link 7.7, dots 5.9–10.5; light: text/surface 18.9, muted/surface 6.3, muted/surface-2 5.6, error 5.2, link 4.8, dots 3.5–5.2. `--faint` (3.0/3.2) is used for placeholders and the nav-group eyebrows only | PASS |
+| Mobile bar | exactly 5 targets (4 tabs + More); sheet lists the other 5 views | capture `v2-more-mobile.png`: Wardens/MCPs/Groups/Channels/Memory + status + Sign out; no horizontal page scroll at 390 px | PASS |
+| Selector stability | existing capture selectors unchanged | `.msg.assistant:not(.live)`, `.composer-input`, `.composer-actions .primary`, `.card`, `table`, `.row`, `.memory-item`, `.memory-content` all still match; the script gained `login`, `more` and a driven QR step | PASS |
+| Pairing QR in the UI | button → typed confirm → rendered QR block | first run: request served but the panel was empty — `queue`/`refresh` events rebuild the Channels grid and the reply landed in a detached card (a pre-existing Phase 3 bug the earlier capture never exercised). Fixed: the served QR is kept in view state and the grid is rebuilt from state after the reply. `v2-channels-mobile.png` shows the block | PASS |
+| **Visual** — `docs/control-ui/artifacts/v2-{login,chat,sessions,tasks,agents,wardens,mcps,groups,channels,memory}-{mobile,desktop}.png`, `v2-more-mobile.png` | designed, not templated: no bordered-card grid of identical boxes, hairline lists, mono metadata, one primary action per screen | reviewed each PNG at 390 and 1280: rail groups + active bar, page eyebrow/title/count, chat document with `YOU`/`DEUS` author lines and circular send, task rows with wrapped actions, wardens as a hairline list with switches, MCP tables with dot badges, memory list with lock/file icons and mono paths. Only `Deus`, `example.invalid` jids and fixture copy visible — no instance names, host paths or instruction text | PASS |
+
+Deviations logged during the redesign:
+- `Deviation:` the More sheet's first capture was blank — taken mid `sheet-in` animation; the script now awaits `getAnimations()` before shooting.
+- `Deviation:` the Channels QR panel was rebuilt away by the queue/refresh redraw (above); fixed in `views/channels.js`, not a capture-only workaround.
+- `Deviation:` the v2 fixture copies the repo's own `.claude/agents` and `.claude/wardens` (public, generic) and symlinks `packages`/`container` so Agents/Wardens/MCPs are populated without instance content.
+- `Deviation:` `scripts/control-ui-screenshot.mjs` prints page errors to stderr so a broken view fails loudly instead of timing out silently.

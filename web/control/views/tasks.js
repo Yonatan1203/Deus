@@ -1,5 +1,7 @@
 import { h, clear, badge } from '../dom.js';
 import { confirmTyped, fmtTime, toast } from '../ui.js';
+import { icon } from '../icons.js';
+import { header } from '../app.js';
 
 const HINTS = {
   cron: 'cron expression, e.g. 0 9 * * 1-5 (host timezone)',
@@ -24,7 +26,7 @@ export async function render(root, api, bus, me) {
   const holder = h('div', {});
   const formHolder = h('div', {});
   clear(root);
-  root.append(h('h1', {}, 'Scheduled tasks'), formHolder, holder);
+  root.append(header('Tasks', { eyebrow: 'Operate' }), formHolder, holder);
 
   let groups = [];
   try { groups = await api.get('/api/v1/groups'); } catch { groups = []; }
@@ -56,7 +58,7 @@ export async function render(root, api, bus, me) {
       h('div', { class: 'form-grid' },
         h('label', {}, 'Group', folderSel), h('label', {}, 'Send output to', destSel),
         h('label', { class: 'wide' }, 'Prompt', prompt),
-        h('label', {}, 'Schedule', type), h('label', {}, 'Value', value),
+        h('label', {}, 'Schedule', type), h('label', {}, 'Value', value, h('span', { class: 'hint' }, 'see placeholder for the format')),
         h('label', {}, 'Context', context), h('label', {}, 'Backend', backend)),
       h('div', { class: 'editor-actions' }, submit));
   }
@@ -64,7 +66,7 @@ export async function render(root, api, bus, me) {
   function row(t) {
     const runsHolder = h('div', { class: 'runs', hidden: true });
     const actions = readOnly ? [] : [
-      t.status === 'active' ? h('button', { type: 'button', class: 'small', onclick: () => act(() => api.post(`/api/v1/tasks/${encodeURIComponent(t.id)}/run`), 'Queued to run within a minute') }, 'Run now') : null,
+      t.status === 'active' ? h('button', { type: 'button', class: 'small', onclick: () => act(() => api.post(`/api/v1/tasks/${encodeURIComponent(t.id)}/run`), 'Queued to run within a minute') }, icon('play', { size: 14 }), 'Run now') : null,
       h('button', { type: 'button', class: 'small', onclick: () => act(() => api.patch(`/api/v1/tasks/${encodeURIComponent(t.id)}`, { status: t.status === 'paused' ? 'active' : 'paused' }), t.status === 'paused' ? 'Resumed' : 'Paused') }, t.status === 'paused' ? 'Resume' : 'Pause'),
       h('button', { type: 'button', class: 'small danger', onclick: async () => {
         const ok = await confirmTyped(t.id, `Delete task ${t.id}? Its run history goes with it.`);
@@ -100,7 +102,7 @@ export async function render(root, api, bus, me) {
     const tasks = await api.get('/api/v1/tasks');
     clear(holder);
     if (tasks.length === 0) holder.append(h('div', { class: 'empty' }, 'No scheduled tasks.'));
-    else holder.append(...tasks.map(row));
+    else holder.append(h('div', { class: 'list' }, ...tasks.map(row)));
   }
   clear(formHolder);
   if (!readOnly && byFolder.size) formHolder.append(newTaskForm());

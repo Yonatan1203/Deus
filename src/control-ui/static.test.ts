@@ -23,6 +23,7 @@ describe('control-ui static', () => {
     const csp = SECURITY_HEADERS['Content-Security-Policy'];
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("font-src 'self'"); // self-hosted Geist
     expect(csp).not.toContain('unsafe-inline');
     expect(SECURITY_HEADERS['X-Frame-Options']).toBe('DENY');
     expect(SECURITY_HEADERS['Referrer-Policy']).toBe('no-referrer');

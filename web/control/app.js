@@ -1,4 +1,5 @@
 import { h, clear } from './dom.js';
+import { icon } from './icons.js';
 import * as chat from './views/chat.js';
 import * as agents from './views/agents.js';
 import * as wardens from './views/wardens.js';
@@ -11,18 +12,31 @@ import * as memory from './views/memory.js';
 
 const TOKEN_KEY = 'deus_ctl_token';
 const CHAT_KEY = 'deus_ctl_chat';
+// Rail groups on desktop; on mobile the first four are tabs and the rest sit
+// behind "More" so the bottom bar never exceeds five targets.
 const VIEWS = {
-  chat: { title: 'Chat', icon: '◉', render: chat.render },
-  agents: { title: 'Agents', icon: '◈', render: agents.render },
-  wardens: { title: 'Wardens', icon: '◎', render: wardens.render },
-  mcps: { title: 'MCPs', icon: '▦', render: mcps.render },
-  sessions: { title: 'Sessions', icon: '▤', render: sessions.render },
-  groups: { title: 'Groups', icon: '▣', render: groups.render },
-  tasks: { title: 'Tasks', icon: '◷', render: tasks.render },
-  channels: { title: 'Channels', icon: '⌁', render: channels.render },
-  memory: { title: 'Memory', icon: '▥', render: memory.render },
+  chat: { title: 'Chat', group: 'Operate', render: chat.render },
+  sessions: { title: 'Sessions', group: 'Operate', render: sessions.render },
+  tasks: { title: 'Tasks', group: 'Operate', render: tasks.render },
+  agents: { title: 'Agents', group: 'Configure', render: agents.render },
+  wardens: { title: 'Wardens', group: 'Configure', render: wardens.render },
+  mcps: { title: 'MCPs', group: 'Configure', render: mcps.render },
+  groups: { title: 'Groups', group: 'Configure', render: groups.render },
+  channels: { title: 'Channels', group: 'Configure', render: channels.render },
+  memory: { title: 'Memory', group: 'Configure', render: memory.render },
 };
+const MOBILE_PRIMARY = ['chat', 'sessions', 'tasks', 'agents'];
 const DEFAULT_VIEW = 'chat';
+
+// Page header shared by every view: eyebrow (group), title, optional count
+// and right-aligned actions.
+export function header(title, { eyebrow, count, actions = [] } = {}) {
+  return h('div', { class: 'page-head' },
+    h('div', { class: 'titles' },
+      eyebrow ? h('span', { class: 'eyebrow' }, eyebrow) : null,
+      h('h1', {}, title, count != null ? h('span', { class: 'count' }, String(count)) : null)),
+    actions.length ? h('div', { class: 'actions' }, ...actions) : null);
+}
 const $ = (id) => document.getElementById(id);
 
 function token() {
@@ -130,8 +144,10 @@ async function connectEvents() {
   source.onopen = () => {
     clearInterval(pollTimer);
     pollTimer = null;
+    $('live-dot').className = 'dot live';
   };
   source.onerror = () => {
+    $('live-dot').className = 'dot warn';
     if (!pollTimer) pollTimer = setInterval(() => bus.dispatchEvent(new CustomEvent('refresh')), 10_000);
   };
   for (const type of ['warden', 'session', 'group', 'queue', 'task', 'memory']) {
@@ -151,20 +167,37 @@ function currentView() {
   return VIEWS[key] ? key : DEFAULT_VIEW;
 }
 
-function navItems() {
-  const key = currentView();
-  return Object.entries(VIEWS).map(([k, v]) =>
-    h('a', { href: `#/${k}`, class: k === key ? 'active' : '', 'aria-current': k === key ? 'page' : 'false' },
-      h('span', { class: 'icon', 'aria-hidden': 'true' }, v.icon),
-      h('span', {}, v.title)));
+function link(k) {
+  const active = k === currentView();
+  return h('a', { href: `#/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : 'false' },
+    icon(k, { size: 18 }), h('span', {}, VIEWS[k].title));
+}
+
+function drawNav() {
+  const nav = $('nav');
+  clear(nav);
+  for (const group of ['Operate', 'Configure']) {
+    nav.append(h('div', { class: 'nav-group' },
+      h('span', { class: 'eyebrow' }, group),
+      ...Object.keys(VIEWS).filter((k) => VIEWS[k].group === group).map(link)));
+  }
+  const rest = Object.keys(VIEWS).filter((k) => !MOBILE_PRIMARY.includes(k));
+  const tabbar = $('tabbar');
+  clear(tabbar);
+  const moreActive = rest.includes(currentView());
+  tabbar.append(
+    ...MOBILE_PRIMARY.map(link),
+    h('button', { type: 'button', class: moreActive ? 'active' : '', 'aria-haspopup': 'dialog', onclick: () => $('more').showModal() },
+      icon('more', { size: 18 }), h('span', {}, 'More')));
+  const list = $('more-list');
+  clear(list);
+  list.append(h('span', { class: 'eyebrow' }, 'Configure'), ...rest.map(link));
 }
 
 async function route() {
-  for (const id of ['nav', 'tabbar']) {
-    const el = $(id);
-    clear(el);
-    el.append(...navItems());
-  }
+  drawNav();
+  const more = $('more');
+  if (more.open) more.close();
   const root = $('view');
   root.dataset.view = currentView();
   clear(root);
@@ -189,6 +222,8 @@ async function boot() {
   $('brand-name').textContent = `${me.assistant} · Control`;
   document.title = `${me.assistant} Control`;
   $('mode-pill').hidden = !me.read_only;
+  $('status-text').textContent = `v${me.version || '?'}${me.read_only ? ' · read-only' : ''}`;
+  $('more-status').textContent = $('status-text').textContent;
   $('login').hidden = true;
   $('app').hidden = false;
   await connectEvents();
@@ -211,12 +246,16 @@ $('login-form').addEventListener('submit', async (e) => {
   }
 });
 
-$('logout').addEventListener('click', async () => {
+async function logout() {
   await api.post('/auth/logout').catch(() => {});
   forgetSession();
   if (source) source.close();
+  if ($('more').open) $('more').close();
   showLogin();
-});
+}
+$('logout').addEventListener('click', logout);
+$('more-logout').addEventListener('click', logout);
+$('more').addEventListener('click', (e) => { if (e.target === $('more')) $('more').close(); });
 
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => {

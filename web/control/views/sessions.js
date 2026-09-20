@@ -1,5 +1,6 @@
 import { h, clear, badge } from '../dom.js';
 import { confirmTyped, fmtTime, toast } from '../ui.js';
+import { header } from '../app.js';
 
 function state(row) {
   if (row.active_container) return badge(`container: ${row.active_container.name}`, 'ok');
@@ -19,7 +20,7 @@ export async function render(root, api, bus, me) {
   const readOnly = Boolean(me && me.read_only);
   const holder = h('div', {});
   clear(root);
-  root.append(h('h1', {}, 'Sessions'), holder);
+  root.append(header('Sessions', { eyebrow: 'Operate' }), holder);
 
   async function draw() {
     const data = await api.get('/api/v1/sessions');

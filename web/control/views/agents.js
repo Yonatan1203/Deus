@@ -1,4 +1,5 @@
 import { h, clear, badge } from '../dom.js';
+import { header } from '../app.js';
 
 const PREVIEW = 220;
 
@@ -30,6 +31,6 @@ export async function render(root, api) {
     else grid.append(...shown.map(card));
   };
   const search = h('input', { type: 'search', placeholder: 'Filter agents…', 'aria-label': 'Filter agents', oninput: (e) => draw(e.target.value) });
-  root.append(h('h1', {}, `Agents (${list.length})`), h('div', { class: 'toolbar' }, search), grid);
+  root.append(header('Agents', { eyebrow: 'Configure', count: list.length }), h('div', { class: 'toolbar' }, search), grid);
   draw('');
 }

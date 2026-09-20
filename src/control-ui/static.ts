@@ -11,6 +11,7 @@ const TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
 };
 
 // Applied to EVERY response by server.ts. The app has no inline script or
@@ -18,7 +19,7 @@ const TYPES: Record<string, string> = {
 // as a text node, and the policy is the backstop if that rule is ever broken.
 export const SECURITY_HEADERS: Record<string, string> = {
   'Content-Security-Policy':
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+    "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; " +
     "connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; " +
     "frame-ancestors 'none'",
   'X-Frame-Options': 'DENY',

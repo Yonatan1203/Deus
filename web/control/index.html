@@ -4,18 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#0b0f14">
+  <meta name="theme-color" content="#0a0a0b">
   <title>Deus Control</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="preload" href="/fonts/Geist-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
   <div id="login" class="login" hidden>
     <form id="login-form" class="login-card" autocomplete="off">
-      <div class="brand"><span class="dot"></span><span>Deus Control</span></div>
-      <p class="muted">Local dashboard. Reached through your SSH tunnel.</p>
+      <div class="brand"><span class="mark"></span><span>Deus Control</span></div>
+      <p class="muted">Local dashboard, reached through your SSH tunnel.</p>
       <label>Password
         <input id="password" type="password" name="password" required autofocus autocomplete="current-password">
       </label>
@@ -24,17 +25,28 @@
     </form>
   </div>
   <div id="app" class="app" hidden>
-    <aside class="sidebar">
-      <div class="brand"><span class="dot"></span><span id="brand-name">Deus</span></div>
+    <aside class="rail">
+      <div class="brand"><span class="mark"></span><span id="brand-name">Deus</span></div>
       <nav id="nav" class="nav" aria-label="Sections"></nav>
-      <div class="sidebar-foot">
+      <div class="rail-foot">
+        <div class="status-line"><span id="live-dot" class="dot" aria-hidden="true"></span><span id="status-text">connecting</span></div>
         <span id="mode-pill" class="pill" hidden>read-only</span>
-        <button id="logout" class="ghost">Sign out</button>
+        <button id="logout" class="ghost small" type="button">Sign out</button>
       </div>
     </aside>
     <div id="banner" class="banner" role="status" hidden></div>
     <main id="view" class="view" tabindex="-1"></main>
     <nav id="tabbar" class="tabbar" aria-label="Sections"></nav>
+    <dialog id="more" class="sheet" aria-label="More sections">
+      <div class="sheet-body">
+        <div class="grip" aria-hidden="true"></div>
+        <div id="more-list"></div>
+        <div class="sheet-foot">
+          <span id="more-status" class="status-line"></span>
+          <button id="more-logout" class="ghost small" type="button">Sign out</button>
+        </div>
+      </div>
+    </dialog>
     <div id="toast" class="toast" role="status" hidden></div>
     <dialog id="confirm" class="confirm">
       <form method="dialog">

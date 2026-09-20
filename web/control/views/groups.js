@@ -1,12 +1,13 @@
 import { h, clear, badge } from '../dom.js';
 import { confirmTyped, toast } from '../ui.js';
+import { header } from '../app.js';
 
 export async function render(root, api, bus, me) {
   const readOnly = Boolean(me && me.read_only);
   const grid = h('div', { class: 'grid' });
   const editor = h('div', { class: 'editor', hidden: true });
   clear(root);
-  root.append(h('h1', {}, 'Groups'), grid, editor);
+  root.append(header('Groups', { eyebrow: 'Configure' }), grid, editor);
 
   async function openEditor(g) {
     clear(editor);

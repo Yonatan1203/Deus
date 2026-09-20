@@ -1,5 +1,7 @@
 import { h, clear } from '../dom.js';
 import { toast } from '../ui.js';
+import { icon } from '../icons.js';
+import { header } from '../app.js';
 
 export async function render(root, api, bus, me) {
   const readOnly = Boolean(me && me.read_only);
@@ -7,7 +9,7 @@ export async function render(root, api, bus, me) {
   const viewer = h('div', { class: 'memory-viewer' }, h('div', { class: 'empty' }, 'Pick a file.'));
   const filter = h('input', { type: 'search', placeholder: 'Filter files…', 'aria-label': 'Filter files' });
   clear(root);
-  root.append(h('h1', {}, 'Memory'), h('div', { class: 'memory' }, h('div', { class: 'memory-side' }, filter, list), viewer));
+  root.append(header('Memory', { eyebrow: 'Configure' }), h('div', { class: 'memory' }, h('div', { class: 'memory-side' }, filter, list), viewer));
 
   let entries = [];
   function drawList() {
@@ -16,8 +18,9 @@ export async function render(root, api, bus, me) {
     const shown = entries.filter((e) => !q || `${e.root}:${e.path}`.toLowerCase().includes(q));
     if (shown.length === 0) { list.append(h('div', { class: 'empty' }, 'No files.')); return; }
     for (const e of shown) {
-      list.append(h('button', { type: 'button', class: 'memory-item', onclick: () => open(e) },
-        h('span', { class: 'chip' }, e.root), h('span', { class: 'path' }, e.path), h('span', { class: 'muted' }, `${e.bytes} B${e.writable ? '' : ' · read-only'}`)));
+      const item = h('button', { type: 'button', class: 'memory-item', onclick: () => { for (const b of list.children) b.removeAttribute('aria-current'); item.setAttribute('aria-current', 'true'); open(e); } },
+        icon(e.writable ? 'file' : 'lock', { size: 16 }), h('span', { class: 'path' }, `${e.root}/${e.path}`), h('span', { class: 'chip' }, `${e.bytes} B`));
+      list.append(item);
     }
   }
 

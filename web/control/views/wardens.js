@@ -1,5 +1,6 @@
 import { h, clear } from '../dom.js';
 import { banner, confirmTyped, toast } from '../ui.js';
+import { header } from '../app.js';
 
 function updateBanner(list) {
   const off = list.filter((w) => !w.enabled).length;
@@ -51,14 +52,14 @@ export async function render(root, api, bus, me) {
   const draw = () => {
     clear(holder);
     if (list.length === 0) holder.append(h('div', { class: 'empty' }, 'No wardens configured.'));
-    else holder.append(...list.map((w) => row(w, api, readOnly, apply)));
+    else holder.append(h('div', { class: 'list' }, ...list.map((w) => row(w, api, readOnly, apply))));
     updateBanner(list);
   };
   const apply = (updated) => {
     list = list.map((w) => (w.name === updated.name ? updated : w));
     draw();
   };
-  root.append(h('h1', {}, `Wardens (${list.length})`), holder);
+  root.append(header('Wardens', { eyebrow: 'Configure', count: list.length }), holder);
   draw();
   bus.addEventListener('warden', (e) => apply(e.detail));
   bus.addEventListener('refresh', async () => { list = await api.get('/api/v1/wardens'); draw(); });

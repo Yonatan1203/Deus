@@ -1,4 +1,5 @@
 import { h, clear, badge } from '../dom.js';
+import { header } from '../app.js';
 
 function table(headers, rows) {
   return h('div', { class: 'table-wrap' },
@@ -11,7 +12,7 @@ export async function render(root, api) {
   const inv = await api.get('/api/v1/mcps');
   clear(root);
   root.append(
-    h('h1', {}, 'MCPs'),
+    header('MCPs', { eyebrow: 'Configure' }),
     h('h2', {}, 'Container MCP servers'),
     table(['Name', 'Source', 'Status'], inv.container.map((c) => h('tr', {},
       h('td', {}, c.name),
