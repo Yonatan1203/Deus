@@ -7,7 +7,7 @@ Notes and assumptions: `docs/control-ui-notes.md`.
 |-------|--------|-------|
 | 0 Recon | done 2026-09-20 | notes written |
 | Design spec | done 2026-09-20 | `docs/superpowers/specs/2026-09-20-control-ui-design.md` |
-| 1 Server + Agents/Wardens/MCPs | pending | |
+| 1 Server + Agents/Wardens/MCPs | done 2026-09-20 | verification record + screenshots in notes / `docs/control-ui/artifacts/`; throwaway credential deleted |
 | 2 Chat + Sessions + Groups | pending | |
 | 3 Tasks + Channels + Memory | pending | |
 | 4 Containers + Logs + System + Config + Debug | pending | |

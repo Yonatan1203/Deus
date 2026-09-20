@@ -55,6 +55,7 @@ import { startIpcWatcher } from './ipc.js';
 import { loadSkillIpcHandlers } from './skills/index.js';
 import { createMessageOrchestrator } from './message-orchestrator.js';
 import { startOdysseusServer } from './odysseus-server.js';
+import { readPackageVersion, startControlServer } from './control-ui/server.js';
 import { findChannel, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -508,6 +509,17 @@ async function main(): Promise<void> {
     registeredGroups: () => state.registeredGroups,
   });
   if (odysseusServer) webhookServers.push(odysseusServer);
+
+  // Control UI (no-op unless CONTROL_UI_ENABLED=1). Localhost-only dashboard
+  // reached through an SSH tunnel; fails closed on a missing credential file.
+  const controlServer = await startControlServer({
+    repoRoot: PROJECT_ROOT,
+    webRoot: path.join(PROJECT_ROOT, 'web', 'control'),
+    assistantName: ASSISTANT_NAME,
+    version: readPackageVersion(PROJECT_ROOT),
+    envHas: (key) => Boolean(process.env[key] || readEnvFile([key])[key]),
+  });
+  if (controlServer) webhookServers.push(controlServer);
 
   // Start Linear subsystems (no-op if LINEAR_API_KEY not configured)
   const linearEnv = readEnvFile([

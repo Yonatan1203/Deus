@@ -1,53 +1,48 @@
 # Control UI — recon notes, assumptions, and verification log
 
-Working notes for the OpenClaw-style control web app for this Deus instance
-(**Amos**, `deus-newly.service`). Every path and table name below was read from
-code or the live host on 2026-09-20 — nothing is guessed. Secrets are never
-recorded here.
+Working notes for the OpenClaw-style control web app for a single Deus
+instance. Everything below was read from code or the live host — nothing is
+guessed. This tracked file is deliberately **generic**: instance-identifying
+facts (assistant name, unit name, sibling instances, concrete host posture,
+ports in use) live in a local, untracked companion at
+`~/.config/deus/control-ui-notes.local.md`. Secrets are never recorded in
+either file.
 
 ## Phase 0 — recon
 
 ### Reach
 
-- Running as root on the host (not inside an agent container). `docker`,
-  `systemctl`, `ufw`, `nft` and `journalctl` all work. `/etc` is writable.
-- Checkout under work: the instance checkout (branch `sync-upstream`), developed in
-  the worktree `.claude/worktrees/control-ui` on branch `control-ui`.
-  `node_modules` in the worktree is a symlink to the main checkout's.
+- Running on the host as the service user (not inside an agent container).
+  `docker`, `systemctl`, the firewall tools and `journalctl` all work.
+- Developed in a linked git worktree on branch `control-ui`; `node_modules` is a
+  symlink to the main checkout's.
 
-### Host
+### Host (categories; values in the local companion)
 
-| Item | Value |
-|------|-------|
-| OS | Ubuntu 24.04.3 LTS, kernel 6.8.0-136-generic |
-| Docker | 29.1.3 |
-| Service manager | systemd |
-| Firewall | ufw active — only `22/tcp` allowed inbound; iptables INPUT policy DROP |
-| Reverse proxy on host | none (no nginx/caddy/apache units) |
-| Ports 80/443 | **occupied** by `docker-proxy` (Traefik for the n8n stack) — not free |
-| Public listeners | 22 (sshd), 80/443 (docker-proxy), and docker-published ports on `172.17.0.1` |
+| Item | Finding |
+|------|---------|
+| OS / runtime | a current Ubuntu LTS, Docker, systemd |
+| Firewall | host firewall active, SSH is the only inbound port allowed |
+| Reverse proxy on host | none |
+| Ports 80/443 | occupied by an unrelated Docker stack — not available |
+| Public listeners | SSH plus that Docker stack; every Deus port is on loopback or the Docker bridge |
 
-Exposure choice is **C — localhost only, SSH tunnel**. That matches the firewall
-(only SSH is open) and sidesteps the occupied 80/443.
+Exposure choice is **C — localhost only, SSH tunnel**. That matches the
+firewall and sidesteps the occupied 80/443.
 
-### Deus instances on this box (three assistants, do not confuse)
+### Deus instances on this box
 
-| Unit | Checkout | Assistant | Ports |
-|------|----------|-----------|-------|
-| `deus-newly.service` | this checkout | **Amos** (this project) | credential-proxy 3011, tool-proxy 3013 (both on `172.17.0.1`), Odysseus 3015 (`127.0.0.1`) |
-| `deus.service` | a second checkout (sibling fork) | Rafi | 3001, 3003, 3005 |
-| `nanoclaw.service` | a third checkout | NanoClaw (Gmail fork) | — |
+Three assistant processes run here: this instance (the target), a second Deus
+instance from a sibling fork, and an unrelated third assistant. Each has its own
+unit, checkout, DB and ports. The control UI targets **this instance only**.
 
-`deus-newly.service` facts (from `systemctl cat`): `After=docker.service`,
-`Restart=always`, `RestartSec=5`, `KillMode=process`, stdout/stderr appended to
-`<checkout>/logs/deus.log` and `logs/deus.error.log` (journald is empty for
-this unit — the log files are the source of truth). Environment sets
-`CONTAINER_IMAGE=deus-agent:newly`, `MAX_CONCURRENT_CONTAINERS=2`,
-`DEUS_VAULT_PATH=<instance vault>`, `DEUS_DB=<instance>/.deus/memory.db`,
-`DEUS_EVOLUTION_DB` and `DEUS_MEMORY_TREE_DB` under the same `<instance>/.deus/`, and the
-Odysseus token (value not recorded). `DEUS_HOME` is **not** set, so
-`scripts/cockpit_healthcheck.py` writes its artifacts to `~/.deus/` — shared
-with Rafi. Recorded as a known wrinkle for the System tab.
+This instance's unit: `After=docker.service`, `Restart=always`, `RestartSec=5`,
+`KillMode=process`, stdout/stderr appended to `<checkout>/logs/deus.log` and
+`logs/deus.error.log` (journald is empty for it — the log files are the source
+of truth). It sets `CONTAINER_IMAGE`, `MAX_CONCURRENT_CONTAINERS`, the vault and
+DB paths, the proxy ports, and enables Odysseus. `DEUS_HOME` is **not** set, so
+`scripts/cockpit_healthcheck.py` writes to `~/.deus/`, shared with the sibling
+instance — a known wrinkle for the System tab.
 
 ### Data model (read from `src/db.ts`, `src/types.ts`)
 
@@ -59,7 +54,7 @@ pipeline tables.
 - `registered_groups` → `RegisteredGroup { name, folder, trigger, added_at,
   containerConfig?, requiresTrigger?, isControlGroup?, projectId? }`. Readers:
   `getAllRegisteredGroups()`, `getRegisteredGroupByFolder()`; writer
-  `setRegisteredGroup()`. Live copy lives in `RouterState.registeredGroups`.
+  `setRegisteredGroup()`. Live copy in `RouterState.registeredGroups`.
 - `scheduled_tasks` → `ScheduledTask { id, group_folder, chat_jid, prompt,
   schedule_type: cron|interval|once, schedule_value, context_mode:
   group|isolated, next_run, last_run, last_result, status:
@@ -73,8 +68,7 @@ pipeline tables.
 - `sessions` → one row per `(group_folder, backend)`: `session_id`,
   `resume_cursor`, `metadata_json`, `last_used_at`, `orphaned_at`,
   `orphan_reason`, `last_compacted_at`. Readers `getAllSessions()`,
-  `getAllBackendSessions()`, `getSessionLastUsedAt()`. No token/cost columns —
-  Sessions tab shows "n/a" for cost unless `metadata_json` carries it.
+  `getAllBackendSessions()`, `getSessionLastUsedAt()`. No token/cost columns.
 - `chats` / `messages` → `getAllChats()`, `getMessagesSince()`; used by the
   Debug "why no reply" trace.
 
@@ -88,21 +82,23 @@ pipeline tables.
   `availableSlots()`.
 - `RuntimeRegistry` + `RuntimeEventSink = (event: RuntimeEvent) => void`.
   `RuntimeEvent` is `output_text | activity | tool_call{name,arguments} |
-  session | turn_complete | error` — enough to stream text **and** tool calls
-  live.
+  session | turn_complete | error` — enough to stream text **and** tool calls.
 - Agent containers are named `deus-<group>-<ts>-i<instanceId>` and run with
-  `--rm`; stop path is `docker stop -t 1 <name>` then `docker kill`
-  (`container-runner.ts:697`). None running at recon time.
+  `--rm`; stop path is `<CONTAINER_RUNTIME_BIN> stop -t 1 <name>` then `kill`
+  (`container-runner.ts:697`; docker on this host). Containers use the default
+  bridge with `--add-host=host.docker.internal:host-gateway`
+  (`src/platform.ts:185`), never `--network host`, so the host's loopback is
+  unreachable from an agent.
 - Channels: `src/channels/index.ts` imports every `mcp-*` factory; each returns
   null if unconfigured. Live `Channel[]` is a local in `main()` (`index.ts:145`)
-  with `isConnected()` per channel — needs to be passed into the control server.
+  with `isConnected()` per channel — must be passed into the control server.
 
 ### Files the panels read/write
 
 | Panel | Source |
 |-------|--------|
 | Agents | `.claude/agents/*.md` frontmatter (27 files; fields `name`, `description`, `model`, `explores_code`, `color`, `version`, `linear_label`, `tools`) |
-| Wardens | `.claude/wardens/config.json` (same file the Rust TUI writes, `tui/src/config/wardens.rs:87`). **Does not exist yet** on this checkout — only `config.json.example`. Rules files `.claude/wardens/*-rules.md` |
+| Wardens | `.claude/wardens/config.json` (same file the Rust TUI writes, `tui/src/config/wardens.rs:87`; gitignored, `config.json.example` is the tracked template). Rules files `.claude/wardens/*-rules.md` |
 | MCPs | container `mcpServers` block (`container/agent-runner/src/index.ts:978`: `deus`, optional `gcal`, `linear`), skill MCPs from `container/agent-runner/src/skills/*/agent.ts` via `skill-mcp-registry.ts`, host channel packages `packages/mcp-*` |
 | Groups / memory | `groups/<folder>/CLAUDE.md` (+ `.bak-*`), `groups/<folder>/logs/`; vault at `$DEUS_VAULT_PATH` (`memory/`, `groups/`, `Session-Logs/`) |
 | Channels | live `Channel.isConnected()`; configured-ness per `tui/src/config/channels.rs` (`store/auth/creds.json` for WhatsApp, env keys for the rest) |
@@ -120,34 +116,81 @@ Tests: `src/odysseus-server.test.ts` (vitest, real `http` listener on port 0).
 
 ## Assumptions (decided without asking, per the brief)
 
-1. **Amos only.** The server lives inside `deus-newly` and shows this instance.
-   Rafi can adopt the same code by pulling the branch.
-2. **Port 3017** on `127.0.0.1` (free; 3011/3013/3015 are taken here).
-3. **Auth = login page + password.** Generated once, stored as an argon2/scrypt
-   hash (Node `crypto.scrypt`, no new dependency) in `~/.config/deus/control-ui.json`
-   mode 0600. Session cookie `HttpOnly; SameSite=Strict; Secure` is set only when
-   the request arrived over TLS — through a plain-HTTP SSH tunnel `Secure` would
-   make the cookie unusable, so it is omitted on `http://localhost` and enforced
-   otherwise. Lockout after 5 failures per source for 15 minutes.
-4. **No WebSocket.** Live updates use SSE with automatic reconnect and a polling
-   fallback — SSE needs no dependency and matches the existing Odysseus path.
-   The brief asks for WebSocket; SSE delivers the same UX here. Recorded.
-5. **No build step, no CDN.** Vanilla HTML/CSS/JS under `web/control/`, served
-   by the same server with a path-traversal guard. PWA manifest + service worker
-   included.
-6. **Branch from `sync-upstream`**, which is `origin/main` plus two local
-   commits (voice transcription, OpenAI proxy route). Rebase onto `origin/main`
-   before any upstream PR.
-7. **Commits land autonomously** on `control-ui` (the brief says "small
-   commits" and "don't stop to ask"); repo warden gates (plan-reviewer,
-   threat-modeler, code-reviewer) still run per phase.
-8. **Cost/tokens per session**: shown only if present in `metadata_json`;
-   otherwise "n/a".
+1. **One instance.** The server lives inside this instance's process and shows
+   this instance. The sibling can adopt the same code by pulling the branch.
+2. **Port 3017** on `127.0.0.1` (free; the instance's other ports are taken).
+3. **Auth = login page + password.** Generated once by a script, stored as a
+   scrypt hash (Node `crypto.scrypt`, no dependency) in
+   `~/.config/deus/control-ui.json` mode 0600. The session is two-part — an
+   `HttpOnly; SameSite=Strict` cookie **and** a per-session secret the page
+   holds in origin-scoped storage and sends as a header — because cookies are
+   not port-scoped and every other `localhost:*` server on the tunnelling
+   machine would otherwise receive them. `Secure` is set only when the socket
+   itself is TLS. Failed logins back off exponentially (1 s → 5 min) instead of
+   hard-locking, so a local process cannot lock the operator out.
+4. **No WebSocket.** SSE with reconnect and a polling fallback. The brief asks
+   for WebSocket; SSE gives the same UX without a dependency or a frame parser.
+5. **No build step, no CDN.** Vanilla HTML/CSS/JS under `web/control/` served by
+   the same server, strict CSP, DOM built from text nodes — never `innerHTML`
+   with data. PWA manifest + service worker included.
+6. **Branch base** is the instance's current branch (upstream `main` plus two
+   local commits). Rebase onto upstream before any PR.
+7. **Commits land autonomously** on `control-ui` (the brief says "small commits"
+   and "don't stop to ask"); repo warden gates still run per phase.
+8. **Cost/tokens per session**: shown only if present in `metadata_json`.
 9. **Config editing** limited to an explicit allowlist of non-secret keys.
-   Nothing that ends in `TOKEN`, `KEY`, `SECRET`, `PASSWORD` is ever rendered.
+   Keys matching `TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|AUTH` are never rendered.
 10. **Container "rebuild"** runs `container/build.sh` in the background and
     streams its log; it never touches mounts or isolation.
+11. **Screenshots are captured against a generic assistant name.** The
+    throwaway verification server is started with `assistantName: 'Deus'`,
+    never the instance's real `ASSISTANT_NAME`, because a PNG that renders
+    the real name re-introduces the identifier this file scrubs — and no text
+    grep will ever catch it. This applies to every phase's captures.
+12. **The password is never printed inside an agent session.** When stdout is
+    not a TTY the generator writes it to `<credential file>.first-password`
+    (0600) and prints only that path; the server deletes that file after the
+    first successful login. Verification runs use a throwaway credential.
+13. **Rollback** is `CONTROL_UI_ENABLED` unset (default) — the feature is
+    additive files only, no migration, no shared state.
 
 ## Verification log
 
-Filled in during Phase 5.
+### Phase 1 — 2026-09-20 (control server, auth, Agents/Wardens/MCPs)
+
+Environment: the built server (`dist/control-ui/server.js`) started twice on
+loopback with a **throwaway** credential under the job's temp dir — port 3117
+read-write, port 3118 with `CONTROL_UI_READONLY=1`. The throwaway credential,
+its `.first-password` file and the `config.json` the toggle created were
+deleted afterwards. Predictions are the ones frozen in
+`docs/superpowers/plans/2026-09-20-control-ui-phase1.md` before implementation.
+
+| Check | Predicted | Observed | Disposition |
+|-------|-----------|----------|-------------|
+| Unit + integration (`npx vitest run src/control-ui`) | all pass; oracle red before, green after, untouched | 9 files / 45 tests pass; `auth.oracle.test.ts` failed with "Cannot find module './auth.js'" before `auth.ts` existed, 20/20 after; one implementation change was required by it (a mismatched-session ticket redemption no longer consumes the ticket) | PASS |
+| Whole suite (`npx vitest run`) | green, Odysseus untouched | 128 files / 2212 tests pass | PASS |
+| Type check / lint | exit 0 / 0 errors | `tsc --noEmit` exit 0; `eslint src/control-ui src/index.ts src/config.ts` exit 0 | PASS |
+| Headers on `/` | CSP `default-src 'none'`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` | all three present plus `nosniff`; also present on JSON 404s (integration test) | PASS |
+| Unauthenticated `/api/v1/agents` | 401 | 401 | PASS |
+| Cookie alone / header alone | 401 / 401 | 401 / 401 | PASS |
+| Login + agents | 200, 27 objects with `name` + `description` | 200, 27, all have both | PASS |
+| `/api/v1/me` | assistant, version, `read_only:false`, 12-char `sid` | as predicted | PASS |
+| Traversal `/..%2f..%2fetc%2fpasswd`, `/../package.json` | 404 / 404 | 404 / 404 | PASS |
+| Warden disable without `X-Confirm` | 428 | 428 | PASS |
+| Warden disable with `X-Confirm`, then re-enable | 200; `config.json` created, `.bak-` on the 2nd write | 200 / 200; created; 0 then 1 backup | PASS |
+| SSE | `: ok` then `event: warden` after a toggle; ticket reuse 401 | `: ok`, 2 `warden` frames (disable + enable), reuse → 401 | PASS |
+| Read-only server PATCH | `403 {"error":"read-only mode"}` | exactly that | PASS |
+| Backoff | "3 wrong then an immediate 4th → 429 ≈4000 ms" | attempts 0.2 s apart: 1st wrong → 401, 2nd and 3rd wrong → **already 429** (backoff had engaged after the first failure), 4th → `429 {"error":"locked","retry_after_ms":361}` | PASS — behaviour correct; the prediction assumed the three failures were spaced past their own delays. The integration test asserts the spaced-out curve. |
+| Rotation | old session 401; old password 401; new password 200 | 401 / 401 / 200; log shows `control_ui_credential_rotated` once | PASS |
+| Secrets in logs | 0 | password and session secret each occur 0 times in the server log | PASS |
+| `.first-password` lifecycle | present before the first login, gone after | yes → no | PASS |
+| **Visual** — `docs/control-ui/artifacts/phase1-{agents,wardens,mcps}-{mobile,desktop}.png` | mobile: bottom tab bar with the three tabs, agent cards; desktop: sidebar; warden toggle and confirmation rendered | Mobile (390×844): bottom tab bar Agents/Wardens/MCPs, "Agents (27)" with filter box and cards (name, model badge, description with "more", chips). Desktop (1280×800): sidebar with brand + nav + Sign out, "Wardens (9)" rows with rules file, tool/backend chips and switches. MCPs: three tables with status badges. First capture showed tofu for two nav glyphs (headless font lacked U+26E8/U+27C1); replaced with U+25CE/U+25A6 and re-captured — all glyphs render. Desktop captures re-shot with the generic name `Deus · Control` after review caught the instance name in the sidebar. | PASS |
+
+Deviations logged during implementation:
+- `Deviation:` `validate()` verifies the secret **before** touching `lastSeen` (threat-modeler round-2 note); the oracle has a case for it.
+- `Deviation:` `redeemTicket()` with a mismatched session id leaves the ticket intact (oracle's reading of the contract; safer for the legitimate client).
+- `Deviation:` the screenshot script logs in once per viewport and walks all tabs in that session, because the server deletes `.first-password` after the first login.
+- `Deviation:` the oracle test's POSIX-mode skip uses `IS_WINDOWS` from `src/platform.ts` instead of `process.platform` (repo lint rule); the assertion itself is unchanged.
+- `Deviation:` the oracle-author disclosed it glimpsed part of the plan's implementation sketch mid-task before writing; every assertion traces to the Interfaces contract and the spec, and it was run red before `auth.ts` existed.
+- `Deviation:` the 413 path drains the request (`req.resume()` + `Connection: close`) instead of destroying the socket, so the client actually receives the 413.
+- `Deviation:` Phase 1 lands as one commit rather than one per task — the commit gates hash the whole staged diff, so per-task commits would triple the review rounds without adding coverage.
