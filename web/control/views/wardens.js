@@ -1,5 +1,5 @@
 import { h, clear } from '../dom.js';
-import { banner, confirmTyped, toast } from '../app.js';
+import { banner, confirmTyped, toast } from '../ui.js';
 
 function updateBanner(list) {
   const off = list.filter((w) => !w.enabled).length;

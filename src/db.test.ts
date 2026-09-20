@@ -5,32 +5,33 @@ import {
   clearSession,
   createTask,
   deleteTask,
+  getAllBackendSessions,
   getAllChats,
   getAllRegisteredGroups,
+  getAllSessions,
   getAutoCompressWatermark,
   getConsecutiveFailCount,
+  getIssueCacheCount,
+  getIssuesFromCache,
   getLastFailTime,
+  getMaxCachedAt,
   getMessagesSince,
   getNewMessages,
-  getAllSessions,
-  getAllBackendSessions,
-  getTaskById,
-  getSession,
-  logPipelineEvent,
-  insertPipelineEventRow,
   getPipelineEvents,
+  getSession,
+  getTaskById,
+  insertPipelineEventRow,
+  listSessionRows,
+  logPipelineEvent,
+  reconcileIssueCache,
   setAutoCompressWatermark,
-  setSession,
   setRegisteredGroup,
+  setSession,
+  softDeleteIssueCache,
   storeChatMetadata,
   storeMessage,
   updateTask,
   upsertIssueCache,
-  softDeleteIssueCache,
-  getIssueCacheCount,
-  getMaxCachedAt,
-  getIssuesFromCache,
-  reconcileIssueCache,
 } from './db.js';
 import { getBus } from './events/bus.js';
 import type { EventEnvelope } from './events/types.js';
@@ -977,5 +978,31 @@ describe('auto-compress watermark', () => {
     expect(getAutoCompressWatermark('chat-b@jid')).toBe(
       '2026-05-12T20:00:00.000Z',
     );
+  });
+});
+
+describe('control-ui session rows', () => {
+  it('lists rows newest first with orphan info, projects metadata, honours a clear reason', () => {
+    setSession('g1', 'sess-aaaaaaaa');
+    setSession('g2', {
+      session_id: 'sess-bbbbbbbb',
+      backend: 'claude',
+      metadata_json: JSON.stringify({
+        cost_usd: 0.12,
+        tokens: 345,
+        evil: '<img>',
+      }),
+    });
+    clearSession('g1', undefined, 'control-ui kill');
+    const rows = listSessionRows(10);
+    expect(rows.map((r) => r.group_folder)).toEqual(['g2', 'g1']);
+    expect(rows[1]).toMatchObject({
+      backend: 'claude',
+      orphan_reason: 'control-ui kill',
+      session_ref: 'sess-aaa',
+    });
+    expect(rows[1].orphaned_at).not.toBeNull();
+    expect(rows[0].orphaned_at).toBeNull();
+    expect(rows[0].metadata).toEqual({ cost_usd: 0.12, tokens: 345 });
   });
 });

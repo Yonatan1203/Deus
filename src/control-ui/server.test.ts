@@ -1,5 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import http from 'http';
+
+vi.mock('../container-runner.js', () => ({
+  writeTasksSnapshot: vi.fn(),
+  writeGroupsSnapshot: vi.fn(),
+}));
+vi.mock('../db.js', () => ({ getAllTasks: vi.fn(() => []) }));
+vi.mock('../router-state.js', () => ({ getAvailableGroups: vi.fn(() => []) }));
+vi.mock('../webui-consolidation.js', () => ({
+  consolidateWebConversation: vi.fn(),
+}));
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -7,6 +17,13 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { createControlServer, type ControlDeps } from './server.js';
 import { writeCredentialFile } from './auth.js';
+import {
+  _resetWebTurnStateForTest,
+  startWebTurn,
+  type WebTurnDeps,
+} from '../web-turn.js';
+import type { RuntimeEventSink } from '../agent-runtimes/types.js';
+import type { ControlStore } from './store.js';
 
 const PASSWORD = 'correct-horse';
 const H = { 'Content-Type': 'application/json' };
@@ -54,9 +71,83 @@ async function login(password = PASSWORD) {
   return { cookie, auth: { Cookie: cookie, 'X-Deus-Session': token }, reply };
 }
 
+function fakeRuntime(opts: { gate?: Promise<void> } = {}) {
+  const closeStdin = vi.fn();
+  const notifyIdle = vi.fn();
+  const backend = {
+    name: () => 'claude' as const,
+    runTurn: async (_c: unknown, _s: unknown, sink: RuntimeEventSink) => {
+      await sink({ type: 'output_text', text: 'hi' });
+      await sink({ type: 'tool_call', name: 'Read', arguments: { path: 'x' } });
+      if (opts.gate) await opts.gate;
+      await sink({ type: 'turn_complete' });
+      return { status: 'success' as const, result: 'hi' };
+    },
+  };
+  const snapshotState = [
+    {
+      jid: 'main@x',
+      active: true,
+      idleWaiting: false,
+      isTaskContainer: false,
+      runningTaskId: null,
+      containerName: 'deus-main-1',
+      groupFolder: 'main',
+      pendingTaskCount: 0,
+      retryCount: 0,
+    },
+  ];
+  const runtime = {
+    queue: {
+      enqueueTask: (_j: string, _i: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+      closeStdin,
+      notifyIdle,
+      isShuttingDown: () => false,
+      snapshot: () => snapshotState,
+    },
+    registry: { resolve: () => backend },
+    registeredGroups: () => ({
+      'main@x': {
+        name: 'Main',
+        folder: 'main',
+        trigger: '@d',
+        added_at: '',
+        isControlGroup: true,
+      },
+    }),
+  } as unknown as WebTurnDeps;
+  return { runtime, closeStdin, notifyIdle, snapshotState };
+}
+
+function fakeStore(root: string): ControlStore {
+  const row = (f: string, i: number) => ({
+    id: i,
+    group_folder: f,
+    backend: 'claude',
+    session_ref: 'abcd1234',
+    last_used_at: null,
+    orphaned_at: null,
+    orphan_reason: null,
+    last_compacted_at: null,
+    metadata: null,
+  });
+  return {
+    listSessionRows: () => [row('main', 1), row('other', 2)],
+    clearSession: vi.fn(),
+    stopContainer: vi.fn(),
+    groupFolderPath: (f: string) => {
+      if (!/^[a-z]+$/.test(f)) throw new Error('bad');
+      return path.join(root, 'groups', f);
+    },
+  };
+}
+
 function boot(
   overrides: Partial<ControlDeps> = {},
   staticHandler?: () => void,
+  queuePollMs?: number,
 ) {
   const deps: ControlDeps = {
     repoRoot: root,
@@ -68,7 +159,11 @@ function boot(
     envHas: () => false,
     ...overrides,
   };
-  server = createControlServer(deps, { now: () => clock, staticHandler });
+  server = createControlServer(deps, {
+    now: () => clock,
+    staticHandler,
+    queuePollMs,
+  });
   return new Promise<void>((r) =>
     server.listen(0, '127.0.0.1', () => {
       port = (server.address() as AddressInfo).port;
@@ -78,6 +173,7 @@ function boot(
 }
 
 beforeEach(() => {
+  _resetWebTurnStateForTest();
   clock = 1_000_000;
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'ctl-srv-'));
   credFile = path.join(root, 'cred.json');
@@ -97,7 +193,29 @@ beforeEach(() => {
     path.join(root, 'web', 'index.html'),
     '<!doctype html><title>t</title>',
   );
+  fs.mkdirSync(path.join(root, 'groups', 'main'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'groups', 'main', 'CLAUDE.md'), '# hi');
 });
+
+function streamRequest(
+  opts: http.RequestOptions & { body?: string },
+  onChunk: (text: string, req: http.ClientRequest) => void,
+) {
+  return new Promise<{ status: number; text: string }>((resolve, reject) => {
+    let text = '';
+    const req = http.request({ host: '127.0.0.1', port, ...opts }, (res) => {
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        text += c;
+        onChunk(text, req);
+      });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text }));
+    });
+    req.on('error', reject);
+    if (opts.body) req.write(opts.body);
+    req.end();
+  });
+}
 
 afterEach(() => new Promise<void>((r) => server.close(() => r())));
 
@@ -358,5 +476,351 @@ describe('control-ui server', () => {
     expect(r.status).toBe(500);
     expect(JSON.parse(r.text)).toMatchObject({ error: 'internal error' });
     expect(r.text).not.toContain('boom');
+  });
+});
+
+describe('control-ui server — chat, sessions, groups', () => {
+  it('answers 503 for the live routes without a runtime', async () => {
+    await boot();
+    const { auth } = await login();
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/sessions',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(503);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/chat/turns',
+          headers: { ...auth, ...H },
+          body: '{"message":"hi"}',
+        })
+      ).status,
+    ).toBe(503);
+  });
+
+  it('streams a chat turn as SSE frames and rejects empty messages', async () => {
+    const { runtime } = fakeRuntime();
+    await boot({ runtime, store: fakeStore(root) });
+    const { auth } = await login();
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/chat/turns',
+          headers: { ...auth, ...H },
+          body: '{"message":""}',
+        })
+      ).status,
+    ).toBe(400);
+    const r = await streamRequest(
+      {
+        method: 'POST',
+        path: '/api/v1/chat/turns',
+        headers: { ...auth, ...H },
+        body: '{"message":"hi","history":[{"role":"assistant","content":"earlier"}]}',
+      },
+      () => {},
+    );
+    expect(r.status).toBe(200);
+    const types = [...r.text.matchAll(/^event: (\w+)$/gm)].map((m) => m[1]);
+    expect(types).toEqual([
+      'turn_started',
+      'output_text',
+      'tool_call',
+      'turn_complete',
+    ]);
+    expect(r.text).toContain('"name":"Read"');
+  });
+
+  it('aborts a running turn via DELETE and refuses foreign or unknown ids', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
+    const { runtime, closeStdin } = fakeRuntime({ gate });
+    await boot({ runtime, store: fakeStore(root) });
+    const { auth } = await login();
+    let deleted: Promise<Reply> | null = null;
+    const r = await streamRequest(
+      {
+        method: 'POST',
+        path: '/api/v1/chat/turns',
+        headers: { ...auth, ...H },
+        body: '{"message":"hi"}',
+      },
+      (text) => {
+        const m = /event: turn_started\ndata: (\{.*\})/.exec(text);
+        if (m && !deleted) {
+          const { id } = JSON.parse(m[1]);
+          deleted = request({
+            method: 'DELETE',
+            path: `/api/v1/chat/turns/${id}`,
+            headers: auth,
+          });
+        }
+      },
+    );
+    expect((await deleted!).status).toBe(204);
+    expect(closeStdin).toHaveBeenCalledWith('main@x');
+    expect(r.text).toContain('event: error');
+    expect(r.text).toContain('turn stopped by user');
+    release();
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: '/api/v1/chat/turns/0123456789abcdef',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    const foreign = startWebTurn(runtime, {
+      prompt: 'x',
+      latest: 'x',
+      stream: false,
+      source: 'odysseus',
+      remoteAddr: 't',
+      onEvent: () => {},
+      onDone: () => {},
+    });
+    if (!foreign.ok) throw new Error('expected ok');
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: `/api/v1/chat/turns/${foreign.id}`,
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    foreign.abort();
+  });
+
+  it('refuses chat and abort in read-only mode', async () => {
+    const { runtime } = fakeRuntime();
+    await boot({ runtime, store: fakeStore(root), readOnly: true });
+    const { auth } = await login();
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/chat/turns',
+          headers: { ...auth, ...H },
+          body: '{"message":"hi"}',
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: '/api/v1/chat/turns/0123456789abcdef',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it('lists sessions with containers and kills per folder with confirmation', async () => {
+    const { runtime } = fakeRuntime();
+    const store = fakeStore(root);
+    await boot({ runtime, store });
+    const { auth } = await login();
+    const list = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/sessions',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(list.rows).toHaveLength(2);
+    expect(list.rows[0].active_container).toEqual({
+      name: 'deus-main-1',
+      jid: 'main@x',
+    });
+    expect(list.rows[1].active_container).toBeNull();
+    expect(list.containers.main.map((c: { name: string }) => c.name)).toEqual([
+      'deus-main-1',
+    ]);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/sessions/main/kill',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(428);
+    const killed = await request({
+      method: 'POST',
+      path: '/api/v1/sessions/main/kill',
+      headers: { ...auth, 'X-Confirm': 'main' },
+    });
+    expect(killed.status).toBe(200);
+    expect(JSON.parse(killed.text)).toEqual({
+      stopped: ['deus-main-1'],
+      errors: [],
+      orphaned: true,
+    });
+    expect(store.stopContainer).toHaveBeenCalledWith('deus-main-1');
+    expect(store.clearSession).toHaveBeenCalledWith(
+      'main',
+      undefined,
+      'control-ui kill',
+    );
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/sessions/nope/kill',
+          headers: { ...auth, 'X-Confirm': 'nope' },
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/sessions/..%2Fx/kill',
+          headers: { ...auth, 'X-Confirm': '../x' },
+        })
+      ).status,
+    ).toBe(404);
+  });
+
+  it('lists groups and reads/writes CLAUDE.md with confirmation, backups, caps, and a rate limit', async () => {
+    const { runtime } = fakeRuntime();
+    await boot({ runtime, store: fakeStore(root) });
+    const { auth } = await login();
+    const groups = JSON.parse(
+      (await request({ method: 'GET', path: '/api/v1/groups', headers: auth }))
+        .text,
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0].container.containerName).toBe('deus-main-1');
+    expect(groups[0].claude_md_bytes).toBe(4);
+    expect(
+      JSON.parse(
+        (
+          await request({
+            method: 'GET',
+            path: '/api/v1/groups/main/claude-md',
+            headers: auth,
+          })
+        ).text,
+      ),
+    ).toMatchObject({ content: '# hi' });
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/groups/nope/claude-md',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    const put = (headers: Record<string, string>, body: string) =>
+      request({
+        method: 'PUT',
+        path: '/api/v1/groups/main/claude-md',
+        headers: { ...auth, ...H, ...headers },
+        body,
+      });
+    expect((await put({}, '{"content":"# a"}')).status).toBe(428);
+    const first = await put({ 'X-Confirm': 'main' }, '{"content":"# a"}');
+    expect(first.status).toBe(200);
+    expect(JSON.parse(first.text)).toMatchObject({
+      bytes_before: 4,
+      bytes_after: 3,
+    });
+    expect(JSON.parse(first.text).backup).toMatch(/CLAUDE\.md\.bak-/);
+    expect(
+      (
+        await put(
+          { 'X-Confirm': 'main' },
+          JSON.stringify({ content: 'x'.repeat(1_200_000) }),
+        )
+      ).status,
+    ).toBe(413);
+    for (let i = 0; i < 5; i++)
+      expect(
+        (await put({ 'X-Confirm': 'main' }, '{"content":"# b"}')).status,
+      ).toBe(200);
+    expect(
+      (await put({ 'X-Confirm': 'main' }, '{"content":"# c"}')).status,
+    ).toBe(429);
+  });
+
+  it('refuses CLAUDE.md writes in read-only mode', async () => {
+    const { runtime } = fakeRuntime();
+    await boot({ runtime, store: fakeStore(root), readOnly: true });
+    const { auth } = await login();
+    expect(
+      (
+        await request({
+          method: 'PUT',
+          path: '/api/v1/groups/main/claude-md',
+          headers: { ...auth, ...H, 'X-Confirm': 'main' },
+          body: '{"content":"# a"}',
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it('broadcasts queue snapshots when they change', async () => {
+    const { runtime, snapshotState } = fakeRuntime();
+    await boot({ runtime, store: fakeStore(root) }, undefined, 10);
+    const { cookie, auth } = await login();
+    const { ticket } = JSON.parse(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/events/ticket',
+          headers: auth,
+        })
+      ).text,
+    );
+    const frames = await new Promise<string>((resolve, reject) => {
+      let text = '';
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: `/api/v1/events?ticket=${ticket}`,
+          headers: { Cookie: cookie },
+        },
+        (res) => {
+          res.setEncoding('utf8');
+          res.on('data', (c) => {
+            text += c;
+            if (text.includes('"containerName":"deus-main-2"')) {
+              req.destroy();
+              resolve(text);
+            }
+          });
+        },
+      );
+      req.on('error', reject);
+      req.end();
+      setTimeout(
+        () =>
+          snapshotState.push({
+            ...snapshotState[0],
+            jid: 'b@x',
+            containerName: 'deus-main-2',
+          }),
+        40,
+      );
+      setTimeout(() => reject(new Error('no queue frame')), 2000);
+    });
+    expect(frames).toContain('event: queue');
   });
 });

@@ -186,7 +186,40 @@ deleted afterwards. Predictions are the ones frozen in
 | `.first-password` lifecycle | present before the first login, gone after | yes → no | PASS |
 | **Visual** — `docs/control-ui/artifacts/phase1-{agents,wardens,mcps}-{mobile,desktop}.png` | mobile: bottom tab bar with the three tabs, agent cards; desktop: sidebar; warden toggle and confirmation rendered | Mobile (390×844): bottom tab bar Agents/Wardens/MCPs, "Agents (27)" with filter box and cards (name, model badge, description with "more", chips). Desktop (1280×800): sidebar with brand + nav + Sign out, "Wardens (9)" rows with rules file, tool/backend chips and switches. MCPs: three tables with status badges. First capture showed tofu for two nav glyphs (headless font lacked U+26E8/U+27C1); replaced with U+25CE/U+25A6 and re-captured — all glyphs render. Desktop captures re-shot with the generic name `Deus · Control` after review caught the instance name in the sidebar. | PASS |
 
-Deviations logged during implementation:
+### Phase 2 — 2026-09-20 (web-turn extraction, Chat, Sessions, Groups)
+
+Environment: the built server started on loopback by a throwaway launcher with
+a **fake runtime** (backend streaming canned events) and a **synthetic store**
+(placeholder jids such as `main@example.invalid`, placeholder folders and
+instruction text, placeholder session refs) — never the live groups or DB.
+Throwaway credential and fixture deleted afterwards. Predictions are the ones
+frozen in `docs/superpowers/plans/2026-09-20-control-ui-phase2.md`.
+
+| Check | Predicted | Observed | Disposition |
+|-------|-----------|----------|-------------|
+| Odysseus oracle (`npx vitest run src/odysseus-server`) | all pass, test file untouched | 40/40 pass; `git diff -- src/odysseus-server.test.ts` empty | PASS |
+| New units (`web-turn`, `group-queue`, `db`, `control-ui/api`, `control-ui/server`) | all pass | web-turn 6, group-queue 1 new, db 1 new, api 4, server 17 (9 Phase 1 + 8 new) | PASS |
+| Whole suite / tsc / eslint / prettier | green / 0 / 0 / clean | 131 files / 2232 tests; tsc 0; eslint 0 errors; prettier clean | PASS |
+| Chat stream (integration, fake backend) | `turn_started`, `output_text`, `tool_call`, `turn_complete`, stream ends | exactly that order; `"name":"Read"` present | PASS |
+| Chat admission | second turn while one is in flight → 429 | 429 asserted at the `startWebTurn` unit level (`web-turn.test.ts`); the integration test exercises abort instead | PASS (unit) |
+| Chat abort | `DELETE` → 204; `closeStdin` once; stream ends with `error: turn stopped by user`; foreign id → 404 | all as predicted; an Odysseus-started turn's id → 404; unknown id → 404 | PASS |
+| Chat in read-only | 403 | 403 for both `POST` and `DELETE` | PASS |
+| Consolidation survives a client abort | `turn_complete` still delivered; `output_text` after abort not delivered | unit: events after abort are exactly `['turn_complete']` | PASS |
+| Sessions | rows joined with the snapshot | `active_container` on the live row, null on idle **and on orphaned rows** (the first capture showed the folder's container on an orphaned row — fixed and asserted) | PASS |
+| Kill | 428 without confirm; 200 `{stopped:['deus-main-1'],errors:[],orphaned:true}`; `clearSession('main', undefined, 'control-ui kill')`; unregistered → 404 | as predicted; `..%2Fx` → 404 | PASS |
+| Sessions metadata | `{cost_usd, tokens}` only, `evil` dropped | db unit: `{cost_usd:0.12, tokens:345}` | PASS |
+| Groups | list with container; get; 404; PUT 428 → 200 with backup on the 2nd write; 1.2 MB → 413; 7th write → 429; read-only → 403 | as predicted; backups `CLAUDE.md.bak-<ts>-<4 hex>`, two rapid writes keep two, 12 writes leave 10 (unit) | PASS |
+| Queue SSE | `event: queue` after a snapshot change | frame received within the 10 ms poll in the integration test | PASS |
+| **Visual** — `docs/control-ui/artifacts/phase2-{chat,sessions,groups}-{mobile,desktop}.png` | chat shows streamed text, one tool-call row, Stop; sessions and groups render | Chat (mobile 390×844 and desktop): user bubble, streamed reply, activity line, collapsible `tool: Read` row, Send/Stop/New chat composer. Sessions (desktop): container / idle / orphaned badges, usage `$0.042 · 1830 tok`, Kill buttons (none on the orphaned duplicate). Groups (mobile): cards with control-group and CLAUDE.md badges, Open CLAUDE.md. The sixth mobile tab was clipped in the first capture — tab width reduced and re-shot; all six tabs render. PNGs reviewed for jids, phone numbers, host paths and instruction text: only `example.invalid` jids and placeholder text. Two audited chat turns with `promptHash` in the fixture log, zero handler failures. | PASS |
+
+Deviations logged during Phase 2:
+- `Deviation:` `startWebTurn` gained an `onAccepted(id)` hook, fired after admission and before `enqueueTask`, because the Odysseus tests' fake queue runs the turn synchronously and the SSE preamble must precede the first frame; Odysseus and the control UI write their preambles there.
+- `Deviation:` `turn_complete` is delivered exactly once per turn (a de-dup flag), even after a client abort — the unconditional delivery the plan asked for, without a duplicate on a backend that emits it twice.
+- `Deviation:` `listSessions` does not join a container to an orphaned row (found in the capture review).
+- `Deviation:` a stale fixture process from a failed capture attempt held the capture port and served one misleading re-capture; the launcher script now kills by pid and the capture was repeated.
+- `Deviation:` Phase 2 lands as one commit, for the same gate-hashing reason as Phase 1.
+
+Deviations logged during Phase 1:
 - `Deviation:` `validate()` verifies the secret **before** touching `lastSeen` (threat-modeler round-2 note); the oracle has a case for it.
 - `Deviation:` `redeemTicket()` with a mismatched session id leaves the ticket intact (oracle's reading of the contract; safer for the legitimate client).
 - `Deviation:` the screenshot script logs in once per viewport and walks all tabs in that session, because the server deletes `.first-password` after the first login.

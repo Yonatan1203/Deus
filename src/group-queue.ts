@@ -27,6 +27,18 @@ interface GroupState {
   retryCount: number;
 }
 
+export interface GroupSnapshot {
+  jid: string;
+  active: boolean;
+  idleWaiting: boolean;
+  isTaskContainer: boolean;
+  runningTaskId: string | null;
+  containerName: string | null;
+  groupFolder: string | null;
+  pendingTaskCount: number;
+  retryCount: number;
+}
+
 export class GroupQueue {
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
@@ -291,6 +303,21 @@ export class GroupQueue {
         this.enqueueMessageCheck(groupJid);
       }
     }, delayMs);
+  }
+
+  /** Read-only copy of per-jid state for dashboards; never exposes the process. */
+  snapshot(): GroupSnapshot[] {
+    return [...this.groups].map(([jid, s]) => ({
+      jid,
+      active: s.active,
+      idleWaiting: s.idleWaiting,
+      isTaskContainer: s.isTaskContainer,
+      runningTaskId: s.runningTaskId,
+      containerName: s.containerName,
+      groupFolder: s.groupFolder,
+      pendingTaskCount: s.pendingTasks.length,
+      retryCount: s.retryCount,
+    }));
   }
 
   availableSlots(): number {

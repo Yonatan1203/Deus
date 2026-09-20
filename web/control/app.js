@@ -1,15 +1,22 @@
 import { h, clear } from './dom.js';
+import * as chat from './views/chat.js';
 import * as agents from './views/agents.js';
 import * as wardens from './views/wardens.js';
 import * as mcps from './views/mcps.js';
+import * as sessions from './views/sessions.js';
+import * as groups from './views/groups.js';
 
 const TOKEN_KEY = 'deus_ctl_token';
+const CHAT_KEY = 'deus_ctl_chat';
 const VIEWS = {
+  chat: { title: 'Chat', icon: '◉', render: chat.render },
   agents: { title: 'Agents', icon: '◈', render: agents.render },
   wardens: { title: 'Wardens', icon: '◎', render: wardens.render },
   mcps: { title: 'MCPs', icon: '▦', render: mcps.render },
+  sessions: { title: 'Sessions', icon: '▤', render: sessions.render },
+  groups: { title: 'Groups', icon: '▣', render: groups.render },
 };
-const DEFAULT_VIEW = 'agents';
+const DEFAULT_VIEW = 'chat';
 const $ = (id) => document.getElementById(id);
 
 function token() {
@@ -18,36 +25,86 @@ function token() {
 function setToken(v) {
   try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch { /* storage unavailable: session lasts the page */ }
 }
+function forgetSession() {
+  setToken('');
+  try { localStorage.removeItem(CHAT_KEY); } catch { /* ignore */ }
+}
 
-async function call(method, path, body, extra = {}) {
+function headersFor(method, body, extra) {
   const headers = { Accept: 'application/json', 'X-Deus-Session': token(), ...extra };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+
+function failure(res, data) {
+  const e = new Error(data.error || `HTTP ${res.status}`);
+  e.status = res.status;
+  e.data = data;
+  return e;
+}
+
+async function call(method, path, body, extra = {}) {
   const res = await fetch(path, {
     method,
-    headers,
+    headers: headersFor(method, body, extra),
     credentials: 'same-origin',
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (res.status === 401 && !path.startsWith('/auth/login')) {
-    setToken('');
+    forgetSession();
     showLogin();
     throw new Error('unauthorized');
   }
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const e = new Error(data.error || `HTTP ${res.status}`);
-    e.status = res.status;
-    e.data = data;
-    throw e;
-  }
+  if (!res.ok) throw failure(res, data);
   return data;
+}
+
+// POST that streams SSE frames back; resolves when the stream ends.
+async function stream(path, body, onFrame, signal) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: headersFor('POST', body, {}),
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (res.status === 401) {
+    forgetSession();
+    showLogin();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) throw failure(res, await res.json().catch(() => ({})));
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let type = 'message';
+      let data = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) type = line.slice(6).trim();
+        else if (line.startsWith('data:')) data += line.slice(5).trim();
+      }
+      if (data) onFrame(type, JSON.parse(data));
+    }
+  }
 }
 
 const api = {
   get: (p) => call('GET', p),
   post: (p, b, extra) => call('POST', p, b, extra),
   patch: (p, b, extra) => call('PATCH', p, b, extra),
+  put: (p, b, extra) => call('PUT', p, b, extra),
+  del: (p, extra) => call('DELETE', p, undefined, extra),
+  stream,
 };
 
 const bus = new EventTarget();
@@ -71,41 +128,10 @@ async function connectEvents() {
   source.onerror = () => {
     if (!pollTimer) pollTimer = setInterval(() => bus.dispatchEvent(new CustomEvent('refresh')), 10_000);
   };
-  for (const type of ['warden']) {
+  for (const type of ['warden', 'session', 'group', 'queue']) {
     source.addEventListener(type, (e) =>
       bus.dispatchEvent(new CustomEvent(type, { detail: JSON.parse(e.data) })));
   }
-}
-
-export function toast(msg, kind = 'info') {
-  const el = $('toast');
-  el.textContent = msg;
-  el.dataset.kind = kind;
-  el.hidden = false;
-  clearTimeout(el._t);
-  el._t = setTimeout(() => { el.hidden = true; }, 3500);
-}
-
-export function banner(msg) {
-  const el = $('banner');
-  el.textContent = msg || '';
-  el.hidden = !msg;
-}
-
-export function confirmTyped(expected, message) {
-  const dlg = $('confirm');
-  const input = $('confirm-input');
-  const ok = $('confirm-ok');
-  $('confirm-message').textContent = message;
-  $('confirm-expected').textContent = expected;
-  input.value = '';
-  ok.disabled = true;
-  input.oninput = () => { ok.disabled = input.value !== expected; };
-  return new Promise((resolve) => {
-    dlg.onclose = () => resolve(dlg.returnValue === 'ok' && input.value === expected);
-    dlg.showModal();
-    input.focus();
-  });
 }
 
 function showLogin() {
@@ -134,6 +160,7 @@ async function route() {
     el.append(...navItems());
   }
   const root = $('view');
+  root.dataset.view = currentView();
   clear(root);
   root.append(h('p', { class: 'muted' }, 'Loading…'));
   try {
@@ -180,7 +207,7 @@ $('login-form').addEventListener('submit', async (e) => {
 
 $('logout').addEventListener('click', async () => {
   await api.post('/auth/logout').catch(() => {});
-  setToken('');
+  forgetSession();
   if (source) source.close();
   showLogin();
 });

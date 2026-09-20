@@ -17,8 +17,17 @@ import {
 import { logger } from '../logger.js';
 import { createRateLimiter } from '../rate-limiter.js';
 import { listAgents } from './api/agents.js';
+import { abortChatTurn, startChatTurn } from './api/chat.js';
+import { listGroups, readClaudeMd, writeClaudeMd } from './api/groups.js';
 import { listMcps } from './api/mcps.js';
+import {
+  containersForFolder,
+  killSession,
+  listSessions,
+} from './api/sessions.js';
 import { listWardens, setWardenEnabled } from './api/wardens.js';
+import type { WebTurnDeps } from '../web-turn.js';
+import type { ControlStore } from './store.js';
 import {
   clearSessionCookie,
   createBackoff,
@@ -49,6 +58,9 @@ export interface ControlDeps {
   assistantName: string;
   version: string;
   envHas: (key: string) => boolean;
+  /** Live host objects for chat/sessions/groups; absent → those routes answer 503. */
+  runtime?: WebTurnDeps;
+  store?: ControlStore;
 }
 
 export interface ControlServerOptions {
@@ -58,6 +70,7 @@ export interface ControlServerOptions {
   credentials?: CredentialSource;
   now?: () => number;
   staticHandler?: typeof serveStatic;
+  queuePollMs?: number;
 }
 
 const BIND_HOST = '127.0.0.1';
@@ -65,6 +78,11 @@ const MAX_BODY_BYTES = 256 * 1024;
 const LOGIN_RATE_MAX = 10;
 const LOGIN_RATE_WINDOW_MS = 60_000;
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const TURN_ID_RE = /^[0-9a-f]{16}$/;
+const CLAUDE_MD_MAX_BYTES = 1024 * 1024;
+const CLAUDE_MD_BODY_CAP = Math.floor(CLAUDE_MD_MAX_BYTES * 1.5);
+const CLAUDE_MD_WRITES_PER_MIN = 6;
+const QUEUE_POLL_MS = 2000;
 
 export function readPackageVersion(root: string): string {
   try {
@@ -90,7 +108,10 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 
 type BodyRead = { ok: true; body: unknown } | { ok: false; status: 400 | 413 };
 
-function readJsonBody(req: IncomingMessage): Promise<BodyRead> {
+function readJsonBody(
+  req: IncomingMessage,
+  limit = MAX_BODY_BYTES,
+): Promise<BodyRead> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -98,7 +119,7 @@ function readJsonBody(req: IncomingMessage): Promise<BodyRead> {
     req.on('data', (c: Buffer) => {
       if (done) return;
       size += c.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > limit) {
         done = true;
         resolve({ ok: false, status: 413 });
         // Drain instead of destroying so the 413 reaches the client intact.
@@ -162,6 +183,7 @@ export function createControlServer(
     opts.credentials ?? createCredentialSource(deps.credentialFile);
   const staticHandler = opts.staticHandler ?? serveStatic;
   const loginLimiter = createRateLimiter(LOGIN_RATE_MAX, LOGIN_RATE_WINDOW_MS);
+  const claudeMdLimiter = createRateLimiter(CLAUDE_MD_WRITES_PER_MIN, 60_000);
   const router = createRouter();
   const agentsDir = path.join(deps.repoRoot, '.claude', 'agents');
   const wardensDir = path.join(deps.repoRoot, '.claude', 'wardens');
@@ -359,6 +381,168 @@ export function createControlServer(
     { auth: 'ticket' },
   );
 
+  // ── Phase 2: chat, sessions, groups (need the live host objects) ──
+  const live = (
+    res: ServerResponse,
+  ): { runtime: WebTurnDeps; store: ControlStore } | null => {
+    if (!deps.runtime || !deps.store) {
+      writeJson(res, 503, { error: 'runtime unavailable' });
+      return null;
+    }
+    return { runtime: deps.runtime, store: deps.store };
+  };
+  const folderOf = (store: ControlStore, folder: string): string | null => {
+    try {
+      store.groupFolderPath(folder);
+      return folder;
+    } catch {
+      return null;
+    }
+  };
+
+  router.add('POST', '/api/v1/chat/turns', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    const started = startChatTurn(l.runtime, ctx.body, ctx.remoteAddr, ctx.res);
+    if ('status' in started)
+      return writeJson(ctx.res, started.status, { error: started.error });
+    logger.info(
+      {
+        event: 'control_ui_chat_turn',
+        turnId: started.id,
+        promptHash: started.promptHash,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI chat turn',
+    );
+  });
+  router.add('DELETE', '/api/v1/chat/turns/:id', (ctx) => {
+    if (!live(ctx.res)) return;
+    const id = ctx.params.id;
+    if (!TURN_ID_RE.test(id) || !abortChatTurn(id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    logger.info(
+      {
+        event: 'control_ui_chat_abort',
+        turnId: id,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI chat turn stopped',
+    );
+    ctx.res.writeHead(204);
+    ctx.res.end();
+  });
+
+  router.add('GET', '/api/v1/sessions', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    const folders = [
+      ...new Set(
+        Object.values(l.runtime.registeredGroups()).map((g) => g.folder),
+      ),
+    ];
+    const containers: Record<
+      string,
+      ReturnType<typeof containersForFolder>
+    > = {};
+    for (const f of folders) containers[f] = containersForFolder(l.runtime, f);
+    writeJson(ctx.res, 200, {
+      rows: listSessions(l.store, l.runtime),
+      containers,
+    });
+  });
+  router.add('POST', '/api/v1/sessions/:folder/kill', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    const folder = folderOf(l.store, ctx.params.folder);
+    if (!folder) return writeJson(ctx.res, 404, { error: 'not found' });
+    if (header(ctx.req, 'x-confirm') !== folder)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    const result = killSession(l.store, l.runtime, folder);
+    if (!result) return writeJson(ctx.res, 404, { error: 'not found' });
+    logger.warn(
+      {
+        event: 'control_ui_session_kill',
+        folder,
+        stopped: result.stopped,
+        errors: result.errors,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI session killed',
+    );
+    hub.broadcast('session', { folder, ...result });
+    writeJson(ctx.res, 200, result);
+  });
+
+  router.add('GET', '/api/v1/groups', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    writeJson(ctx.res, 200, listGroups(l.store, l.runtime));
+  });
+  router.add('GET', '/api/v1/groups/:folder/claude-md', (ctx) => {
+    const l = live(ctx.res);
+    if (!l) return;
+    const folder = folderOf(l.store, ctx.params.folder);
+    const doc = folder ? readClaudeMd(l.store, l.runtime, folder) : null;
+    if (!doc) return writeJson(ctx.res, 404, { error: 'not found' });
+    writeJson(ctx.res, 200, doc);
+  });
+  router.add(
+    'PUT',
+    '/api/v1/groups/:folder/claude-md',
+    (ctx) => {
+      const l = live(ctx.res);
+      if (!l) return;
+      const folder = folderOf(l.store, ctx.params.folder);
+      if (!folder) return writeJson(ctx.res, 404, { error: 'not found' });
+      if (header(ctx.req, 'x-confirm') !== folder)
+        return writeJson(ctx.res, 428, { error: 'confirmation required' });
+      const content = (ctx.body as { content?: unknown } | undefined)?.content;
+      if (typeof content !== 'string')
+        return writeJson(ctx.res, 400, { error: 'content must be a string' });
+      if (Buffer.byteLength(content) > CLAUDE_MD_MAX_BYTES)
+        return writeJson(ctx.res, 413, { error: 'payload too large' });
+      if (
+        claudeMdLimiter.isRateLimited(
+          ctx.session?.shortId ?? ctx.remoteAddr,
+          now(),
+        )
+      ) {
+        return writeJson(ctx.res, 429, { error: 'too many writes' });
+      }
+      const result = writeClaudeMd(l.store, l.runtime, folder, content);
+      if (!result) return writeJson(ctx.res, 404, { error: 'not found' });
+      logger.warn(
+        {
+          event: 'control_ui_claude_md_write',
+          folder,
+          ...result,
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI wrote an instruction file',
+      );
+      hub.broadcast('group', { folder, ...result });
+      writeJson(ctx.res, 200, result);
+    },
+    { maxBody: CLAUDE_MD_BODY_CAP },
+  );
+
+  // Poll-and-diff: dashboards see container state change within one tick.
+  let lastQueueJson = '';
+  const queuePoll = setInterval(() => {
+    if (!deps.runtime) return;
+    const snap = deps.runtime.queue.snapshot();
+    const json = JSON.stringify(snap);
+    if (json === lastQueueJson) return;
+    lastQueueJson = json;
+    hub.broadcast('queue', snap);
+  }, opts.queuePollMs ?? QUEUE_POLL_MS);
+  queuePoll.unref();
+
   async function handle(
     req: IncomingMessage,
     res: ServerResponse,
@@ -405,7 +589,7 @@ export function createControlServer(
     if (method !== 'GET' && method !== 'HEAD') {
       if (!originMatches(req))
         return writeJson(res, 403, { error: 'forbidden' });
-      const read = await readJsonBody(req);
+      const read = await readJsonBody(req, match.maxBody);
       if (!read.ok) {
         if (read.status === 413) res.setHeader('Connection', 'close');
         return writeJson(res, read.status, {
@@ -445,7 +629,9 @@ export function createControlServer(
   });
 
   server.on('close', () => {
+    clearInterval(queuePoll);
     loginLimiter.dispose();
+    claudeMdLimiter.dispose();
     hub.close();
   });
   return server;

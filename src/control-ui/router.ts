@@ -21,6 +21,7 @@ interface Route {
   handler: Handler;
   auth: AuthMode;
   mutation: boolean;
+  maxBody?: number;
 }
 
 export type Match =
@@ -29,6 +30,7 @@ export type Match =
       handler: Handler;
       auth: AuthMode;
       mutation: boolean;
+      maxBody?: number;
       params: Record<string, string>;
     }
   | { kind: 'not_found' }
@@ -43,7 +45,7 @@ export function createRouter() {
       method: string,
       pattern: string,
       handler: Handler,
-      opts?: { auth?: AuthMode; mutation?: boolean },
+      opts?: { auth?: AuthMode; mutation?: boolean; maxBody?: number },
     ) {
       routes.push({
         method,
@@ -51,6 +53,7 @@ export function createRouter() {
         handler,
         auth: opts?.auth ?? 'session',
         mutation: opts?.mutation ?? (method !== 'GET' && method !== 'HEAD'),
+        maxBody: opts?.maxBody,
       });
     },
     match(method: string, pathname: string): Match {
@@ -82,6 +85,7 @@ export function createRouter() {
             handler: r.handler,
             auth: r.auth,
             mutation: r.mutation,
+            maxBody: r.maxBody,
             params,
           };
         }

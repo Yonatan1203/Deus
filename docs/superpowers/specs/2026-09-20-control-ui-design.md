@@ -41,6 +41,11 @@ Four boundaries, all named because the design is only as strong as the weakest:
    would receive a plain cookie session), and the dashboard DOM renders text
    authored by chat senders, by the LLM, and by agents writing `CLAUDE.md` and
    vault files.
+5. **Container → host → browser.** Containers write into host state over IPC —
+   `sessions.metadata_json`, run logs, memory files — and the dashboard reads
+   that state back. Everything on this path is container-authored: it is
+   projected to typed fields (`metadata` → finite numbers under known keys)
+   or rendered as text nodes, never forwarded verbatim as objects.
 
 From Phase 2 on a session holder can write agent instruction files, toggle the
 review gates of an autonomous pipeline, and stop containers — the session's
@@ -158,9 +163,16 @@ Odysseus keeps its OpenAI framing on top and its tests must pass unchanged.
   accepted because a cross-site request carrying a custom header is never a
   simple request — the custom header is the control, the Origin check is
   belt-and-braces.
-- **Read-only mode.** `CONTROL_UI_READONLY=1` makes the server refuse every
-  mutation except `/auth/*` with `403 { error: "read-only mode" }` and the UI
-  hides every write control. Recommended for a phone-only deployment.
+- **Read-only mode bounds the actor.** `CONTROL_UI_READONLY=1` makes the
+  server refuse every mutation except `/auth/*` with `403 { error: "read-only
+  mode" }` — including chat turns and turn aborts, because a turn drives an
+  agent that holds rw vault and project mounts and is therefore a superset of
+  any dashboard file write. `/me` reports `read_only: true`, the banner reads
+  "read-only: the assistant cannot be driven from this dashboard", and the UI
+  hides every write control including the chat composer. Recommended for a
+  phone-only deployment. A per-session capability (view vs control sessions)
+  that would allow this without an env flag is a recorded follow-up, not in
+  scope.
 - **What needs no session:** `GET /` and static assets, `manifest.webmanifest`,
   `sw.js`, `POST /auth/login`. Everything under `/api/` is 401 without a valid
   session. Method gate before auth (404/405 first) so route presence never
@@ -202,9 +214,9 @@ security control — the same session can set it.
 | Wardens | `GET wardens` → `[ { name, enabled, tools, backends?, auto_threshold?, custom_instructions, rules_file } ]`; `PATCH wardens/:name { enabled }` — disabling requires `X-Confirm: <name>`; writes `config.json` (created from the example on first write, `.bak-<ts>` kept), logs `{ from, to }`, broadcasts `warden`; the UI shows a persistent "N wardens disabled" banner |
 | MCPs | `GET mcps` → `{ container: [ { name, source, conditional, available } ], skills: [ { name, dir, has_test } ], channels: [ { package, built, configured } ] }` |
 | Events | `POST events/ticket` → `{ ticket }`; `GET events?ticket=` → SSE |
-| Groups | `GET groups`; `GET groups/:folder/claude-md`; `PUT groups/:folder/claude-md { content }` (1 MB cap, `.bak-<ts>`, `X-Confirm: <folder>` — instruction files get their own typed confirmation, distinct from memory files) |
-| Sessions | `GET sessions`; `POST sessions/:folder/:backend/kill` (`X-Confirm`) → stop the active container if any, then orphan the row with reason `control-ui kill` |
-| Chat | `POST chat/turns { message, history? }` → SSE stream of `RuntimeEvent`s plus a first `turn_started`; `DELETE chat/turns/:id` → `queue.closeStdin(mainJid)` (graceful, never `docker kill`) |
+| Groups | `GET groups`; `GET groups/:folder/claude-md`; `PUT groups/:folder/claude-md { content }` (1 MB cap, collision-proof `.bak-<ts>-<rand>` with the newest 10 retained, 6/min per session, `X-Confirm: <folder>` — instruction files get their own typed confirmation, distinct from memory files) |
+| Sessions | `GET sessions` (rows with projected `metadata` and the containers per folder); `POST sessions/:folder/kill` (`X-Confirm: <folder>`, folder must be a registered group) → stop every active container serving that folder (one container serves a jid regardless of backend; several jids can share a folder), then orphan every backend's row with reason `control-ui kill`; the dialog lists the containers first |
+| Chat | `POST chat/turns { message, history? }` → SSE stream of `RuntimeEvent`s plus a first `turn_started`; audited with a prompt hash; `DELETE chat/turns/:id` → `queue.closeStdin(mainJid)` (graceful, never `docker kill`) and only for turns the dashboard started — the id is not a secret, ownership is the control. Only final assistant text is replayed as history; it is cleared on logout/401 |
 | Tasks | `GET tasks`; `POST tasks`; `PATCH tasks/:id`; `POST tasks/:id/run` (sets `next_run = now`; the scheduler polls every 60 s — the UI says so); `DELETE tasks/:id` (`X-Confirm`); `GET tasks/:id/runs?limit=50` |
 | Channels | `GET channels`; `GET channels/whatsapp/qr` only while `store/auth/creds.json` is absent |
 | Memory | `GET memory/tree`; `GET memory/file?path=`; `PUT memory/file { path, content }` (`X-Confirm-Edit: 1`, path confined to allowed roots, `.bak-<ts>`) |

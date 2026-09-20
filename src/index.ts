@@ -43,12 +43,15 @@ import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
+  stopContainerSync,
 } from './container-runtime.js';
 import {
   initDatabase,
   setSession as persistSession,
   storeChatMetadata,
   storeMessage,
+  clearSession,
+  listSessionRows,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
@@ -518,6 +521,17 @@ async function main(): Promise<void> {
     assistantName: ASSISTANT_NAME,
     version: readPackageVersion(PROJECT_ROOT),
     envHas: (key) => Boolean(process.env[key] || readEnvFile([key])[key]),
+    runtime: {
+      queue,
+      registry,
+      registeredGroups: () => state.registeredGroups,
+    },
+    store: {
+      listSessionRows,
+      clearSession,
+      stopContainer: stopContainerSync,
+      groupFolderPath: resolveGroupFolderPath,
+    },
   });
   if (controlServer) webhookServers.push(controlServer);
 

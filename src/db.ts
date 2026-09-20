@@ -862,6 +862,7 @@ export function setSession(
 export function clearSession(
   groupFolder: string,
   backend?: AgentRuntimeId,
+  reason = 'cleared',
 ): void {
   const now = new Date().toISOString();
   if (backend) {
@@ -869,14 +870,85 @@ export function clearSession(
       `UPDATE sessions
        SET orphaned_at = ?, orphan_reason = ?
        WHERE group_folder = ? AND backend = ? AND orphaned_at IS NULL`,
-    ).run(now, 'cleared', groupFolder, backend);
+    ).run(now, reason, groupFolder, backend);
     return;
   }
   db.prepare(
     `UPDATE sessions
      SET orphaned_at = ?, orphan_reason = ?
      WHERE group_folder = ? AND orphaned_at IS NULL`,
-  ).run(now, 'cleared', groupFolder);
+  ).run(now, reason, groupFolder);
+}
+
+export interface SessionRow {
+  id: number;
+  group_folder: string;
+  backend: string;
+  session_ref: string;
+  last_used_at: string | null;
+  orphaned_at: string | null;
+  orphan_reason: string | null;
+  last_compacted_at: string | null;
+  metadata: { cost_usd?: number; tokens?: number } | null;
+}
+
+// metadata_json is written by the container (IPC) — a trust boundary. Only
+// finite numbers under known keys cross it; everything else is dropped.
+function projectMetadata(raw: string | null): SessionRow['metadata'] {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    return null;
+  const o = parsed as Record<string, unknown>;
+  const num = (k: string) =>
+    typeof o[k] === 'number' && Number.isFinite(o[k])
+      ? (o[k] as number)
+      : undefined;
+  const out: NonNullable<SessionRow['metadata']> = {};
+  const cost = num('cost_usd') ?? num('total_cost_usd');
+  const tokens = num('tokens') ?? num('total_tokens');
+  if (cost !== undefined) out.cost_usd = cost;
+  if (tokens !== undefined) out.tokens = tokens;
+  return Object.keys(out).length ? out : null;
+}
+
+/** Newest-first session rows for the control UI; the session id is truncated to a reference. */
+export function listSessionRows(limit = 200): SessionRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, group_folder, session_id, backend, metadata_json, last_used_at,
+              orphaned_at, orphan_reason, last_compacted_at
+       FROM sessions
+       ORDER BY COALESCE(last_used_at, '') DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(limit) as Array<{
+    id: number;
+    group_folder: string;
+    session_id: string;
+    backend: string | null;
+    metadata_json: string | null;
+    last_used_at: string | null;
+    orphaned_at: string | null;
+    orphan_reason: string | null;
+    last_compacted_at: string | null;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    group_folder: r.group_folder,
+    backend: r.backend ?? 'claude',
+    session_ref: r.session_id.slice(0, 8),
+    last_used_at: r.last_used_at,
+    orphaned_at: r.orphaned_at,
+    orphan_reason: r.orphan_reason,
+    last_compacted_at: r.last_compacted_at,
+    metadata: projectMetadata(r.metadata_json),
+  }));
 }
 
 export function getSessionLastUsedAt(

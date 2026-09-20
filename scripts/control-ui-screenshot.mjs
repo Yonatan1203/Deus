@@ -7,7 +7,7 @@
 import fs from 'fs';
 import { chromium } from 'playwright';
 
-const [prefix = 'docs/control-ui/artifacts/phase1', tabsArg = 'agents,wardens,mcps'] = process.argv.slice(2);
+const [prefix = 'docs/control-ui/artifacts/phase2', tabsArg = 'chat,sessions,groups'] = process.argv.slice(2);
 const tabs = tabsArg.split(',').filter(Boolean);
 const url = process.env.CONTROL_UI_URL ?? 'http://127.0.0.1:3017';
 const file = process.env.CONTROL_UI_PASSWORD_FILE;
@@ -25,7 +25,14 @@ for (const [name, viewport] of viewports) {
   await page.click('#login-form button[type=submit]');
   for (const tab of tabs) {
     await page.goto(`${url}/#/${tab}`);
-    await page.waitForSelector('#view .card, #view table, #view .row', { timeout: 10_000 });
+    if (tab === 'chat') {
+      // Exercise the live path: send one message and wait for the reply to land.
+      await page.fill('.composer-input', 'hello');
+      await page.click('.composer-actions .primary');
+      await page.waitForSelector('.msg.assistant:not(.live)', { timeout: 20_000 });
+    } else {
+      await page.waitForSelector('#view .card, #view table, #view .row', { timeout: 10_000 });
+    }
     const out = `${prefix}-${tab}-${name}.png`;
     await page.screenshot({ path: out, fullPage: false });
     console.log(`wrote ${out}`);
