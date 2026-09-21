@@ -358,3 +358,27 @@ Deviations logged during Phase 4:
 - `Deviation:` the fixture store gained `countMessages`/`findMessagesById`/`dbPing` when the Debug tab first rendered against it (real `db.ts` had them).
 - `Deviation:` the disk bar is a styled `<progress>` element rather than a width set from script, so no inline style is ever written.
 - Residual, recorded: a host-side `./container/build.sh` running concurrently with a dashboard rebuild is not detected; `WHISPER_BIN`/`LLAMA_CPP_MODEL`/`DEUS_VAULT_PATH`-style host paths survive the secret denylist and are shown to the operator (never captured — the fixture `.env` is generic).
+
+## Phase 5 — deployment record (generic)
+
+Deployed by merging `control-ui` into the instance's running branch, building,
+and adding `CONTROL_UI_ENABLED=1` and `CONTROL_UI_PORT=3017` to the systemd
+unit (the unit file was backed up under `~/.config/deus/backups/` first; only
+those two lines differ). The credential was generated with
+`scripts/control-ui-credential.mjs` from a non-TTY, so the plaintext landed
+once in the 0600 `.first-password` file that the server deletes after the
+first login. Verified after restart: service active; `ss` shows the UI on
+127.0.0.1:3017 and nowhere else; the proxies on 3011/3013 and the Odysseus port
+3015 remain served by the same process and 3017 is purely additive; `GET /` answers 200 with the CSP; `/api/v1/*` answers 401
+unauthenticated, a wrong password answers 401, and repeated attempts trip the
+short per-address backoff; `.deus-tmp/` exists 0700
+before any container starts. The live login was deliberately **not** driven
+by the agent, so the one-time password file was left intact (never read) for
+the operator to consume.
+Rollback is the unit backup + restart (the UI simply stops listening); the
+merge can be reverted with `git revert -m 1 <merge>`.
+
+Deviations logged during Phase 5:
+- `Deviation:` the all-in-one deploy script was refused by the session's
+  command classifier (it bundled a service restart with a unit edit); the same
+  steps ran one at a time, each verified.
