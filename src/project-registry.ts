@@ -171,7 +171,10 @@ export const SENSITIVE_FILE_PATTERNS = [
  * Sensitive directory patterns to check within the project.
  * Files matching these globs under the project root are shadowed.
  */
-export const SENSITIVE_DIR_PATTERNS = ['credentials', 'secrets'];
+// `.deus-tmp` holds the control UI's in-flight `.env` rewrite (a full
+// credential copy for the instant before rename); the shadow covers every
+// child name, which the exact-name file list above cannot.
+export const SENSITIVE_DIR_PATTERNS = ['credentials', 'secrets', '.deus-tmp'];
 
 /**
  * Register a new external project.

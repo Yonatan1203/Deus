@@ -122,6 +122,23 @@ export const ODYSSEUS_HTTP_PORT = parseInt(
   10,
 );
 
+// Control UI (OpenClaw-style dashboard, src/control-ui/). Off by default. Only
+// the credential file PATH lives here — its contents are loaded by
+// control-ui/auth.ts, matching the "secrets not in config.ts" rule.
+export const CONTROL_UI_ENABLED =
+  process.env.CONTROL_UI_ENABLED === '1' ||
+  process.env.CONTROL_UI_ENABLED === 'true';
+export const CONTROL_UI_PORT = parseInt(
+  process.env.CONTROL_UI_PORT || '3017',
+  10,
+);
+export const CONTROL_UI_READONLY =
+  process.env.CONTROL_UI_READONLY === '1' ||
+  process.env.CONTROL_UI_READONLY === 'true';
+export const CONTROL_UI_CREDENTIAL_FILE =
+  process.env.CONTROL_UI_CREDENTIAL_FILE ||
+  path.join(CONFIG_DIR, 'control-ui.json');
+
 // ── Ingress gateway (centralized public inbound) ─────────────────────────────
 // The single public-facing HTTP server (src/ingress/gateway.ts), fronted by the
 // ngrok tunnel (src/ingress/tunnel.ts). Off by default. Secrets (NGROK_AUTHTOKEN,

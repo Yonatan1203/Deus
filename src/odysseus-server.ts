@@ -26,34 +26,20 @@ import { createServer, Server, IncomingMessage, ServerResponse } from 'http';
 import crypto from 'crypto';
 
 import { RuntimeRegistry } from './agent-runtimes/registry.js';
-import {
-  RunContext,
-  RuntimeEventSink,
-  defaultSession,
-} from './agent-runtimes/types.js';
-import {
-  INJECTION_SCANNER_CONFIG,
-  ODYSSEUS_HTTP_ENABLED,
-  ODYSSEUS_HTTP_PORT,
-} from './config.js';
-import { writeGroupsSnapshot, writeTasksSnapshot } from './container-runner.js';
-import { getAllTasks } from './db.js';
+import { ODYSSEUS_HTTP_ENABLED, ODYSSEUS_HTTP_PORT } from './config.js';
 import { readEnvFile } from './env.js';
 import { GroupQueue } from './group-queue.js';
-import { scanForInjection } from './guardrails/injection-scanner.js';
 import { logger } from './logger.js';
 import { messageText } from './openai-messages.js';
 import { createRateLimiter } from './rate-limiter.js';
-import { getAvailableGroups } from './router-state.js';
 import { RegisteredGroup } from './types.js';
+import { _resetWebTurnStateForTest, startWebTurn } from './web-turn.js';
 import { consolidateWebConversation } from './webui-consolidation.js';
 
 const ODYSSEUS_BIND_HOST = '127.0.0.1'; // localhost only — never 0.0.0.0
 const MIN_TOKEN_LEN = 32;
 const MAX_BODY_BYTES = 64 * 1024;
 const KEEPALIVE_MS = 20_000; // < Odysseus' ~300s time-to-first-token limit
-const ABSOLUTE_TURN_MS = 10 * 60_000; // hard total-duration cap (DoS bound; truncates long turns)
-const TASK_CLOSE_DELAY_MS = 10_000; // mirror task-scheduler: wind the container down promptly
 const MAX_CONCURRENT_SSE = 5;
 // Char budget for the replayed conversation history folded into each turn's
 // prompt (LIA-294). Oldest messages are dropped first so the current question
@@ -74,8 +60,6 @@ const limiter = createRateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS, {
 });
 
 let activeSse = 0;
-/** main jid → true while a turn is queued/running (one in-flight per jid). */
-const inFlight = new Set<string>();
 
 function isRateLimited(key: string): boolean {
   return limiter.isRateLimited(key);
@@ -84,7 +68,7 @@ function isRateLimited(key: string): boolean {
 /** @internal exposed for testing only */
 export function _resetServerStateForTest(): void {
   limiter.resetForTest();
-  inFlight.clear();
+  _resetWebTurnStateForTest();
   activeSse = 0;
 }
 
@@ -401,9 +385,6 @@ function handleChatCompletion(
   res: ServerResponse,
   remoteAddr: string,
 ): void {
-  // `latest` is the live user message (used for the empty-check + injection scan
-  // — only the new untrusted input should be scanned, not replayed history).
-  // `prompt` folds the prior conversation in for context (LIA-294).
   const latest = extractPrompt(body);
   if (!latest.trim()) {
     writeJson(res, 400, { error: 'no user message in request' });
@@ -412,131 +393,30 @@ function handleChatCompletion(
   const prompt = buildConversationPrompt(body);
   // body is validated JSON; structural cast, value checked inline. Default true.
   const stream = (body as { stream?: unknown })?.stream !== false;
-
-  // Resolve the control group SERVER-SIDE — no request field influences this.
-  const groups = deps.registeredGroups();
-  const entry = Object.entries(groups).find(
-    ([, g]) => g.isControlGroup === true,
-  );
-  if (!entry) {
-    writeJson(res, 503, { error: 'no control group registered' });
-    return;
-  }
-  const [mainJid, mainGroup] = entry;
-
-  // If the queue is shutting down, enqueueTask silently drops the task and the
-  // cleanup() in its callback never runs — refuse early so we never leak the
-  // in-flight slot / activeSse counter or hang the SSE response.
-  if (deps.queue.isShuttingDown()) {
-    writeJson(res, 503, { error: 'server shutting down' });
-    return;
-  }
-
-  // One in-flight Odysseus turn per main jid (don't starve the shared slot).
-  if (inFlight.has(mainJid)) {
-    writeJson(res, 429, { error: 'a turn is already in progress' });
-    return;
-  }
   if (stream && activeSse >= MAX_CONCURRENT_SSE) {
     writeJson(res, 503, { error: 'too many concurrent streams' });
     return;
   }
 
-  // Injection scan (defense-in-depth; fails open by design). Scan only the new
-  // user message — replayed assistant/history text is not fresh untrusted input
-  // and would false-positive (LIA-294).
-  const scan = scanForInjection(latest, INJECTION_SCANNER_CONFIG);
-  if (scan.blocked) {
-    logger.warn(
-      { remoteAddr, score: scan.score },
-      'Odysseus prompt blocked by injection scanner',
-    );
-    writeJson(res, 400, { error: 'request blocked' });
-    return;
-  }
-
-  const turnNonce = crypto.randomBytes(8).toString('hex');
-  // Audit log — no token, no Authorization header, no raw prompt content.
-  logger.info(
-    {
-      event: 'odysseus_turn',
-      remoteAddr,
-      turnNonce,
-      promptLen: prompt.length,
-      stream,
-    },
-    'Odysseus turn accepted',
-  );
-
-  inFlight.add(mainJid);
-  let sseCounted = false;
-
-  // ── Lifecycle state ──
   let finalized = false;
   let firstTokenSeen = false;
-  let taskActive = false; // true only while OUR task owns the active container
+  let sseCounted = false;
+  let turnNonce = '';
   const buffered: string[] = [];
   let keepalive: ReturnType<typeof setInterval> | null = null;
-  let absTimer: ReturnType<typeof setTimeout> | null = null;
-  let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const clearTimers = () => {
+  // Transport-only teardown; the turn lifecycle (slot, wind-down) is web-turn's.
+  const finalize = (errMsg?: string) => {
+    if (finalized) return;
+    finalized = true;
     if (keepalive) {
       clearInterval(keepalive);
       keepalive = null;
     }
-    if (absTimer) {
-      clearTimeout(absTimer);
-      absTimer = null;
-    }
-  };
-
-  // Wind the container down promptly — but ONLY ever close OUR own active
-  // container. Gating on taskActive at FIRE time prevents a queued/aborted
-  // Odysseus turn from writing _close to WhatsApp's container on the shared jid.
-  const scheduleClose = () => {
-    if (closeTimer) return;
-    const t = setTimeout(() => {
-      closeTimer = null;
-      if (taskActive) deps.queue.closeStdin(mainJid);
-    }, TASK_CLOSE_DELAY_MS);
-    t.unref(); // don't block a SIGTERM exit for the 10s wind-down delay
-    closeTimer = t;
-  };
-
-  // Release THIS turn's HTTP admission slot (inFlight) + SSE accounting, exactly
-  // once. The `slotReleased` once-flag is load-bearing, not just idempotence
-  // sugar: inFlight is a per-JID Set, so a LATE call (this turn's task-teardown,
-  // after the ~10s container wind-down) would otherwise delete the JID marker
-  // that a LATER turn already re-added at admission — leaking the 429 guard
-  // across turns. Releasing once, at the earliest of finalize()/teardown, keeps
-  // the marker owned by the turn that set it. Safe to call from both finalize()
-  // and the task's finally backstop.
-  let slotReleased = false;
-  const releaseSlot = () => {
-    if (slotReleased) return;
-    slotReleased = true;
-    inFlight.delete(mainJid);
     if (sseCounted) {
       activeSse = Math.max(0, activeSse - 1);
       sseCounted = false;
     }
-  };
-
-  // finalize() is run-once. It performs NO GroupQueue windown (notifyIdle/
-  // closeStdin) — those happen solely inside the active turn's eventSink, where
-  // taskActive is guaranteed true, so we never disrupt a WhatsApp turn sharing
-  // this jid. It DOES release the HTTP admission slot (releaseSlot) the instant
-  // the turn is finalized — success, error, absTimer, OR client-abort — so a
-  // follow-up web turn isn't 429'd during the ~10s container wind-down (the
-  // task's finally calls releaseSlot again as an idempotent backstop). The
-  // release runs BEFORE the `!res.writable` early-return so the abort path
-  // (res.on('close')) frees the slot too — not just the response-write paths.
-  const finalize = (errMsg?: string) => {
-    if (finalized) return;
-    finalized = true;
-    clearTimers();
-    releaseSlot();
     if (!res.writable) return; // server-ended OR client-aborted (destroyed)
     if (stream) {
       if (errMsg)
@@ -554,134 +434,68 @@ function handleChatCompletion(
     }
   };
 
-  // Client abort → free SSE accounting + terminate. No queue windown here
-  // (res.writable is already false); the running task closes its own container.
-  res.on('close', () => finalize());
-
-  if (stream) {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-    // Early role delta — satisfies the time-to-first-token window immediately.
-    writeSse(res, chunkFrame(turnNonce, { role: 'assistant' }, null));
-    // Immediate thinking indicator — covers container cold-start dead-air on
-    // no-tool turns (see commit msg). reasoning_content is Open WebUI-specific —
-    // it renders as a collapsible thinking block; standard clients ignore it.
-    writeSse(
-      res,
-      chunkFrame(turnNonce, { reasoning_content: 'Thinking…' }, null),
-    );
-    activeSse++;
-    sseCounted = true;
-    keepalive = setInterval(() => {
-      if (res.writable && !firstTokenSeen) res.write(': ping\n\n');
-    }, KEEPALIVE_MS);
-    keepalive.unref();
-  }
-  absTimer = setTimeout(() => {
-    if (taskActive) scheduleClose();
-    finalize('turn exceeded maximum duration');
-  }, ABSOLUTE_TURN_MS);
-  absTimer.unref();
-
-  // Resolve backend + a FRESH, non-persisted session per web turn (LIA-294).
-  // Continuity rides the replayed `messages` history folded into `prompt`, not a
-  // shared resumed session — so separate web chats stay isolated and a web turn
-  // never reads or writes the main group's (WhatsApp-shared) session.
-  const backend = deps.registry.resolve(mainGroup);
-  const backendName = backend.name();
-  const sessionRef = defaultSession('', backendName);
-
-  // Snapshots for the agent (parity with runAgent — current tasks/groups).
-  // These are a sync SQLite read + two sync fs writes. They run on the request
-  // path, but Odysseus turns are human-paced (one in-flight per jid), so the
-  // blocking is negligible here — same work the scheduler does per task.
-  try {
-    writeTasksSnapshot(
-      mainGroup.folder,
-      true,
-      getAllTasks().map((t) => ({
-        id: t.id,
-        groupFolder: t.group_folder,
-        prompt: t.prompt,
-        schedule_type: t.schedule_type,
-        schedule_value: t.schedule_value,
-        status: t.status,
-        next_run: t.next_run,
-      })),
-    );
-    writeGroupsSnapshot(
-      mainGroup.folder,
-      true,
-      getAvailableGroups(groups),
-      new Set(Object.keys(groups)),
-    );
-  } catch (err) {
-    logger.warn({ err }, 'Odysseus snapshot write failed (non-fatal)');
-  }
-
-  const runContext: RunContext = {
+  const turn = startWebTurn(deps, {
     prompt,
-    groupFolder: mainGroup.folder,
-    chatJid: mainJid,
-    isControlGroup: true,
-    // Streaming consumers only: enables the Claude backend's incremental
-    // partial/activity events so the answer renders live instead of one terminal
-    // blob. Buffered (stream:false) turns leave it off and assemble the result.
-    ...(stream && { stream: true }),
-  };
-
-  const sink: RuntimeEventSink = async (event) => {
-    if (event.type === 'session') {
-      // LIA-294: intentionally dropped — web turns are stateless (see file header).
-    } else if (event.type === 'output_text') {
-      firstTokenSeen = true;
-      if (stream && res.writable)
-        writeSse(res, chunkFrame(turnNonce, { content: event.text }, null));
-      else if (!stream) buffered.push(event.text);
-      scheduleClose();
-    } else if (event.type === 'activity') {
-      // Transient thinking/tool-progress — surfaced on `reasoning_content` (Open
-      // WebUI renders it as a collapsible thinking block, keeping the answer clean).
-      // Streaming-only and never buffered into the final result.
-      firstTokenSeen = true;
-      if (stream && res.writable)
-        writeSse(
-          res,
-          chunkFrame(turnNonce, { reasoning_content: event.text }, null),
-        );
-      scheduleClose();
-    } else if (event.type === 'turn_complete') {
-      deps.queue.notifyIdle(mainJid);
-      scheduleClose();
-      finalize();
-      // Consolidate this conversation into vault memory (LIA-295). Called AFTER
-      // finalize() so the SSE response is already closed; it is fire-and-forget
-      // (returns void, never await it) and touches no `res`, so it cannot run
-      // against an ended response. `body` carries the full replayed history.
-      consolidateWebConversation(body);
-    } else if (event.type === 'error') {
-      finalize(event.error);
-    }
-  };
-
-  // Enqueue as a serialized GroupQueue task on the main jid — runs mutually
-  // exclusive with WhatsApp turns on the same jid.
-  deps.queue.enqueueTask(mainJid, turnNonce, async () => {
-    taskActive = true;
-    try {
-      const result = await backend.runTurn(runContext, sessionRef, sink);
-      if (result.status === 'error') finalize(result.error || 'unknown error');
-      // LIA-294: result.sessionRef intentionally not persisted (see file header).
-      finalize();
-    } catch (err) {
-      finalize(err instanceof Error ? err.message : String(err));
-    } finally {
-      taskActive = false;
-      finalize();
-      releaseSlot();
-    }
+    latest,
+    stream,
+    source: 'odysseus',
+    remoteAddr,
+    onEvent: (event) => {
+      if (event.type === 'output_text') {
+        firstTokenSeen = true;
+        if (stream && res.writable)
+          writeSse(res, chunkFrame(turnNonce, { content: event.text }, null));
+        else if (!stream) buffered.push(event.text);
+      } else if (event.type === 'activity') {
+        // Transient thinking/tool-progress → reasoning_content (Open WebUI
+        // renders a collapsible block); streaming-only, never buffered.
+        firstTokenSeen = true;
+        if (stream && res.writable)
+          writeSse(
+            res,
+            chunkFrame(turnNonce, { reasoning_content: event.text }, null),
+          );
+      } else if (event.type === 'turn_complete') {
+        // Consolidate into vault memory (LIA-295) — fire-and-forget, touches no
+        // `res`; web-turn delivers this even after a client abort, so every
+        // completed turn is consolidated as before.
+        consolidateWebConversation(body);
+      }
+    },
+    onDone: (error) => finalize(error),
+    // The SSE preamble must precede the first event, and the fake queue in
+    // tests runs the turn synchronously — so it is written here, after
+    // admission and before the enqueue, never after startWebTurn returns.
+    onAccepted: (id) => {
+      turnNonce = id;
+      if (!stream) return;
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      // Early role delta — satisfies the time-to-first-token window immediately.
+      writeSse(res, chunkFrame(turnNonce, { role: 'assistant' }, null));
+      // Immediate thinking indicator — covers container cold-start dead-air on
+      // no-tool turns. reasoning_content is Open WebUI-specific.
+      writeSse(
+        res,
+        chunkFrame(turnNonce, { reasoning_content: 'Thinking…' }, null),
+      );
+      activeSse++;
+      sseCounted = true;
+      keepalive = setInterval(() => {
+        if (res.writable && !firstTokenSeen) res.write(': ping\n\n');
+      }, KEEPALIVE_MS);
+      keepalive.unref();
+    },
   });
+  if (!turn.ok) {
+    writeJson(res, turn.status, { error: turn.error });
+    return;
+  }
+
+  // Client abort → stop delivering frames and free the admission slot; the
+  // running task still closes its own container on completion.
+  res.on('close', () => turn.abort());
 }

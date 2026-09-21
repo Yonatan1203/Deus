@@ -58,7 +58,7 @@ vi.mock('./credential-proxy.js', () => ({
 
 vi.mock('./project-registry.js', () => ({
   SENSITIVE_FILE_PATTERNS: ['.env', '.env.local', '.env.production'],
-  SENSITIVE_DIR_PATTERNS: ['credentials', 'secrets'],
+  SENSITIVE_DIR_PATTERNS: ['credentials', 'secrets', '.deus-tmp'],
 }));
 
 vi.mock('./mount-security.js', () => ({
@@ -205,6 +205,19 @@ describe('buildVolumeMounts: control group credential lockdown (LIA-210)', () =>
       expect(shadow!.hostPath).toContain('control-shadows');
       expect(shadow!.hostPath).not.toContain(`${path.sep}${name}${path.sep}`);
     }
+  });
+
+  it('shadows the control UI temp dir with an empty dir when it exists', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockStatSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+    mockReaddirSync.mockReturnValue([]);
+    const mounts = buildVolumeMounts(makeGroup({ isControlGroup: true }), true);
+    const shadow = findMount(mounts, '/workspace/project/.deus-tmp');
+    expect(shadow).toBeDefined();
+    expect(shadow!.readonly).toBe(true);
+    expect(shadow!.hostPath).not.toContain(
+      `${path.sep}.deus-tmp${path.sep}project`,
+    );
   });
 
   it('shadows non-gcal integrations children but preserves gcal', () => {

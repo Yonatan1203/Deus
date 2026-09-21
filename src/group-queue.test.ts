@@ -601,3 +601,25 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
   });
 });
+
+describe('GroupQueue.snapshot', () => {
+  it('exposes per-jid state without the process handle', () => {
+    const q = new GroupQueue();
+    q.registerProcess('g@x', { pid: 1 } as never, 'deus-g-1', 'g');
+    const snap = q.snapshot();
+    expect(snap).toEqual([
+      {
+        jid: 'g@x',
+        active: false,
+        idleWaiting: false,
+        isTaskContainer: false,
+        runningTaskId: null,
+        containerName: 'deus-g-1',
+        groupFolder: 'g',
+        pendingTaskCount: 0,
+        retryCount: 0,
+      },
+    ]);
+    expect(Object.keys(snap[0])).not.toContain('process');
+  });
+});

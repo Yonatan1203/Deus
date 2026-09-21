@@ -27,6 +27,8 @@ import {
   NGROK_STATIC_DOMAIN,
   PROJECT_ROOT,
   TOOL_PROXY_PORT,
+  CONFIG_DIR,
+  deusInstanceId,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { startToolProxy } from './tool-proxy.js';
@@ -41,20 +43,29 @@ import {
 } from './channels/registry.js';
 import {
   cleanupOrphans,
+  CONTAINER_RUNTIME_BIN,
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
+  stopContainerSync,
 } from './container-runtime.js';
+import { ensureControlTmpDir } from './control-ui/api/config.js';
 import {
   initDatabase,
   setSession as persistSession,
   storeChatMetadata,
   storeMessage,
+  clearSession,
+  countMessages,
+  dbPing,
+  findMessagesById,
+  listSessionRows,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
 import { loadSkillIpcHandlers } from './skills/index.js';
 import { createMessageOrchestrator } from './message-orchestrator.js';
 import { startOdysseusServer } from './odysseus-server.js';
+import { readPackageVersion, startControlServer } from './control-ui/server.js';
 import { findChannel, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -71,18 +82,26 @@ import {
 import { runStartupChecks, printStartupReport } from './startup-gate.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { seedDocGardener } from './doc-gardener-seed.js';
-import { getAllTasks } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getAllTasks,
+  getTaskById,
+  getTaskRunLogs,
+  updateTask,
+} from './db.js';
 import { writeGroupsSnapshot, writeTasksSnapshot } from './container-runner.js';
 import { Channel, NewMessage, NewReaction, RegisteredGroup } from './types.js';
 import { logReactionSignal } from './evolution-client.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { resolveVaultPath } from './solutions/store.js';
 import { processImage } from './image.js';
 import {
   createAudioResolver,
   sweepAudioTmpDir,
 } from './openai-transcription.js';
-import { logger } from './logger.js';
+import { logger, logRing } from './logger.js';
 import { initRuntimeRegistry } from './agent-runtimes/registry.js';
 import { createClaudeRuntime } from './agent-runtimes/claude-backend.js';
 import { createOpenAIRuntime } from './agent-runtimes/openai-backend.js';
@@ -410,6 +429,10 @@ async function main(): Promise<void> {
   }
 
   // Create and connect all registered channels.
+  // The control UI's temp dir must exist before the first container is
+  // mounted: its shadow is decided per container start (see project-registry).
+  ensureControlTmpDir(PROJECT_ROOT);
+
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
   for (const channelName of getRegisteredChannelNames()) {
@@ -508,6 +531,67 @@ async function main(): Promise<void> {
     registeredGroups: () => state.registeredGroups,
   });
   if (odysseusServer) webhookServers.push(odysseusServer);
+
+  // Rewrites the per-group task snapshots after any task change — shared by
+  // the IPC handlers and the control UI so both paths refresh identically.
+  const refreshTaskSnapshots = () => {
+    const tasks = getAllTasks();
+    const taskRows = tasks.map((t) => ({
+      id: t.id,
+      groupFolder: t.group_folder,
+      prompt: t.prompt,
+      schedule_type: t.schedule_type,
+      schedule_value: t.schedule_value,
+      status: t.status,
+      next_run: t.next_run,
+    }));
+    for (const group of Object.values(state.registeredGroups)) {
+      writeTasksSnapshot(group.folder, group.isControlGroup === true, taskRows);
+    }
+  };
+
+  // Control UI (no-op unless CONTROL_UI_ENABLED=1). Localhost-only dashboard
+  // reached through an SSH tunnel; fails closed on a missing credential file.
+  const controlServer = await startControlServer({
+    repoRoot: PROJECT_ROOT,
+    webRoot: path.join(PROJECT_ROOT, 'web', 'control'),
+    assistantName: ASSISTANT_NAME,
+    version: readPackageVersion(PROJECT_ROOT),
+    envHas: (key) => Boolean(process.env[key] || readEnvFile([key])[key]),
+    runtime: {
+      queue,
+      registry,
+      registeredGroups: () => state.registeredGroups,
+    },
+    store: {
+      listSessionRows,
+      clearSession,
+      stopContainer: stopContainerSync,
+      groupFolderPath: resolveGroupFolderPath,
+      getAllTasks,
+      getTaskById,
+      createTask,
+      updateTask,
+      deleteTask,
+      getTaskRunLogs,
+      onTasksChanged: refreshTaskSnapshots,
+      countMessages,
+      findMessagesById,
+      dbPing,
+    },
+    channels: () => channels,
+    bin: CONTAINER_RUNTIME_BIN,
+    instanceId: deusInstanceId(),
+    logRing,
+    envPath: path.join(PROJECT_ROOT, '.env'),
+    configDir: CONFIG_DIR,
+    vaultPath: resolveVaultPath(),
+    // Resolved so a relative WHATSAPP_AUTH_DIR cannot differ from the adapter's view.
+    whatsappAuthDir: path.resolve(
+      process.env.WHATSAPP_AUTH_DIR || path.join(PROJECT_ROOT, 'store', 'auth'),
+    ),
+  });
+  if (controlServer) webhookServers.push(controlServer);
 
   // Start Linear subsystems (no-op if LINEAR_API_KEY not configured)
   const linearEnv = readEnvFile([
@@ -695,25 +779,7 @@ async function main(): Promise<void> {
     getAvailableGroups: () => getAvailableGroups(state.registeredGroups),
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
-    onTasksChanged: () => {
-      const tasks = getAllTasks();
-      const taskRows = tasks.map((t) => ({
-        id: t.id,
-        groupFolder: t.group_folder,
-        prompt: t.prompt,
-        schedule_type: t.schedule_type,
-        schedule_value: t.schedule_value,
-        status: t.status,
-        next_run: t.next_run,
-      }));
-      for (const group of Object.values(state.registeredGroups)) {
-        writeTasksSnapshot(
-          group.folder,
-          group.isControlGroup === true,
-          taskRows,
-        );
-      }
-    },
+    onTasksChanged: refreshTaskSnapshots,
   });
 
   queue.setProcessMessagesFn(orchestrator.processGroupMessages);

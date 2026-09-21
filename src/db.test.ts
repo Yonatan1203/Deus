@@ -3,34 +3,40 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
   clearSession,
+  countMessages,
   createTask,
+  dbPing,
   deleteTask,
+  findMessagesById,
+  getAllBackendSessions,
   getAllChats,
   getAllRegisteredGroups,
+  getAllSessions,
   getAutoCompressWatermark,
   getConsecutiveFailCount,
+  getIssueCacheCount,
+  getIssuesFromCache,
   getLastFailTime,
+  getMaxCachedAt,
   getMessagesSince,
   getNewMessages,
-  getAllSessions,
-  getAllBackendSessions,
-  getTaskById,
-  getSession,
-  logPipelineEvent,
-  insertPipelineEventRow,
   getPipelineEvents,
+  getSession,
+  getTaskById,
+  getTaskRunLogs,
+  insertPipelineEventRow,
+  listSessionRows,
+  logPipelineEvent,
+  logTaskRun,
+  reconcileIssueCache,
   setAutoCompressWatermark,
-  setSession,
   setRegisteredGroup,
+  setSession,
+  softDeleteIssueCache,
   storeChatMetadata,
   storeMessage,
   updateTask,
   upsertIssueCache,
-  softDeleteIssueCache,
-  getIssueCacheCount,
-  getMaxCachedAt,
-  getIssuesFromCache,
-  reconcileIssueCache,
 } from './db.js';
 import { getBus } from './events/bus.js';
 import type { EventEnvelope } from './events/types.js';
@@ -977,5 +983,108 @@ describe('auto-compress watermark', () => {
     expect(getAutoCompressWatermark('chat-b@jid')).toBe(
       '2026-05-12T20:00:00.000Z',
     );
+  });
+});
+
+describe('control-ui session rows', () => {
+  it('lists rows newest first with orphan info, projects metadata, honours a clear reason', () => {
+    setSession('g1', 'sess-aaaaaaaa');
+    setSession('g2', {
+      session_id: 'sess-bbbbbbbb',
+      backend: 'claude',
+      metadata_json: JSON.stringify({
+        cost_usd: 0.12,
+        tokens: 345,
+        evil: '<img>',
+      }),
+    });
+    clearSession('g1', undefined, 'control-ui kill');
+    const rows = listSessionRows(10);
+    expect(rows.map((r) => r.group_folder)).toEqual(['g2', 'g1']);
+    expect(rows[1]).toMatchObject({
+      backend: 'claude',
+      orphan_reason: 'control-ui kill',
+      session_ref: 'sess-aaa',
+    });
+    expect(rows[1].orphaned_at).not.toBeNull();
+    expect(rows[0].orphaned_at).toBeNull();
+    expect(rows[0].metadata).toEqual({ cost_usd: 0.12, tokens: 345 });
+  });
+});
+
+describe('control-ui task run logs', () => {
+  it('lists runs newest first, truncated, with a limit', () => {
+    createTask({
+      id: 'task-r',
+      group_folder: 'main',
+      chat_jid: 'g@x',
+      prompt: 'p',
+      schedule_type: 'once',
+      schedule_value: '2024-06-01T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: null,
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+    for (const i of [1, 2, 3]) {
+      logTaskRun({
+        task_id: 'task-r',
+        run_at: `2024-06-0${i}T00:00:00.000Z`,
+        duration_ms: i,
+        status: 'success',
+        result: i === 3 ? 'x'.repeat(10_000) : `r${i}`,
+        error: null,
+      });
+    }
+    const runs = getTaskRunLogs('task-r', 2);
+    expect(runs).toHaveLength(2);
+    expect(runs[0].result).toHaveLength(4096);
+    expect(runs[1].result).toBe('r2');
+    expect(getTaskRunLogs('nope', 5)).toEqual([]);
+  });
+});
+
+describe('control-ui trace helpers', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+  });
+  it('finds messages by id without content or sender, and counts', () => {
+    storeChatMetadata('g@x', '2026-01-01T00:00:00Z');
+    storeChatMetadata('h@x', '2026-01-01T00:00:00Z');
+    storeMessage({
+      id: 'm1',
+      chat_jid: 'g@x',
+      sender: 's@x',
+      sender_name: 'S',
+      content: 'hello there',
+      timestamp: '2026-01-01T00:00:00Z',
+      is_from_me: false,
+    });
+    storeMessage({
+      id: 'm1',
+      chat_jid: 'h@x',
+      sender: 's@x',
+      sender_name: 'S',
+      content: 'hi',
+      timestamp: '2026-01-02T00:00:00Z',
+      is_from_me: true,
+    });
+    const rows = findMessagesById('m1');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({
+      id: 'm1',
+      chat_jid: 'h@x',
+      timestamp: '2026-01-02T00:00:00Z',
+      is_from_me: true,
+      is_bot_message: false,
+      content_length: 2,
+    });
+    for (const r of rows)
+      expect(Object.keys(r)).not.toEqual(
+        expect.arrayContaining(['content', 'sender', 'sender_name']),
+      );
+    expect(findMessagesById('nope')).toEqual([]);
+    expect(countMessages()).toBe(2);
+    expect(dbPing()).toBe(true);
   });
 });

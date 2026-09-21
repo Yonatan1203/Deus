@@ -120,6 +120,18 @@ export function ensureContainerRuntimeRunning(): void {
 const INSTANCE_SUFFIX_RE = /-i([0-9a-f]{8})$/;
 
 /**
+ * Shape of a container-runner name: `deus-<folder>-<ms>-i<8hex>`. The folder
+ * part keeps the case of the group folder (`safeName` in container-runner).
+ */
+export const CONTAINER_NAME_RE =
+  /^deus-[A-Za-z0-9][A-Za-z0-9-]{0,80}-\d{10,16}-i[0-9a-f]{8}$/;
+
+/** True only for containers this install started — the one ownership rule. */
+export function isOwnContainer(name: string, instanceId: string): boolean {
+  return CONTAINER_NAME_RE.test(name) && name.endsWith(`-i${instanceId}`);
+}
+
+/**
  * Kill orphaned Deus containers left by a previous run OF THIS INSTALL.
  *
  * Runs on every daemon startup, so it must never touch containers belonging to
