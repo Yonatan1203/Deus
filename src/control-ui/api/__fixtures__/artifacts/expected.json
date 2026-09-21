@@ -1,0 +1,10 @@
+{
+  "valid-empty": "ok",
+  "valid-two": "ok",
+  "valid-hebrew": "ok",
+  "valid-description": "ok",
+  "invalid-dup-id": "bad-schema",
+  "invalid-rev0": "bad-schema",
+  "invalid-kind": "bad-schema",
+  "invalid-title": "bad-schema"
+}

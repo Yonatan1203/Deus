@@ -2759,3 +2759,340 @@ describe('control-ui server — workflows', () => {
     expect((await post('{}', 'archive')).status).toBe(429);
   });
 });
+
+describe('control-ui server — artifacts', () => {
+  const warnSpy = vi.mocked(logger.warn);
+  let configDir: string;
+  let ctlDir: string;
+  beforeEach(() => {
+    warnSpy.mockClear();
+    clock = Date.parse('2026-09-21T12:00:00.000Z');
+    configDir = path.join(root, 'cfg');
+    ctlDir = path.join(configDir, 'control-ui');
+  });
+  const j = (r: { text: string }) => JSON.parse(r.text);
+  const ev = (name: string) =>
+    warnSpy.mock.calls.filter(
+      (c) => (c[0] as { event?: string })?.event === name,
+    );
+  const bootA = (over: Partial<ControlDeps> = {}) =>
+    boot(
+      {
+        runtime: fakeRuntime().runtime,
+        store: fakeStore(root),
+        configDir,
+        ...over,
+      },
+      undefined,
+      undefined,
+      { workflowDebounceMs: 50, workflowPollMs: 100 },
+    );
+  const regFile = () => path.join(ctlDir, 'artifacts.json');
+  const plant = (artifacts: object[], rev = 1) =>
+    fs.writeFileSync(regFile(), JSON.stringify({ v: 1, rev, artifacts }));
+  const art = (over: Record<string, unknown> = {}) => ({
+    id: 'art-0123456789ab',
+    title: 'Supplier Line',
+    url: 'https://claude.ai/artifact/fixture',
+    kind: 'app',
+    description: 'The supplier tracker',
+    added_at: '2026-09-21T10:00:00.000Z',
+    added_by: 'cli',
+    ...over,
+  });
+  const sse = (
+    auth: Record<string, string>,
+    cookie: string,
+    act: () => void,
+    waitMs = 700,
+  ) =>
+    request({
+      method: 'POST',
+      path: '/api/v1/events/ticket',
+      headers: auth,
+    }).then(
+      (t) =>
+        new Promise<string[]>((resolve, reject) => {
+          const { ticket } = JSON.parse(t.text);
+          let buf = '';
+          const req = http.request(
+            {
+              host: '127.0.0.1',
+              port,
+              path: `/api/v1/events?ticket=${ticket}`,
+              headers: { Cookie: cookie },
+            },
+            (res) => {
+              res.on('data', (c) => (buf += String(c)));
+              setTimeout(act, 30);
+              setTimeout(() => {
+                req.destroy();
+                resolve(
+                  buf
+                    .split('\n\n')
+                    .filter((f) => f.includes('event: artifact')),
+                );
+              }, waitMs);
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        }),
+    );
+
+  it('lists the registry (empty, valid, invalid) and refuses without auth or config', async () => {
+    await bootA();
+    expect(fs.statSync(ctlDir).isDirectory()).toBe(true);
+    expect(
+      (await request({ method: 'GET', path: '/api/v1/artifacts' })).status,
+    ).toBe(401);
+    const { auth } = await login();
+    expect(
+      j(
+        await request({
+          method: 'GET',
+          path: '/api/v1/artifacts',
+          headers: auth,
+        }),
+      ),
+    ).toEqual({ artifacts: [], rev: 0 });
+    plant(
+      [
+        art(),
+        art({
+          id: 'art-0123456789ac',
+          title: 'Bad',
+          url: 'https://evil.example/',
+          kind: 'report',
+        }),
+      ],
+      3,
+    );
+    let r = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    expect(r.rev).toBe(3);
+    expect(r.artifacts[0]).toMatchObject({
+      url: 'https://claude.ai/artifact/fixture',
+      hostname: 'claude.ai',
+      description: 'The supplier tracker',
+    });
+    expect(r.artifacts[1]).toMatchObject({
+      url: null,
+      blocked: 'host',
+      hostname: 'evil.example',
+    });
+    fs.writeFileSync(
+      regFile(),
+      '{"v":1,"rev":0,"artifacts":[],"secret":"S3CR3T"}',
+    );
+    r = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    expect(r).toEqual({
+      artifacts: [],
+      rev: 0,
+      invalid: true,
+      reason: 'bad-schema',
+    });
+    await new Promise<void>((res) => server.close(() => res()));
+    await bootA({ configDir: undefined });
+    const s2 = await login();
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/artifacts',
+          headers: s2.auth,
+        })
+      ).status,
+    ).toBe(503);
+  });
+
+  it('adds with validation and audit, removes with the typed id, and budgets writes', async () => {
+    await bootA();
+    const { auth } = await login();
+    const post = (body: object) =>
+      request({
+        method: 'POST',
+        path: '/api/v1/artifacts',
+        headers: { ...auth, ...H },
+        body: JSON.stringify(body),
+      });
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/artifacts',
+          headers: H,
+          body: '{}',
+        })
+      ).status,
+    ).toBe(401);
+    let r = await post({
+      title: 'Supplier Line',
+      url: 'javascript:alert(1)',
+      kind: 'app',
+    });
+    expect(r.status).toBe(400);
+    expect(j(r)).toEqual({ error: 'url not allowed', blocked: 'protocol' });
+    expect(
+      j(await post({ title: 'x', url: 'https://evil.example/', kind: 'app' })),
+    ).toMatchObject({ blocked: 'host' });
+    expect(
+      j(
+        await post({
+          title: 'x',
+          url: 'https://claude.ai/p?api_key=1',
+          kind: 'app',
+        }),
+      ),
+    ).toMatchObject({ blocked: 'secret-query' });
+    expect(
+      (await post({ title: '', url: 'https://claude.ai/p', kind: 'app' }))
+        .status,
+    ).toBe(400);
+    r = await post({
+      title: 'קו ספקים',
+      url: 'https://claude.ai/artifact/a',
+      kind: 'app',
+      description: 'd',
+    });
+    expect(r.status).toBe(201);
+    const { id } = j(r);
+    expect(id).toMatch(/^art-[0-9a-f]{12}$/);
+    expect(JSON.parse(fs.readFileSync(regFile(), 'utf-8'))).toMatchObject({
+      rev: 1,
+    });
+    const add = ev('control_ui_artifact_add');
+    expect(add).toHaveLength(1);
+    expect(add[0][0]).toMatchObject({ id, hostname: 'claude.ai' });
+    expect(JSON.stringify(add[0][0])).not.toContain('/artifact/a');
+    // Remove: id regex → 404 before anything; typed id required.
+    const del = (rid: string, confirm?: string) =>
+      request({
+        method: 'DELETE',
+        path: `/api/v1/artifacts/${rid}`,
+        headers: { ...auth, ...(confirm ? { 'X-Confirm': confirm } : {}) },
+      });
+    expect((await del('..%2Fx')).status).toBe(404);
+    expect((await del(id)).status).toBe(428);
+    expect((await del(id, 'Supplier Line')).status).toBe(428); // a title is never the confirmation
+    expect((await del('art-ffffffffffff', 'art-ffffffffffff')).status).toBe(
+      404,
+    );
+    expect((await del(id, id)).status).toBe(204);
+    expect(JSON.parse(fs.readFileSync(regFile(), 'utf-8'))).toMatchObject({
+      rev: 2,
+      artifacts: [],
+    });
+    expect(
+      fs
+        .readFileSync(path.join(ctlDir, 'artifacts-removed.jsonl'), 'utf-8')
+        .trim()
+        .split('\n'),
+    ).toHaveLength(1);
+    expect(ev('control_ui_artifact_remove')[0][0]).toMatchObject({
+      id,
+      hostname: 'claude.ai',
+    });
+    // Registry full by count (201st) and a stale lock broken.
+    plant(
+      Array.from({ length: 200 }, (_, i) =>
+        art({ id: `art-${i.toString(16).padStart(12, '0')}` }),
+      ),
+      9,
+    );
+    r = await post({
+      title: 'one more',
+      url: 'https://claude.ai/p',
+      kind: 'app',
+    });
+    expect(r.status).toBe(409);
+    expect(j(r).error).toBe('registry full');
+    fs.writeFileSync(path.join(ctlDir, 'artifacts.json.lock'), 'other');
+    expect(
+      j(await post({ title: 'busy', url: 'https://claude.ai/p', kind: 'app' })),
+    ).toEqual({ error: 'registry busy' });
+    // Invalid input never spent budget; the writes that reached the limiter so
+    // far are 201, 404, 204, 409, 409 — one more 409, then 429.
+    expect(
+      (await post({ title: 'a', url: 'https://claude.ai/p', kind: 'app' }))
+        .status,
+    ).toBe(409);
+    expect(
+      (await post({ title: 'a', url: 'https://claude.ai/p', kind: 'app' }))
+        .status,
+    ).toBe(429);
+  });
+
+  it('read-only withholds url and description on the route and the SSE frame, and refuses writes', async () => {
+    await bootA({ readOnly: true });
+    const { auth, cookie } = await login();
+    plant([art()], 2);
+    const r = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    expect(Object.keys(r.artifacts[0]).sort()).toEqual([
+      'added_at',
+      'added_by',
+      'hostname',
+      'id',
+      'kind',
+      'title',
+    ]);
+    const frames = await sse(auth, cookie, () =>
+      plant([art(), art({ id: 'art-0123456789ad', title: 'Second' })], 3),
+    );
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+    const payload = JSON.parse(frames[frames.length - 1].split('data: ')[1]);
+    expect(payload.rev).toBe(3);
+    for (const a of payload.artifacts)
+      for (const k of ['url', 'description', 'blocked'])
+        expect(a).not.toHaveProperty(k);
+    expect(JSON.stringify(payload)).not.toContain('claude.ai/artifact');
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/artifacts',
+          headers: { ...auth, ...H },
+          body: '{}',
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: '/api/v1/artifacts/art-0123456789ab',
+          headers: { ...auth, 'X-Confirm': 'art-0123456789ab' },
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it('broadcasts one artifact frame per registry change and none for other files in the dir', async () => {
+    await bootA();
+    const { auth, cookie } = await login();
+    let frames = await sse(auth, cookie, () => plant([art()], 1));
+    expect(frames).toHaveLength(1);
+    expect(JSON.parse(frames[0].split('data: ')[1])).toMatchObject({ rev: 1 });
+    frames = await sse(auth, cookie, () =>
+      fs.writeFileSync(path.join(ctlDir, 'claude-started.json'), '[]'),
+    );
+    expect(frames).toHaveLength(0);
+  });
+});

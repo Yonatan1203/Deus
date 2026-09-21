@@ -68,6 +68,16 @@ export async function render(root, api, bus, me) {
     const links = [];
     if (w.preview_url !== undefined) links.push(link('Preview', w.preview_url, w.preview_blocked));
     for (const o of w.outputs || []) links.push(link(o.label, o.url, o.blocked));
+    // The browser-side counterpart of the ask-to-register rule: only for a
+    // preview the server cleared (a string), never for a withheld one.
+    const addToArtifacts = !readOnly && w.status === 'done' && typeof w.preview_url === 'string'
+      ? h('button', { type: 'button', class: 'small ghost', onclick: async () => {
+        try {
+          await api.post('/api/v1/artifacts', { title: w.name, url: w.preview_url, kind: 'preview' });
+          toast('Added to Artifacts', 'ok');
+        } catch (err) { toast(err.status === 429 ? 'Too many changes — wait a minute' : err.message, 'error'); }
+      } }, icon('plus', { size: 14 }), 'Add to artifacts')
+      : null;
     return h('div', { class: `card wf-card ${w.status}`, 'data-id': w.id },
       h('div', { class: 'title' }, h('span', {}, w.name), badge(label, kind)),
       h('div', { class: 'chips' },
@@ -82,7 +92,7 @@ export async function render(root, api, bus, me) {
       links.length ? h('div', { class: 'wf-links' }, ...links) : null,
       h('div', { class: 'wf-foot muted' },
         h('span', {}, terminal ? `finished ${fmtTime(w.finished_at)}` : `updated ${fmtTime(w.updated_at)}`),
-        !readOnly && terminal ? archiveOne(w) : null));
+        h('span', { class: 'wf-foot-actions' }, addToArtifacts, !readOnly && terminal ? archiveOne(w) : null)));
   }
 
   function draw() {

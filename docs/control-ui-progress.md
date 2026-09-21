@@ -20,5 +20,5 @@ Notes and assumptions: `docs/control-ui-notes.md`.
 |-------|--------|-------|
 | C Claude sessions | done 2026-09-21 | list/transcript/start/message/stop through the Claude Code job CLI; bypassPermissions by operator decision; record + `phaseC-*` screenshots in notes |
 | W Workflows | done 2026-09-21 | `scripts/workflow.mjs` registry under `CONFIG_DIR`, confined read path, shared URL allow-list, watcher-driven `workflow` SSE with data-path read-only projection, typed archive; record + `phaseW-*` screenshots in notes |
-| A Live artifacts | pending | registry + ask-to-register convention |
+| A Live artifacts | done 2026-09-21 | `scripts/artifact-registry.mjs` + one locked, budgeted registry file, add/remove routes with the read-time URL allow-list as the control, ask-to-register convention, Workflows tie-in; record + `phaseA-*` screenshots in notes |
 | D Connect Gmail to the assistant | pending | native OAuth for `packages/mcp-gmail` through the tunnel loopback |
