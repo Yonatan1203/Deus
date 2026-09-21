@@ -79,6 +79,8 @@ for (const [name, viewport] of viewports) {
       }
     } else if (tab === 'workflows') {
       await page.waitForSelector('#view .wf-card, #view .empty', { timeout: 10_000 });
+    } else if (tab === 'artifacts') {
+      await page.waitForSelector('#view .art-card, #view .empty', { timeout: 10_000 });
     } else if (tab === 'config') {
       // Open one editable row so the inline editor is part of the capture.
       await page.waitForSelector('#view table.kv', { timeout: 10_000 });

@@ -527,3 +527,73 @@ Deviations logged during Phase W:
 - `CONTROL_UI_PREVIEW_HOSTS` widens the preview allow-list for Phase A too,
   because `isAllowedUrl` is shared. Empty by default, so the default equals
   the spec.
+
+## Phase A — verification record (Artifacts tab)
+
+Plan: `docs/superpowers/plans/2026-09-21-control-ui-phaseA.md` (plan-reviewer
+rounds 1–3, threat-modeler rounds 1–3, all folded; final verdicts SHIP).
+
+What shipped:
+
+- `scripts/artifact-registry.mjs` — `add | remove | list | validate` over
+  `CONFIG_DIR/control-ui/artifacts.json` (`{ v: 1, rev, artifacts }`, 0600):
+  `wx` temp + rename under `artifacts.json.lock` (nonce, `lstat` age, 5 s
+  stale break, released only on a nonce match, three 200 ms retries), `rev`
+  re-checked before the rename, 192 KB write budget, hourly temp sweep;
+  `remove` prints the entry and appends it to `artifacts-removed.jsonl`
+  (`O_NOFOLLOW` append, rotated to `.1` past 1 MB). Exit codes 0/2/3/4; a
+  failure inside the lock is thrown, not exited, so the lock is released.
+- `src/control-ui/api/artifacts.ts` — `validateRegistry` (fresh literal,
+  closed reason enum, duplicate ids rejected), reading through Phase W's
+  `readRecordFile(file, maxBytes)` with a 256 KB bound, `projectEntry`
+  (three link states: `url` string / `url: null` + `blocked` / absent in
+  read-only, which also drops `description`), `addArtifact` /
+  `removeArtifact` / `writeRegistry` / `withLock` / `logRemoved`, and
+  `validateAddInput` so the route rejects bad input before its limiter.
+  Writes against an invalid registry refuse (503 with the reason).
+- `server.ts` — `GET /api/v1/artifacts` (60/min), `POST /api/v1/artifacts`
+  (6/min shared with delete, 403 read-only, audited
+  `control_ui_artifact_add` with id + hostname only),
+  `DELETE /api/v1/artifacts/:id` (`X-Confirm: <id>`, audited
+  `control_ui_artifact_remove`), `artifact` SSE frames from a
+  `createDirWatcher` on `CONFIG_DIR/control-ui` that broadcasts only when the
+  projected list changed (the dir also holds the Claude ledger).
+- `web/control/views/artifacts.js` — sections per kind, title as the link
+  (label + hostname), withheld links as inert enum text, inline Add form,
+  typed-id Remove, invalid-registry and empty states. Workflows tab: **Add
+  to artifacts** on a done card whose preview the server cleared.
+- Convention: `AGENTS.md` § Publishing artifacts (ask first, then the CLI);
+  one line in `CLAUDE.md`.
+
+Verification (worktree, 2026-09-21):
+
+- `npx vitest run src/control-ui scripts/tests` — 27 files, 160 tests green
+  (new: `artifacts.test.ts` incl. the 8-fixture agreement test against the
+  CLI and the "every workflow fixture name passes the title rule" check,
+  `scripts/tests/artifact-registry.test.ts` incl. the lock retry and give-up
+  paths, and an "artifacts" describe in `server.test.ts`: 401/503, invalid
+  registry shape, add 400s with `blocked`, 201 + audit without the URL,
+  remove 404/428/204 + removed log, 409 full by count, 409 busy on a foreign
+  lock, 429 after six writes, read-only projection on route and SSE frame,
+  one frame per registry change and none for the Claude ledger).
+- `npx tsc --noEmit`, `npx eslint src/control-ui`, `node --check` on the CLI
+  and the views: clean.
+- Capture: `phaseA-artifacts-{mobile,desktop}.png` (two apps, a report, a
+  withheld external preview) and `phaseW-workflows-*` recaptured with the
+  tie-in button. Overflow probe: 0 px on all 17 tabs at 390 px. Handler
+  failures in the fixture log: 0.
+
+Deviations logged during Phase A:
+
+- `Deviation:` the first server test sent a Hebrew title as the `X-Confirm`
+  value to prove it is refused — Node's HTTP client refuses to send it at
+  all, which is the threat round's point; the test now sends an ASCII wrong
+  value and the Hebrew-title round trip is covered by the module and CLI
+  tests instead.
+- `Deviation:` invalid add input initially consumed write budget; it is now
+  validated before the limiter (`validateAddInput`), matching Phase C.
+- `Deviation:` the artifacts dir was first created only as a side effect of
+  the workflows dir's recursive mkdir; the code review caught the coupling
+  and the server now creates it in its own right before the watcher.
+- Seeds are instance data: the operator's registry is seeded at deploy with
+  the CLI (recorded in the operator's local notes), never in the repo.

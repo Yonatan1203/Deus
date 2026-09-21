@@ -67,7 +67,15 @@ import type { LogEntry, LogRing } from '../log-ring.js';
 import { createHostCli, type HostCli } from './api/host-cli.js';
 import { parsePreviewHosts } from './api/allowed-url.js';
 import {
+  addArtifact,
+  ARTIFACT_ID_RE,
+  listArtifacts,
+  removeArtifact,
+  validateAddInput,
+} from './api/artifacts.js';
+import {
   archiveWorkflows,
+  createDirWatcher,
   createWorkflowWatcher,
   listWorkflows,
   registryDirOk,
@@ -193,6 +201,18 @@ const WORKFLOW_READS_PER_MIN = 60;
 const WORKFLOW_ARCHIVES_PER_MIN = 6;
 const WORKFLOW_ARCHIVE_DAYS = 30;
 const WORKFLOW_WATCH_DEBOUNCE_MS = 500;
+const ARTIFACT_READS_PER_MIN = 60;
+const ARTIFACT_WRITES_PER_MIN = 6;
+
+/** Hostname for audit lines; the full URL never reaches a log. */
+function safeHostname(url: unknown): string | null {
+  if (typeof url !== 'string') return null;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
 const MEMORY_MAX_BYTES = 1024 * 1024;
 const MEMORY_BODY_CAP = Math.floor(MEMORY_MAX_BYTES * 1.5);
 
@@ -314,6 +334,11 @@ export function createControlServer(
   const workflowReadLimiter = createRateLimiter(WORKFLOW_READS_PER_MIN, 60_000);
   const workflowArchiveLimiter = createRateLimiter(
     WORKFLOW_ARCHIVES_PER_MIN,
+    60_000,
+  );
+  const artifactReadLimiter = createRateLimiter(ARTIFACT_READS_PER_MIN, 60_000);
+  const artifactWriteLimiter = createRateLimiter(
+    ARTIFACT_WRITES_PER_MIN,
     60_000,
   );
   const claudeCli: HostCli | null =
@@ -1683,6 +1708,137 @@ export function createControlServer(
     );
   }
 
+  // Artifacts registry: one operator-curated file under CONFIG_DIR/control-ui.
+  // The read-time URL check inside listArtifacts is the security control for
+  // every href the tab renders; the write-time check only keeps unshowable
+  // links out. Route and watcher share the one projected list.
+  const controlDir = deps.configDir
+    ? path.join(deps.configDir, 'control-ui')
+    : null;
+  // Created here in its own right (not as a side effect of the workflows dir)
+  // so the watcher below can start on a fresh instance; it never retries.
+  if (controlDir) {
+    try {
+      fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      logger.warn(
+        { err: (err as Error).message },
+        'Control UI could not create the artifacts registry dir',
+      );
+    }
+  }
+  const artifactList = () =>
+    controlDir
+      ? listArtifacts(controlDir, {
+          hosts: previewHosts,
+          readOnly: deps.readOnly,
+        })
+      : ({ error: 'registry unavailable' } as const);
+  router.add('GET', '/api/v1/artifacts', (ctx) => {
+    if (artifactReadLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many requests' });
+    const r = artifactList();
+    if ('error' in r) return writeJson(ctx.res, 503, { error: r.error });
+    writeJson(ctx.res, 200, r);
+  });
+  router.add('POST', '/api/v1/artifacts', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    // Validated before the limiter so invalid input never spends budget.
+    const checked = validateAddInput(body, previewHosts);
+    if (!checked.ok) {
+      const out: Record<string, unknown> = { error: checked.error };
+      if (checked.blocked) out.blocked = checked.blocked;
+      return writeJson(ctx.res, 400, out);
+    }
+    if (artifactWriteLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (!controlDir)
+      return writeJson(ctx.res, 503, { error: 'registry unavailable' });
+    const r = addArtifact(
+      controlDir,
+      {
+        title: body.title,
+        url: body.url,
+        kind: body.kind,
+        description: body.description,
+      },
+      { hosts: previewHosts, now, by: 'dashboard' },
+    );
+    if (r.status !== 201) {
+      const out: Record<string, unknown> = { error: r.error };
+      if (r.blocked) out.blocked = r.blocked;
+      if (r.reason) out.reason = r.reason;
+      return writeJson(ctx.res, r.status, out);
+    }
+    logger.warn(
+      {
+        event: 'control_ui_artifact_add',
+        id: r.id,
+        kind: body.kind,
+        hostname: safeHostname(body.url),
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI added an artifact link',
+    );
+    writeJson(ctx.res, 201, { id: r.id, rev: r.rev });
+  });
+  router.add('DELETE', '/api/v1/artifacts/:id', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    const id = ctx.params.id;
+    if (!ARTIFACT_ID_RE.test(id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    if (header(ctx.req, 'x-confirm') !== id)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (artifactWriteLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (!controlDir)
+      return writeJson(ctx.res, 503, { error: 'registry unavailable' });
+    const r = removeArtifact(controlDir, id, id, { now, by: 'dashboard' });
+    if (r.status !== 204) {
+      const out: Record<string, unknown> = { error: r.error };
+      if (r.reason) out.reason = r.reason;
+      return writeJson(ctx.res, r.status, out);
+    }
+    logger.warn(
+      {
+        event: 'control_ui_artifact_remove',
+        id,
+        hostname: safeHostname(r.entry.url),
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI removed an artifact link',
+    );
+    ctx.res.writeHead(204);
+    ctx.res.end();
+  });
+  // The dir also holds the Claude ledger and env backups; the callback reads
+  // only the registry and broadcasts only when the projected list changed.
+  let artifactLastJson = '';
+  let artifactWatcher: WorkflowWatcher | null = null;
+  if (controlDir && registryDirOk(controlDir)) {
+    artifactWatcher = createDirWatcher(
+      controlDir,
+      () => {
+        if (hub.clientCount() === 0) return;
+        const r = artifactList();
+        if ('error' in r) return;
+        const json = JSON.stringify(r);
+        if (json === artifactLastJson) return;
+        artifactLastJson = json;
+        hub.broadcast('artifact', r);
+      },
+      {
+        debounceMs: opts.workflowDebounceMs ?? WORKFLOW_WATCH_DEBOUNCE_MS,
+        pollMs: opts.workflowPollMs,
+      },
+    );
+  }
+
   // Poll-and-diff only while the Claude tab is in use; skipped while a tick is in flight.
   let claudeLastJson = '';
   let claudePolling = false;
@@ -1818,6 +1974,9 @@ export function createControlServer(
     workflowReadLimiter.dispose();
     workflowArchiveLimiter.dispose();
     if (workflowWatcher) workflowWatcher.close();
+    if (artifactWatcher) artifactWatcher.close();
+    artifactReadLimiter.dispose();
+    artifactWriteLimiter.dispose();
     if (logTimer) clearInterval(logTimer);
     if (unsubscribeLog) unsubscribeLog();
     configLimiter.dispose();

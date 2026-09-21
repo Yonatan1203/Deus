@@ -248,6 +248,22 @@ these records. A non-zero exit from the CLI (for example exit 4 after the
 operator archived the record) is bookkeeping, never a reason to abort the
 order itself.
 
+## Publishing artifacts
+
+After publishing an artifact app, report or preview that the operator may want
+to reopen later, **ask them** whether to add it to the dashboard's Artifacts
+tab. Only on a yes, run:
+
+```bash
+node scripts/artifact-registry.mjs add --title "Supplier Line" \
+  --url https://claude.ai/artifact/… --kind app|report|preview [--description "…"]
+```
+
+Never add without asking; never add scratch or one-off artifacts. Only
+`https://claude.ai/…` links are accepted unless the operator configured
+`CONTROL_UI_PREVIEW_HOSTS`. A finished workflow's preview can also be added
+from its card in the Workflows tab.
+
 ## Verification Baseline
 
 Pick tests by the touched layer. Common checks:

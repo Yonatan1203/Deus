@@ -1,0 +1,22 @@
+{
+  "v": 1,
+  "rev": 2,
+  "artifacts": [
+    {
+      "id": "art-0123456789ab",
+      "title": "Supplier Line",
+      "url": "https://claude.ai/artifact/fixture-supplier",
+      "kind": "app",
+      "added_at": "2026-09-21T10:00:00.000Z",
+      "added_by": "cli"
+    },
+    {
+      "id": "art-0123456789ab",
+      "title": "Again",
+      "url": "https://claude.ai/artifact/fixture-supplier",
+      "kind": "app",
+      "added_at": "2026-09-21T10:00:00.000Z",
+      "added_by": "cli"
+    }
+  ]
+}

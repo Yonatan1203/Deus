@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "rev": 1,
+  "artifacts": [
+    {
+      "id": "art-0123456789ab",
+      "title": "-leading dash",
+      "url": "https://claude.ai/artifact/fixture-supplier",
+      "kind": "app",
+      "added_at": "2026-09-21T10:00:00.000Z",
+      "added_by": "cli"
+    }
+  ]
+}

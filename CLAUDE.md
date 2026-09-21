@@ -51,7 +51,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full human-readable contributor g
 
 For orders that take more than a minute, report progress with
 `node scripts/workflow.mjs start|progress|finish|fail` (see AGENTS.md
-§ Reporting long-running work).
+§ Reporting long-running work). After publishing an artifact the operator may
+want to reopen, ask before running `node scripts/artifact-registry.mjs add`
+(see AGENTS.md § Publishing artifacts).
 
 ## Development
 

@@ -189,13 +189,16 @@ const OPEN_FLAGS =
   (fs.constants.O_NONBLOCK ?? 0);
 
 /** One open, one fstat, one bounded read from that fd, one parse. */
-export function readRecordFile(file: string): ReadResult {
+export function readRecordFile(
+  file: string,
+  maxBytes = RECORD_MAX_BYTES,
+): ReadResult {
   let fd: number | null = null;
   try {
     fd = fs.openSync(file, OPEN_FLAGS);
     const st = fs.fstatSync(fd);
     if (!st.isFile()) return { ok: false, reason: 'unreadable' };
-    if (st.size > RECORD_MAX_BYTES) return { ok: false, reason: 'too-large' };
+    if (st.size > maxBytes) return { ok: false, reason: 'too-large' };
     const buf = Buffer.alloc(st.size);
     const n = fs.readSync(fd, buf, 0, st.size, 0);
     let raw: unknown;
@@ -470,11 +473,11 @@ export interface WorkflowWatcher {
 }
 
 /**
- * Debounced change notification for the registry dir. Refuses a symlinked
- * or missing dir (returns null); on a watcher error falls back to polling and
- * never throws out of the event loop.
+ * Debounced change notification for a registry dir. Refuses a symlinked or
+ * missing dir (returns null); on a watcher error falls back to polling and
+ * never throws out of the event loop. Shared with the artifacts registry.
  */
-export function createWorkflowWatcher(
+export function createDirWatcher(
   dir: string,
   onChange: () => void,
   opts: { debounceMs?: number; pollMs?: number } = {},
@@ -525,3 +528,5 @@ export function createWorkflowWatcher(
     },
   };
 }
+
+export const createWorkflowWatcher = createDirWatcher;
