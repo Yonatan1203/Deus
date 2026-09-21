@@ -27,6 +27,9 @@ import { ensureControlTmpDir } from './api/config.js';
 import type { DockerRunner } from './api/docker.js';
 import type { BuildRunner } from './api/containers.js';
 import { writeCredentialFile } from './auth.js';
+import { createChannelLifecycle } from '../channels/lifecycle.js';
+import type { Channel } from '../types.js';
+import type { ChannelOpts } from '../channels/registry.js';
 import {
   _resetWebTurnStateForTest,
   startWebTurn,
@@ -3094,5 +3097,432 @@ describe('control-ui server — artifacts', () => {
       fs.writeFileSync(path.join(ctlDir, 'claude-started.json'), '[]'),
     );
     expect(frames).toHaveLength(0);
+  });
+});
+
+describe('control-ui server — gmail', () => {
+  const warnSpy = vi.mocked(logger.warn);
+  // logger.error has no spy from the earlier blocks; one is created here once.
+  const errorSpy = vi.isMockFunction(logger.error)
+    ? vi.mocked(logger.error)
+    : vi.spyOn(logger, 'error');
+  let gdir: string;
+  const SECRET = 'FIXTURE-SECRET-xyz';
+  const CLIENT = JSON.stringify({
+    installed: {
+      client_id: 'fixture.apps.googleusercontent.com',
+      client_secret: SECRET,
+      redirect_uris: [],
+    },
+  });
+  const TOKENS = {
+    access_token: 'ya29.FIXTURE-ACCESS',
+    refresh_token: '1//FIXTURE-REFRESH',
+    token_type: 'Bearer',
+    expiry_date: 1790000000000,
+    scope: 'gmail.modify',
+  };
+  beforeEach(() => {
+    warnSpy.mockClear();
+    errorSpy.mockClear();
+    clock = Date.parse('2026-09-21T12:00:00.000Z');
+    gdir = path.join(root, 'gmail-creds');
+  });
+  const j = (r: { text: string }) => JSON.parse(r.text);
+  const ev = (spy: typeof warnSpy, name: string) =>
+    spy.mock.calls.filter((c) => (c[0] as { event?: string })?.event === name);
+  const lifecycle = () => {
+    const calls: string[] = [];
+    let live = false;
+    return {
+      calls,
+      startChannel: vi.fn(async (n: string) => {
+        calls.push(`start:${n}`);
+        live = true;
+        return { ok: true as const };
+      }),
+      stopChannel: vi.fn(async (n: string) => {
+        calls.push(`stop:${n}`);
+        live = false;
+        return true;
+      }),
+      isChannelLive: () => live,
+    };
+  };
+  const hooks = (
+    over: Partial<ControlServerOptions['gmailAuthOverrides']> = {},
+  ) => ({
+    exchange: vi.fn(async () => ({ ...TOKENS })),
+    profile: vi.fn(async () => ({ emailAddress: 'fixture@example.invalid' })),
+    revoke: vi.fn(async () => {}),
+    sleep: async () => {},
+    ...over,
+  });
+  const bootG = (
+    over: Partial<ControlDeps> = {},
+    h = hooks(),
+    life = lifecycle(),
+  ) =>
+    boot(
+      {
+        runtime: fakeRuntime().runtime,
+        store: fakeStore(root),
+        gmailCredentialsDir: gdir,
+        publicPort: 3017,
+        ...life,
+        ...over,
+      },
+      undefined,
+      undefined,
+      { gmailAuthOverrides: h },
+    ).then(() => ({ h, life }));
+  const post = (
+    auth: Record<string, string>,
+    p: string,
+    body?: object,
+    extra: Record<string, string> = {},
+  ) =>
+    request({
+      method: 'POST',
+      path: p,
+      headers: { ...auth, ...H, ...extra },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  const callback = (qs: string, cookies: string) =>
+    request({
+      method: 'GET',
+      path: `/api/v1/integrations/gmail/callback?${qs}`,
+      headers: cookies ? { Cookie: cookies } : {},
+    });
+  const flowCookieOf = (r: Reply) => {
+    const set = ([] as string[]).concat(r.headers['set-cookie'] ?? []);
+    const c = set.find((s) => s.startsWith('deus_ctl_oauth='));
+    return c ? c.split(';')[0] : null;
+  };
+  const allText = () =>
+    JSON.stringify([
+      ...warnSpy.mock.calls,
+      ...errorSpy.mock.calls,
+      ...vi.mocked(logger.info).mock.calls,
+    ]);
+
+  it('status, keys paste, connect, callback, disconnect and forget — end to end', async () => {
+    const { h, life } = await bootG();
+    expect(
+      (await request({ method: 'GET', path: '/api/v1/integrations/gmail' }))
+        .status,
+    ).toBe(401);
+    const { auth, cookie } = await login();
+    const url = '/api/v1/integrations/gmail';
+    expect(
+      j(await request({ method: 'GET', path: url, headers: auth })),
+    ).toEqual({
+      keys: false,
+      connected: false,
+      channel_live: false,
+      redirect_uri: 'http://localhost:3017/api/v1/integrations/gmail/callback',
+    });
+    expect((await post(auth, `${url}/connect`)).status).toBe(409);
+    expect(
+      (
+        await post(auth, `${url}/keys`, {
+          json: '{"installed":{"client_id":"x"}}',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (await post(auth, `${url}/keys`, { json: 'x'.repeat(17 * 1024) })).status,
+    ).toBe(413);
+    const k = await post(auth, `${url}/keys`, { json: CLIENT });
+    expect(k.status).toBe(201);
+    if (!IS_WINDOWS)
+      expect(
+        fs.statSync(path.join(gdir, 'gcp-oauth.keys.json')).mode & 0o777,
+      ).toBe(0o600);
+    expect(ev(warnSpy, 'control_ui_gmail_keys')).toHaveLength(1);
+    expect(
+      j(await request({ method: 'GET', path: url, headers: auth })),
+    ).toMatchObject({ keys: true, connected: false });
+    // Connect issues a state and a path-scoped Lax flow cookie.
+    const c = await post(auth, `${url}/connect`);
+    expect(c.status).toBe(200);
+    const consent = new URL(j(c).url);
+    expect(consent.hostname).toBe('accounts.google.com');
+    expect(consent.searchParams.get('code_challenge_method')).toBe('S256');
+    const setCookie = ([] as string[])
+      .concat(c.headers['set-cookie'] ?? [])
+      .find((s) => s.startsWith('deus_ctl_oauth='))!;
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('SameSite=Lax');
+    expect(setCookie).toContain('Path=/api/v1/integrations/gmail/callback');
+    expect(setCookie).toContain('Max-Age=600');
+    expect(setCookie).not.toContain('Secure');
+    const state = consent.searchParams.get('state')!;
+    const flow = flowCookieOf(c)!;
+    // Callback: no flow cookie → 403 page; wrong state → 403; happy path → 200 page.
+    let r = await callback(`state=${state}&code=abc`, '');
+    expect(r.status).toBe(403);
+    expect(r.headers['content-type']).toContain('text/html');
+    expect(r.headers['content-security-policy']).toContain(
+      "default-src 'none'",
+    );
+    expect(r.text).toContain('flow cookie mismatch');
+    // That consumed the state (single use): re-issue for the happy path.
+    const c2 = await post(auth, `${url}/connect`);
+    const state2 = new URL(j(c2).url).searchParams.get('state')!;
+    const flow2 = flowCookieOf(c2)!;
+    r = await callback(
+      `state=${state2}&code=4%2Ffixture`,
+      `${flow2}; ${cookie}`,
+    );
+    expect(r.status).toBe(200);
+    expect(r.text).toContain('Gmail connected as fixture@example.invalid');
+    expect(r.text).toContain('/#/channels');
+    const cleared = ([] as string[])
+      .concat(r.headers['set-cookie'] ?? [])
+      .find((s) => s.startsWith('deus_ctl_oauth='))!;
+    expect(cleared).toContain('Max-Age=0');
+    expect(cleared).toContain('Path=/api/v1/integrations/gmail/callback');
+    expect(h.exchange).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.exchange).mock.calls[0][0]).toBe('4/fixture');
+    expect(life.startChannel).toHaveBeenCalledWith('gmail');
+    expect(
+      JSON.parse(fs.readFileSync(path.join(gdir, 'credentials.json'), 'utf-8')),
+    ).toEqual(TOKENS);
+    expect(ev(warnSpy, 'control_ui_gmail_connected')[0][0]).toMatchObject({
+      domain: 'example.invalid',
+      channel: 'started',
+    });
+    const st = j(await request({ method: 'GET', path: url, headers: auth }));
+    expect(st).toMatchObject({
+      keys: true,
+      connected: true,
+      email: 'fixture@example.invalid',
+      channel_live: true,
+    });
+    // Second visit of the same state → 403.
+    expect((await callback(`state=${state2}&code=x`, `${flow2}`)).status).toBe(
+      403,
+    );
+    void flow;
+    // Forget keys refused while connected; disconnect stops the channel before revoking.
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: `${url}/keys`,
+          headers: { ...auth, 'X-Confirm': 'gmail' },
+        })
+      ).status,
+    ).toBe(409);
+    expect((await post(auth, `${url}/disconnect`)).status).toBe(428);
+    const d = await post(auth, `${url}/disconnect`, undefined, {
+      'X-Confirm': 'gmail',
+    });
+    expect(d.status).toBe(200);
+    expect(j(d)).toEqual({ revoked: true, deleted: true });
+    expect(life.calls).toEqual(['start:gmail', 'stop:gmail']);
+    expect(h.revoke).toHaveBeenCalledWith(TOKENS.refresh_token);
+    expect(fs.existsSync(path.join(gdir, 'credentials.json'))).toBe(false);
+    clock += 61_000; // six mutations reached the limiter above; a new window
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: `${url}/keys`,
+          headers: { ...auth, 'X-Confirm': 'gmail' },
+        })
+      ).status,
+    ).toBe(204);
+    expect(fs.existsSync(path.join(gdir, 'gcp-oauth.keys.json'))).toBe(false);
+    // No secret anywhere: responses were checked above; logs here.
+    const text = allText();
+    for (const s of [
+      SECRET,
+      TOKENS.refresh_token,
+      TOKENS.access_token,
+      '4/fixture',
+    ])
+      expect(text).not.toContain(s);
+  });
+
+  it('surfaces a failed revoke, limits mutations, and never logs the raw exchange error', async () => {
+    const gaxios = Object.assign(
+      new Error('Request failed with status code 400'),
+      {
+        code: '400',
+        response: { status: 400 },
+        config: { data: `client_secret=${SECRET}&code=c` },
+      },
+    );
+    const { h } = await bootG(
+      {},
+      hooks({
+        revoke: vi.fn(async () => {
+          throw new Error('revoke down');
+        }),
+        exchange: vi.fn(async () => {
+          throw gaxios;
+        }),
+      }),
+    );
+    const { auth } = await login();
+    const url = '/api/v1/integrations/gmail';
+    await post(auth, `${url}/keys`, { json: CLIENT });
+    const c = await post(auth, `${url}/connect`);
+    const state = new URL(j(c).url).searchParams.get('state')!;
+    const r = await callback(`state=${state}&code=c`, flowCookieOf(c)!);
+    expect(r.status).toBe(502);
+    expect(r.text).toContain('exchange failed');
+    expect(ev(warnSpy, 'control_ui_gmail_connect_failed')[0][0]).toMatchObject({
+      reason: 'exchange failed',
+      code: '400',
+      status: 400,
+    });
+    expect(allText()).not.toContain(SECRET);
+    // Disconnect with nothing connected still answers; a revoke failure is visible when tokens exist.
+    fs.writeFileSync(
+      path.join(gdir, 'credentials.json'),
+      JSON.stringify(TOKENS),
+    );
+    const d = await post(auth, `${url}/disconnect`, undefined, {
+      'X-Confirm': 'gmail',
+    });
+    expect(j(d)).toEqual({ revoked: false, deleted: true });
+    expect(ev(warnSpy, 'control_ui_gmail_revoke_failed')).toHaveLength(1);
+    // Mutations so far: keys, connect, disconnect = 3; three more, then 429.
+    for (let i = 0; i < 3; i++)
+      expect((await post(auth, `${url}/connect`)).status).toBe(200);
+    expect((await post(auth, `${url}/connect`)).status).toBe(429);
+    void h;
+  });
+
+  it('logout drops pending states, bad-state floods are limited per address but a valid callback still passes', async () => {
+    await bootG();
+    const s1 = await login();
+    const url = '/api/v1/integrations/gmail';
+    await post(s1.auth, `${url}/keys`, { json: CLIENT });
+    const c = await post(s1.auth, `${url}/connect`);
+    const state = new URL(j(c).url).searchParams.get('state')!;
+    const flow = flowCookieOf(c)!;
+    await post(s1.auth, '/auth/logout');
+    expect((await callback(`state=${state}&code=c`, flow)).status).toBe(403);
+    const s2 = await login();
+    // The dropped-state hit above was failure 1; nine more reach the 10/min cap.
+    for (let i = 0; i < 9; i++)
+      expect((await callback(`state=bad${i}&code=c`, '')).status).toBe(403);
+    expect((await callback('state=bad11&code=c', '')).status).toBe(429);
+    const c2 = await post(s2.auth, `${url}/connect`);
+    const state2 = new URL(j(c2).url).searchParams.get('state')!;
+    expect(
+      (await callback(`state=${state2}&code=ok`, flowCookieOf(c2)!)).status,
+    ).toBe(200);
+  });
+
+  it('the real channel lifecycle, spread into deps as index.ts does, reports channel_live after connect', async () => {
+    const channels: Channel[] = [];
+    let connected = false;
+    const gmail = {
+      name: 'gmail',
+      connect: async () => {
+        connected = true;
+      },
+      disconnect: async () => {
+        connected = false;
+      },
+      isConnected: () => connected,
+      ownsJid: () => false,
+      sendMessage: async () => {},
+    } as unknown as Channel;
+    const life = createChannelLifecycle(channels, {} as ChannelOpts, (n) =>
+      n === 'gmail' ? () => gmail : undefined,
+    );
+    await boot(
+      {
+        runtime: fakeRuntime().runtime,
+        store: fakeStore(root),
+        gmailCredentialsDir: gdir,
+        publicPort: 3017,
+        ...life,
+      },
+      undefined,
+      undefined,
+      { gmailAuthOverrides: hooks() },
+    );
+    const { auth } = await login();
+    const url = '/api/v1/integrations/gmail';
+    await post(auth, `${url}/keys`, { json: CLIENT });
+    const c = await post(auth, `${url}/connect`);
+    const state = new URL(j(c).url).searchParams.get('state')!;
+    expect(
+      (await callback(`state=${state}&code=ok`, flowCookieOf(c)!)).status,
+    ).toBe(200);
+    expect(channels.map((ch) => ch.name)).toEqual(['gmail']);
+    expect(
+      j(await request({ method: 'GET', path: url, headers: auth })),
+    ).toMatchObject({ connected: true, channel_live: true });
+    const d = await post(auth, `${url}/disconnect`, undefined, {
+      'X-Confirm': 'gmail',
+    });
+    expect(j(d)).toEqual({ revoked: true, deleted: true });
+    expect(channels).toEqual([]);
+    expect(
+      j(await request({ method: 'GET', path: url, headers: auth })),
+    ).toMatchObject({ connected: false, channel_live: false });
+  });
+
+  it('read-only refuses every mutation and the callback, but status still answers; a throwing route logs safely', async () => {
+    await bootG({ readOnly: true });
+    const { auth } = await login();
+    const url = '/api/v1/integrations/gmail';
+    expect(
+      (await request({ method: 'GET', path: url, headers: auth })).status,
+    ).toBe(200);
+    expect((await post(auth, `${url}/keys`, { json: CLIENT })).status).toBe(
+      403,
+    );
+    expect((await post(auth, `${url}/connect`)).status).toBe(403);
+    expect(
+      (
+        await post(auth, `${url}/disconnect`, undefined, {
+          'X-Confirm': 'gmail',
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'DELETE',
+          path: `${url}/keys`,
+          headers: { ...auth, 'X-Confirm': 'gmail' },
+        })
+      ).status,
+    ).toBe(403);
+    const r = await callback('state=x&code=y', '');
+    expect(r.status).toBe(403);
+    expect(r.text).toContain('read-only');
+  });
+
+  it('the top-level 500 handler logs a safe error shape and the path without its query', async () => {
+    const boom = Object.assign(
+      new Error(`boom client_secret=${SECRET}&code=c`),
+      { code: 'EBOOM', config: { data: `client_secret=${SECRET}` } },
+    );
+    await boot({}, () => {
+      throw boom;
+    });
+    const r = await request({ method: 'GET', path: '/?state=s&code=c' });
+    expect(r.status).toBe(500);
+    const call = errorSpy.mock.calls.find((c) =>
+      String(c[1]).includes('request failed'),
+    )!;
+    const logged = call[0] as { err: Record<string, unknown>; path: string };
+    expect(logged.path).toBe('/');
+    expect(logged.err).toEqual({
+      name: 'Error',
+      code: 'EBOOM',
+      message: 'boom client_secret=[redacted]',
+    });
+    expect(JSON.stringify(call)).not.toContain(SECRET);
   });
 });

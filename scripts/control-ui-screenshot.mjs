@@ -69,6 +69,9 @@ for (const [name, viewport] of viewports) {
         await page.click('#confirm-ok');
         await page.waitForSelector('#view .qr', { state: 'attached', timeout: 10_000 });
       }
+      // The Gmail panel renders after the channel list; wait for it.
+      await page.waitForSelector('#view .gmail-panel .chips', { timeout: 10_000 });
+      if (name === 'mobile') await page.locator('#view .gmail-panel').scrollIntoViewIfNeeded();
     } else if (tab === 'claude') {
       // Open the first session so the transcript panel is part of the capture.
       await page.waitForSelector('#view .claude-row, #view .empty', { timeout: 10_000 });

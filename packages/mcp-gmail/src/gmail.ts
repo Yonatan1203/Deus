@@ -95,7 +95,12 @@ export class GmailProvider implements ChannelProvider {
       try {
         const current = JSON.parse(fs.readFileSync(tokensPath, 'utf-8'));
         Object.assign(current, newTokens);
-        fs.writeFileSync(tokensPath, JSON.stringify(current, null, 2));
+        // A refreshed token file must stay private: mode applies only on
+        // creation, so re-tighten after every rewrite.
+        fs.writeFileSync(tokensPath, JSON.stringify(current, null, 2), {
+          mode: 0o600,
+        });
+        fs.chmodSync(tokensPath, 0o600);
         logger.debug('Gmail OAuth tokens refreshed');
       } catch (err) {
         logger.warn({ err }, 'Failed to persist refreshed Gmail tokens');

@@ -30,6 +30,7 @@ import {
   CONFIG_DIR,
   deusInstanceId,
   CONTROL_UI_PREVIEW_HOSTS,
+  CONTROL_UI_PORT,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { startToolProxy } from './tool-proxy.js';
@@ -42,6 +43,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
+import { createChannelLifecycle } from './channels/lifecycle.js';
 import {
   cleanupOrphans,
   CONTAINER_RUNTIME_BIN,
@@ -589,6 +591,9 @@ async function main(): Promise<void> {
     envPath: path.join(PROJECT_ROOT, '.env'),
     configDir: CONFIG_DIR,
     previewHosts: CONTROL_UI_PREVIEW_HOSTS,
+    gmailCredentialsDir: process.env.GMAIL_CREDENTIALS_DIR,
+    publicPort: CONTROL_UI_PORT,
+    ...createChannelLifecycle(channels, channelOpts),
     claudeBin: resolveClaudeBin(process.env.PATH ?? ''),
     claudeProjectsDir: path.join(homeDir, '.claude', 'projects'),
     vaultPath: resolveVaultPath(),

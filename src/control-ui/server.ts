@@ -15,6 +15,7 @@ import {
   CONTROL_UI_READONLY,
 } from '../config.js';
 import { logger } from '../logger.js';
+import { homeDir } from '../platform.js';
 import { createRateLimiter } from '../rate-limiter.js';
 import { listAgents } from './api/agents.js';
 import { listChannels, whatsappQr } from './api/channels.js';
@@ -66,6 +67,19 @@ import {
 import type { LogEntry, LogRing } from '../log-ring.js';
 import { createHostCli, type HostCli } from './api/host-cli.js';
 import { parsePreviewHosts } from './api/allowed-url.js';
+import {
+  callbackPage,
+  createGmailAuth,
+  dirState as gmailDirState,
+  ensureDir as ensureGmailDir,
+  FLOW_COOKIE,
+  gmailDir,
+  saveKeys as saveGmailKeys,
+  status as gmailStatus,
+  validateKeysBody,
+  type CallbackResult,
+  type GmailAuthOptions,
+} from './api/gmail-auth.js';
 import {
   addArtifact,
   ARTIFACT_ID_RE,
@@ -147,6 +161,15 @@ export interface ControlDeps {
   configDir?: string;
   /** `CONTROL_UI_PREVIEW_HOSTS`, raw; parsed once here. */
   previewHosts?: string;
+  /** `GMAIL_CREDENTIALS_DIR`, raw; defaults to `~/.gmail-mcp`. */
+  gmailCredentialsDir?: string;
+  /** The port the operator's tunnel maps — the OAuth redirect is built from it, never from Host. */
+  publicPort?: number;
+  startChannel?: (
+    name: string,
+  ) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  stopChannel?: (name: string) => Promise<boolean>;
+  isChannelLive?: (name: string) => boolean;
   /** Claude Code CLI (absolute path, resolved at boot) and its projects dir; null → the Claude tab answers 503. */
   claudeBin?: string | null;
   claudeProjectsDir?: string;
@@ -168,6 +191,11 @@ export interface ControlServerOptions {
   claudePollMs?: number;
   workflowDebounceMs?: number;
   workflowPollMs?: number;
+  /** Construction-only test hooks for the Gmail flow (never from env or config). */
+  gmailAuthOverrides?: Pick<
+    GmailAuthOptions,
+    'exchange' | 'profile' | 'revoke' | 'random' | 'sleep'
+  >;
 }
 
 const BIND_HOST = '127.0.0.1';
@@ -203,6 +231,39 @@ const WORKFLOW_ARCHIVE_DAYS = 30;
 const WORKFLOW_WATCH_DEBOUNCE_MS = 500;
 const ARTIFACT_READS_PER_MIN = 60;
 const ARTIFACT_WRITES_PER_MIN = 6;
+const GMAIL_MUTATIONS_PER_MIN = 6;
+const GMAIL_CALLBACK_FAILS_PER_MIN = 10;
+const GMAIL_KEYS_BODY_MAX = 16 * 1024;
+const OAUTH_DONE_FALLBACK =
+  '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{{title}}</title></head>' +
+  '<body><main><h1>{{message}}</h1><p><a href="/#/channels">Back to Channels</a></p></main></body></html>';
+
+/** What a request log may carry about an error: never the object, whose
+ *  `config`/`response` can hold a client secret or an authorization code. */
+function safeError(err: unknown): {
+  name?: string;
+  code?: string;
+  status?: number;
+  message: string;
+} {
+  const e = err as {
+    name?: unknown;
+    code?: unknown;
+    status?: unknown;
+    message?: unknown;
+  };
+  const out: ReturnType<typeof safeError> = {
+    message: redactSecrets(
+      typeof e?.message === 'string' ? e.message.slice(0, 500) : String(err),
+    ),
+  };
+  if (typeof e?.name === 'string') out.name = e.name;
+  if (typeof e?.code === 'string' || typeof e?.code === 'number')
+    out.code = String(e.code);
+  if (typeof e?.status === 'number') out.status = e.status;
+  return out;
+}
+const pathOnly = (url: string | undefined): string => (url ?? '').split('?')[0];
 
 /** Hostname for audit lines; the full URL never reaches a log. */
 function safeHostname(url: unknown): string | null {
@@ -336,6 +397,11 @@ export function createControlServer(
     WORKFLOW_ARCHIVES_PER_MIN,
     60_000,
   );
+  const gmailLimiter = createRateLimiter(GMAIL_MUTATIONS_PER_MIN, 60_000);
+  const gmailCallbackLimiter = createRateLimiter(
+    GMAIL_CALLBACK_FAILS_PER_MIN,
+    60_000,
+  );
   const artifactReadLimiter = createRateLimiter(ARTIFACT_READS_PER_MIN, 60_000);
   const artifactWriteLimiter = createRateLimiter(
     ARTIFACT_WRITES_PER_MIN,
@@ -405,6 +471,7 @@ export function createControlServer(
     const state = credentials.current();
     if (state.rotated) {
       sessions.clear();
+      gmailAuth.dropAll();
       createCounts.clear();
       readAudits.clear();
       backoff.reset();
@@ -500,7 +567,10 @@ export function createControlServer(
   );
 
   router.add('POST', '/auth/logout', (ctx) => {
-    if (ctx.session) sessions.destroy(ctx.session.id);
+    if (ctx.session) {
+      sessions.destroy(ctx.session.id);
+      gmailAuth.dropSession(ctx.session.id);
+    }
     ctx.res.setHeader('Set-Cookie', clearSessionCookie(isTls(ctx.req)));
     ctx.res.writeHead(204);
     ctx.res.end();
@@ -520,6 +590,7 @@ export function createControlServer(
       'Control UI sessions revoked',
     );
     sessions.clear();
+    gmailAuth.dropAll();
     createCounts.clear();
     readAudits.clear();
     ctx.res.setHeader('Set-Cookie', clearSessionCookie(isTls(ctx.req)));
@@ -1708,6 +1779,201 @@ export function createControlServer(
     );
   }
 
+  // Gmail: connect the assistant's own MCP channel from the dashboard. The
+  // credential dir is host-side only (never mounted); the callback is the one
+  // unauthenticated route, gated by a session-bound single-use state, a
+  // path-scoped flow cookie and PKCE. Nothing below logs a token, a code or
+  // the client secret; errors are logged as code/status only.
+  const gmailCredDir = gmailDir(
+    { GMAIL_CREDENTIALS_DIR: deps.gmailCredentialsDir },
+    homeDir,
+  );
+  const gmailRedirect = `http://localhost:${deps.publicPort ?? CONTROL_UI_PORT}/api/v1/integrations/gmail/callback`;
+  const gmailAuth = createGmailAuth({
+    dir: gmailCredDir,
+    redirectUri: gmailRedirect,
+    now,
+    ...(opts.gmailAuthOverrides ?? {}),
+  });
+  let oauthDoneTemplate = OAUTH_DONE_FALLBACK;
+  try {
+    oauthDoneTemplate = fs.readFileSync(
+      path.join(deps.webRoot, 'oauth-done.html'),
+      'utf-8',
+    );
+  } catch {
+    /* fallback page */
+  }
+  const flowCookie = (
+    value: string,
+    secure: boolean,
+    clear = false,
+  ): string => {
+    const parts = [
+      `${FLOW_COOKIE}=${clear ? '' : value}`,
+      'HttpOnly',
+      'SameSite=Lax',
+      'Path=/api/v1/integrations/gmail/callback',
+      `Max-Age=${clear ? 0 : 600}`,
+    ];
+    if (secure) parts.push('Secure');
+    return parts.join('; ');
+  };
+  const gmailAudit = (
+    ctx: RequestContext,
+    event: string,
+    extra: Record<string, unknown> = {},
+  ) =>
+    logger.warn(
+      {
+        event,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+        ...extra,
+      },
+      'Control UI Gmail integration',
+    );
+  const gmailUnavailable = (res: ServerResponse) =>
+    writeJson(res, 503, { error: 'credential dir unavailable' });
+  router.add('GET', '/api/v1/integrations/gmail', (ctx) => {
+    writeJson(
+      ctx.res,
+      200,
+      gmailStatus(gmailCredDir, {
+        channelLive: deps.isChannelLive?.('gmail') ?? false,
+        redirectUri: gmailRedirect,
+        now,
+      }),
+    );
+  });
+  router.add(
+    'POST',
+    '/api/v1/integrations/gmail/keys',
+    (ctx) => {
+      if (deps.readOnly)
+        return writeJson(ctx.res, 403, {
+          error: 'read-only from the dashboard',
+        });
+      const body = (ctx.body ?? {}) as { json?: unknown };
+      // Validated before the limiter so junk never spends budget.
+      if (validateKeysBody(body.json) === 'invalid')
+        return writeJson(ctx.res, 400, { error: 'invalid client json' });
+      if (gmailLimiter.isRateLimited(sid(ctx), now()))
+        return writeJson(ctx.res, 429, { error: 'too many changes' });
+      const r = saveGmailKeys(gmailCredDir, body.json, gmailRedirect);
+      if (r === 'unavailable') return gmailUnavailable(ctx.res);
+      if (r === 'invalid')
+        return writeJson(ctx.res, 400, { error: 'invalid client json' });
+      gmailAudit(ctx, 'control_ui_gmail_keys');
+      writeJson(ctx.res, 201, { keys: true });
+    },
+    { maxBody: GMAIL_KEYS_BODY_MAX },
+  );
+  router.add('POST', '/api/v1/integrations/gmail/connect', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    if (gmailLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (!ensureGmailDir(gmailCredDir)) return gmailUnavailable(ctx.res);
+    const r = gmailAuth.issueState(ctx.session?.id ?? '');
+    if ('error' in r)
+      return writeJson(
+        ctx.res,
+        r.error === 'credential dir unavailable' ? 503 : 409,
+        {
+          error: r.error,
+        },
+      );
+    ctx.res.setHeader('Set-Cookie', flowCookie(r.flowCookie, isTls(ctx.req)));
+    gmailAudit(ctx, 'control_ui_gmail_connect');
+    writeJson(ctx.res, 200, { url: r.url });
+  });
+  const oauthPage = (
+    ctx: RequestContext,
+    result: CallbackResult,
+    httpStatus: number,
+  ) => {
+    ctx.res.setHeader('Set-Cookie', flowCookie('', isTls(ctx.req), true));
+    ctx.res.writeHead(httpStatus, {
+      'Content-Type': 'text/html; charset=utf-8',
+      ...SECURITY_HEADERS,
+    });
+    ctx.res.end(callbackPage(oauthDoneTemplate, result, deps.assistantName));
+  };
+  router.add(
+    'GET',
+    '/api/v1/integrations/gmail/callback',
+    async (ctx) => {
+      if (deps.readOnly)
+        return oauthPage(
+          ctx,
+          { ok: false, status: 403, message: 'read-only' },
+          403,
+        );
+      const q = ctx.url.searchParams;
+      const cookie = parseCookies(ctx.req.headers.cookie)[FLOW_COOKIE];
+      const result = await gmailAuth.consume(q.get('state'), cookie, {
+        code: q.get('code') ?? undefined,
+        error: q.get('error') ?? undefined,
+      });
+      if (!result.ok) {
+        // Only failed-state hits count: every request shares the loopback
+        // address behind the tunnel, so a valid callback is never denied.
+        if (
+          result.status === 403 &&
+          gmailCallbackLimiter.isRateLimited(ctx.remoteAddr, now())
+        )
+          return writeJson(ctx.res, 429, { error: 'too many attempts' });
+        gmailAudit(ctx, 'control_ui_gmail_connect_failed', {
+          reason: result.message,
+          ...(result.detail ?? {}),
+        });
+        return oauthPage(ctx, result, result.status);
+      }
+      const started = deps.startChannel
+        ? await deps.startChannel('gmail')
+        : { ok: false as const, reason: 'no lifecycle' };
+      gmailAudit(ctx, 'control_ui_gmail_connected', {
+        domain: result.email.split('@')[1] ?? '',
+        channel: started.ok ? 'started' : started.reason,
+      });
+      oauthPage(ctx, result, 200);
+    },
+    { auth: 'none' },
+  );
+  router.add('POST', '/api/v1/integrations/gmail/disconnect', async (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    if (header(ctx.req, 'x-confirm') !== 'gmail')
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (gmailLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (gmailDirState(gmailCredDir) !== 'ok') return gmailUnavailable(ctx.res);
+    // The child is a concurrent writer of the token file: stop it first.
+    if (deps.stopChannel) await deps.stopChannel('gmail');
+    const r = await gmailAuth.disconnect();
+    gmailAudit(ctx, 'control_ui_gmail_disconnect', r);
+    if (!r.revoked) gmailAudit(ctx, 'control_ui_gmail_revoke_failed');
+    if (!r.deleted) gmailAudit(ctx, 'control_ui_gmail_delete_failed');
+    writeJson(ctx.res, 200, r);
+  });
+  router.add('DELETE', '/api/v1/integrations/gmail/keys', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    if (header(ctx.req, 'x-confirm') !== 'gmail')
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (gmailLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    const r = gmailAuth.forgetKeys();
+    if (r === 'connected')
+      return writeJson(ctx.res, 409, { error: 'disconnect first' });
+    if (r === 'missing')
+      return writeJson(ctx.res, 404, { error: 'no client keys' });
+    gmailAudit(ctx, 'control_ui_gmail_keys_forgotten');
+    ctx.res.writeHead(204);
+    ctx.res.end();
+  });
+
   // Artifacts registry: one operator-curated file under CONFIG_DIR/control-ui.
   // The read-time URL check inside listArtifacts is the security control for
   // every href the tab renders; the write-time check only keeps unshowable
@@ -1956,7 +2222,10 @@ export function createControlServer(
     );
     handle(req, res).catch((err: unknown) => {
       const nonce = crypto.randomBytes(4).toString('hex');
-      logger.error({ err, nonce, path: req.url }, 'Control UI request failed');
+      logger.error(
+        { err: safeError(err), nonce, path: pathOnly(req.url) },
+        'Control UI request failed',
+      );
       if (!res.headersSent)
         writeJson(res, 500, { error: 'internal error', nonce });
       else res.end();
@@ -1977,6 +2246,8 @@ export function createControlServer(
     if (artifactWatcher) artifactWatcher.close();
     artifactReadLimiter.dispose();
     artifactWriteLimiter.dispose();
+    gmailLimiter.dispose();
+    gmailCallbackLimiter.dispose();
     if (logTimer) clearInterval(logTimer);
     if (unsubscribeLog) unsubscribeLog();
     configLimiter.dispose();

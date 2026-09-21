@@ -597,3 +597,106 @@ Deviations logged during Phase A:
   and the server now creates it in its own right before the watcher.
 - Seeds are instance data: the operator's registry is seeded at deploy with
   the CLI (recorded in the operator's local notes), never in the repo.
+
+## Phase D — verification record (Connect Gmail)
+
+Plan: `docs/superpowers/plans/2026-09-21-control-ui-phaseD.md` (plan-reviewer
+rounds 1–5, threat-modeler rounds 1–3, all folded; final verdicts SHIP;
+`oracle-author` wrote `gmail-auth.oracle.test.ts` blind, before the module).
+
+What shipped:
+
+- `src/control-ui/api/gmail-auth.ts` — the credential dir (`GMAIL_CREDENTIALS_DIR`
+  or `~/.gmail-mcp`, 0700; symlinked or non-dir refuses everything): pasted
+  client JSON validated and rewritten as a fresh 0600 literal; the consent
+  URL built from constants (`gmail.modify` only, `access_type=offline`,
+  `prompt=consent`, PKCE S256, 32-byte `state`); pending states in memory
+  (one per session, five overall, 10 min, single use, dropped on logout /
+  revoke-all / credential rotation); `consume` checks state ∧ flow cookie,
+  exchanges the code server-side with the verifier, schema-checks the token
+  object, validates the profile email, writes `credentials.json` and
+  `account.json` through open/write/fsync/close + chmod 0600; `disconnect`
+  revokes, deletes, and re-checks for 2 s with awaited timers, reporting
+  `{ revoked, deleted }` honestly; `forgetKeys` refuses while connected. No
+  function logs; errors come back as `{ code, status }` only.
+- `server.ts` — `GET /api/v1/integrations/gmail` (status: booleans, ages,
+  email, redirect), `POST …/keys` (16 KB, validated before the limiter),
+  `POST …/connect` (sets `deus_ctl_oauth`: HttpOnly, `SameSite=Lax`,
+  path-scoped to the callback, 10 min, `Secure` when the session cookie is),
+  `GET …/callback` (`auth: 'none'`; state ∧ flow cookie; per-address limiter
+  counting failed-state hits only; HTML page from `web/control/oauth-done.html`
+  with the closed message set and the same security headers; starts the
+  channel in-process on success), `POST …/disconnect` (typed `gmail`; stops
+  the channel first, answers `{ revoked, deleted }`, audits failures),
+  `DELETE …/keys` (typed; 409 while connected). The top-level 500 handler
+  now logs a safe error shape and the path without its query for every
+  route. Audits: `control_ui_gmail_keys`, `_connect`, `_connected` (domain
+  only), `_connect_failed` (reason + code/status), `_disconnect`,
+  `_revoke_failed`, `_delete_failed`, `_keys_forgotten`.
+- `src/channels/lifecycle.ts` — `createChannelLifecycle(channels, channelOpts)`
+  gives `index.ts` `startChannel`/`stopChannel`/`isChannelLive` with the same
+  factory and options boot uses; a failed connect is returned, not thrown,
+  and the entry is not kept.
+- `api/logs.ts` — `redactSecrets` matches key segments (`client_secret`,
+  `refresh_token`, `access_token`), a separate `[?&]code=` pattern (bare
+  `code` stays out of `SECRET_KEYS`, which also shapes transcript rendering),
+  and the `ya29.` / `1//` token prefixes.
+- `packages/mcp-gmail` — the refreshed-token merge-back is written 0600 and
+  re-tightened with `chmodSync`.
+- View: the Gmail card on the Channels tab gets the account panel — paste
+  box, Connect (opens the server-built URL in a new tab), status line, typed
+  Disconnect, typed Forget keys; the tab redraws when the operator comes back
+  from the Google tab.
+
+Verification (worktree, 2026-09-21):
+
+- `npx vitest run src/control-ui src/channels/lifecycle.test.ts scripts/tests`
+  — 30 files, 192 tests green (new: `gmail-auth.test.ts`, the blind
+  `gmail-auth.oracle.test.ts` (15 cases, unmodified except its stale
+  import directive), `lifecycle.test.ts`, redaction cases in `logs.test.ts`,
+  and a "gmail" describe in `server.test.ts`: the whole flow over HTTP with
+  injected exchange/profile/revoke, cookie attributes, single-use state,
+  audit lines without secrets, failed revoke surfaced, per-session and
+  per-address limits, logout dropping states, read-only, and the hardened
+  500 handler).
+- The oracle caught one real bug before any review: the disconnect re-check
+  looped on the injected clock, so a frozen test clock never reached the
+  deadline. It now runs a fixed number of awaited steps.
+- `npx tsc --noEmit` clean; `npx eslint src/control-ui src/channels src/index.ts`:
+  0 errors, 1 pre-existing warning in `src/channels/registry.test.ts`
+  (untouched by this phase). `npm install` brought the worktree's `google-auth-library` to the manifest's 11.0.2 (the lockfile already pinned it; the metadata rewrite npm produced is not part of this commit).
+- Capture: `phaseD-channels-{mobile,desktop}.png` with a connected fixture
+  account (the card header's own chip reads "not connected" because the
+  fixture launcher lists no live gmail adapter — in the real process
+  `startChannel` adds it; the pre-connect paste-box state was driven by the
+  verification gate at 390 px rather than committed as a capture); the
+  callback page answers 403 with the CSP headers for a bad state. Overflow
+  probe: 0 px on all 17 tabs at 390 px.
+
+Operator steps (instance-local detail in the operator's notes, not here):
+
+1. Google Cloud → APIs & Services → enable the Gmail API → Credentials →
+   OAuth client ID, type **Desktop app** → download the JSON.
+2. Channels tab → Gmail card → paste the JSON → Save keys.
+3. Connect Gmail → consent in the Google tab (the SSH tunnel must map the
+   same port, so `localhost:<port>` on your machine reaches the server).
+4. The card shows "Connected as …" and "channel live"; the assistant now
+   reads that mailbox through `packages/mcp-gmail`. Disconnect revokes the
+   grant; if revocation ever fails, remove the app at
+   myaccount.google.com/permissions.
+
+Deviations logged during Phase D:
+
+- `Deviation:` `saveKeys` gained a third result, `'unavailable'`, for a
+  symlinked or uncreatable credential dir (503), beside `'ok' | 'invalid'`.
+- `Deviation:` the code review caught the lifecycle helper exposing `isLive`
+  while `ControlDeps` expects `isChannelLive` — spread in `index.ts`, the key
+  was silently dropped and the live badge would always have read off in
+  production; the tests had stubbed the correct name. Renamed, and a server
+  test now boots with the real `createChannelLifecycle` spread in as
+  `index.ts` does.
+- `Deviation:` the pasted client JSON is validated before the limiter
+  (`validateKeysBody`), as artifacts and Claude sessions already do.
+- The capture shows the connected state from fixture files; the consent
+  flow itself is exercised only in tests (no real Google call runs anywhere
+  in the repo).
