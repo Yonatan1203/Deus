@@ -705,6 +705,57 @@ export function updateTaskAfterRun(
 }
 
 /** Newest-first run logs for the control UI; agent-written text is truncated per row. */
+export interface MessageTrace {
+  id: string;
+  chat_jid: string;
+  timestamp: string;
+  is_from_me: boolean;
+  is_bot_message: boolean;
+  content_length: number;
+}
+
+/** Row shape for the control UI's trace: never `content`, never `sender*`. */
+export function findMessagesById(id: string, limit = 5): MessageTrace[] {
+  const rows = db
+    .prepare(
+      `SELECT id, chat_jid, timestamp, is_from_me, is_bot_message,
+              length(content) AS content_length
+       FROM messages WHERE id = ? ORDER BY timestamp DESC LIMIT ?`,
+    )
+    .all(id, limit) as Array<{
+    id: string;
+    chat_jid: string;
+    timestamp: string;
+    is_from_me: number;
+    is_bot_message: number;
+    content_length: number | null;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    chat_jid: r.chat_jid,
+    timestamp: r.timestamp,
+    is_from_me: Boolean(r.is_from_me),
+    is_bot_message: Boolean(r.is_bot_message),
+    content_length: r.content_length ?? 0,
+  }));
+}
+
+export function countMessages(): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM messages').get() as {
+    n: number;
+  };
+  return row.n;
+}
+
+export function dbPing(): boolean {
+  try {
+    db.prepare('SELECT 1').get();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function getTaskRunLogs(taskId: string, limit = 50): TaskRunLog[] {
   return db
     .prepare(

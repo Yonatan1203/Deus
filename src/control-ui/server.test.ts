@@ -15,7 +15,16 @@ import os from 'os';
 import path from 'path';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { createControlServer, type ControlDeps } from './server.js';
+import {
+  createControlServer,
+  type ControlDeps,
+  type ControlServerOptions,
+} from './server.js';
+import { createLogRing } from '../log-ring.js';
+import { logger } from '../logger.js';
+import { ensureControlTmpDir } from './api/config.js';
+import type { DockerRunner } from './api/docker.js';
+import type { BuildRunner } from './api/containers.js';
 import { writeCredentialFile } from './auth.js';
 import {
   _resetWebTurnStateForTest,
@@ -168,6 +177,9 @@ function taskStore() {
     }),
     getTaskRunLogs: (id: string, limit: number) =>
       (runs.get(id) ?? []).slice(0, limit),
+    countMessages: () => 0,
+    findMessagesById: () => [],
+    dbPing: () => true,
     onTasksChanged: vi.fn(),
   };
 }
@@ -176,6 +188,10 @@ function boot(
   overrides: Partial<ControlDeps> = {},
   staticHandler?: () => void,
   queuePollMs?: number,
+  extra: Omit<
+    ControlServerOptions,
+    'now' | 'staticHandler' | 'queuePollMs'
+  > = {},
 ) {
   const deps: ControlDeps = {
     repoRoot: root,
@@ -191,6 +207,7 @@ function boot(
     now: () => clock,
     staticHandler,
     queuePollMs,
+    ...extra,
   });
   return new Promise<void>((r) =>
     server.listen(0, '127.0.0.1', () => {
@@ -1313,5 +1330,615 @@ describe('control-ui server — tasks, channels, memory', () => {
         })
       ).status,
     ).toBe(403);
+  });
+});
+
+describe('control-ui server — containers, logs, system, config, debug', () => {
+  const ID = 'abcdef12';
+  const own = `deus-main-1758000000000-i${ID}`;
+  const foreign = 'deus-main-1758000000001-i00000000';
+  function fakeDocker(fail = false): DockerRunner & { calls: string[][] } {
+    const calls: string[][] = [];
+    const answer = async (argv: string[]) => {
+      calls.push(argv);
+      if (fail) return { ok: false as const, error: 'docker not found' };
+      if (argv[0] === 'ps')
+        return {
+          ok: true as const,
+          stdout: [
+            JSON.stringify({
+              Names: own,
+              Image: 'deus-agent:latest',
+              State: 'running',
+              Status: 'Up',
+              CreatedAt: 'now',
+            }),
+            JSON.stringify({
+              Names: foreign,
+              Image: 'x',
+              State: 'running',
+              Status: 'Up',
+              CreatedAt: 'now',
+            }),
+          ].join('\n'),
+          stderr: '',
+        };
+      if (argv[0] === 'logs')
+        return {
+          ok: true as const,
+          stdout: 'line one\ntoken=abc\n',
+          stderr: '',
+        };
+      if (argv[0] === 'version')
+        return { ok: true as const, stdout: '27.0\n', stderr: '' };
+      if (argv[0] === 'system')
+        return {
+          ok: true as const,
+          stdout:
+            '{"Type":"Images","TotalCount":"1","Active":"1","Size":"1B","Reclaimable":"0B"}\n',
+          stderr: '',
+        };
+      if (argv[0] === 'stop')
+        return { ok: true as const, stdout: '', stderr: '' };
+      return { ok: false as const, error: 'unexpected' };
+    };
+    return { calls, run: answer, cached: (_k, _t, argv) => answer(argv) };
+  }
+  function fakeBuild(): BuildRunner & { starts: number } {
+    const b = {
+      starts: 0,
+      running: false,
+      async start() {
+        if (b.running) return 'running' as const;
+        b.running = true;
+        b.starts++;
+        return 'started' as const;
+      },
+      status: () => ({
+        running: b.running,
+        started_at: null,
+        finished_at: null,
+        code: null,
+        image_ref: 'deus-agent:latest',
+        head: 'abc',
+        dirty: false,
+        lines: [],
+      }),
+    };
+    return b;
+  }
+  let envPath: string;
+  let configDir: string;
+  let ring: ReturnType<typeof createLogRing>;
+  const push = (s: string) =>
+    new Promise<void>((r) => ring.stream.write(`${s}\n`, () => r()));
+  const bootP4 = (
+    over: Partial<ControlDeps> = {},
+    extra: Parameters<typeof boot>[3] = {},
+  ) => {
+    envPath = path.join(root, '.env');
+    fs.writeFileSync(
+      envPath,
+      '# hello\nLOG_LEVEL=info\nANTHROPIC_API_KEY=sk-x\n',
+    );
+    configDir = path.join(root, 'cfg');
+    ensureControlTmpDir(root);
+    ring = createLogRing(100);
+    const { runtime, snapshotState } = fakeRuntime();
+    snapshotState[0].containerName = own;
+    return boot(
+      {
+        runtime,
+        store: fakeStore(root),
+        bin: 'docker',
+        instanceId: ID,
+        logRing: ring,
+        envPath,
+        configDir,
+        ...over,
+      },
+      undefined,
+      undefined,
+      {
+        docker: fakeDocker(),
+        buildRunner: fakeBuild(),
+        logBatchMs: 20,
+        ...extra,
+      },
+    );
+  };
+  const infoSpy = vi.spyOn(logger, 'info');
+  const warnSpy = vi.spyOn(logger, 'warn');
+  beforeEach(() => {
+    infoSpy.mockClear();
+    warnSpy.mockClear();
+  });
+  const events = (spy: typeof infoSpy, ev: string) =>
+    spy.mock.calls.filter((c) => (c[0] as { event?: string })?.event === ev);
+
+  it('lists own containers, refuses foreign stops (audited), stops own ones, guards rebuild', async () => {
+    await bootP4();
+    const { auth } = await login();
+    const list = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/containers',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(list.containers.map((c: { name: string }) => c.name)).toEqual([own]);
+    expect(list.containers[0]).toMatchObject({ group_folder: 'main' });
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: `/api/v1/containers/${own}/stop`,
+          headers: auth,
+        })
+      ).status,
+    ).toBe(428);
+    const refused = await request({
+      method: 'POST',
+      path: `/api/v1/containers/${foreign}/stop`,
+      headers: { ...auth, 'X-Confirm': foreign },
+    });
+    expect(refused.status).toBe(404);
+    const audit = events(warnSpy, 'control_ui_container_stop_refused');
+    expect(audit).toHaveLength(1);
+    expect((audit[0][0] as { name: string }).name.length).toBeLessThanOrEqual(
+      128,
+    );
+    const ok = await request({
+      method: 'POST',
+      path: `/api/v1/containers/${own}/stop`,
+      headers: { ...auth, 'X-Confirm': own },
+    });
+    expect(ok.status).toBe(200);
+    expect(events(warnSpy, 'control_ui_container_stop')).toHaveLength(1);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/containers/rebuild',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(428);
+    const started = await request({
+      method: 'POST',
+      path: '/api/v1/containers/rebuild',
+      headers: { ...auth, 'X-Confirm': 'rebuild' },
+    });
+    expect(started.status).toBe(200);
+    expect(JSON.parse(started.text)).toMatchObject({
+      started: true,
+      image_ref: 'deus-agent:latest',
+      head: 'abc',
+      dirty: false,
+    });
+    const rebuildAudit = events(warnSpy, 'control_ui_container_rebuild');
+    expect(rebuildAudit[0][0]).toMatchObject({
+      image_ref: 'deus-agent:latest',
+      head: 'abc',
+      dirty: false,
+    });
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/containers/rebuild',
+          headers: { ...auth, 'X-Confirm': 'rebuild' },
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      JSON.parse(
+        (
+          await request({
+            method: 'GET',
+            path: '/api/v1/containers/build',
+            headers: auth,
+          })
+        ).text,
+      ),
+    ).toMatchObject({ running: true });
+  });
+
+  it('answers 502 when the runtime refuses a stop and probe_error when it is missing', async () => {
+    await bootP4({}, { docker: fakeDocker(true) });
+    const { auth } = await login();
+    expect(
+      JSON.parse(
+        (
+          await request({
+            method: 'GET',
+            path: '/api/v1/containers',
+            headers: auth,
+          })
+        ).text,
+      ),
+    ).toEqual({ containers: [], probe_error: 'docker not found' });
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: `/api/v1/containers/${own}/stop`,
+          headers: { ...auth, 'X-Confirm': own },
+        })
+      ).status,
+    ).toBe(502);
+    const sys = JSON.parse(
+      (await request({ method: 'GET', path: '/api/v1/system', headers: auth }))
+        .text,
+    );
+    expect(sys.docker).toEqual({ error: 'docker not found' });
+    expect(sys.disk).toHaveProperty('used_pct');
+  });
+
+  it('serves host and container logs with redaction, dedups read audits, exports', async () => {
+    await bootP4();
+    const { auth } = await login();
+    await push('{"level":30,"msg":"alpha","token":"t1"}');
+    await push('{"level":40,"msg":"beta"}');
+    await push('{"level":30,"msg":"gamma","event":"control_ui_x"}');
+    const host = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/logs?source=host&level=warn',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(host.entries.map((e: { msg: string }) => e.msg)).toEqual(['beta']);
+    const all = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/logs?source=host',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(all.entries[0]).toMatchObject({ fields: { token: '[redacted]' } });
+    expect(
+      events(infoSpy, 'control_ui_logs_read').filter(
+        (c) => (c[0] as { source: string }).source === 'logs:host',
+      ),
+    ).toHaveLength(1);
+    const c = await request({
+      method: 'GET',
+      path: `/api/v1/logs?source=container:${own}&lines=5`,
+      headers: auth,
+    });
+    expect(JSON.parse(c.text)).toEqual({
+      source: `container:${own}`,
+      lines: ['line one', 'token=[redacted]'],
+    });
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: `/api/v1/logs?source=container:${foreign}`,
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/logs?source=nope',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(400);
+    expect(events(infoSpy, 'control_ui_logs_read')).toHaveLength(2);
+    const ex = await request({
+      method: 'GET',
+      path: '/api/v1/logs/export',
+      headers: auth,
+    });
+    expect(ex.status).toBe(200);
+    expect(ex.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(ex.headers['content-disposition']).toContain('attachment');
+    expect(ex.text).toContain('[redacted]');
+    expect(ex.text).not.toContain('t1');
+  });
+
+  it('streams batched log frames, capped, never audit lines, never in read-only', async () => {
+    await bootP4();
+    const { auth, cookie } = await login();
+    const { ticket } = JSON.parse(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/events/ticket',
+          headers: auth,
+        })
+      ).text,
+    );
+    const frames = await new Promise<string>((resolve, reject) => {
+      let buf = '';
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: `/api/v1/events?ticket=${ticket}`,
+          headers: { Cookie: cookie },
+        },
+        (res) => {
+          res.on('data', (chunk) => {
+            buf += String(chunk);
+            if (buf.includes('event: log')) {
+              setTimeout(() => {
+                resolve(buf);
+                req.destroy();
+              }, 60);
+            }
+          });
+          setTimeout(async () => {
+            for (let i = 0; i < 150; i++)
+              await push(`{"level":30,"msg":"m${i}"}`);
+            await push(
+              '{"level":30,"msg":"audit","event":"control_ui_secret"}',
+            );
+          }, 30);
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    const logFrames = frames
+      .split('\n\n')
+      .filter((f) => f.includes('event: log'));
+    expect(logFrames.length).toBeGreaterThanOrEqual(1);
+    const payload = JSON.parse(logFrames[0].split('data: ')[1]);
+    expect(payload.entries.length).toBeLessThanOrEqual(100);
+    expect(payload.dropped).toBeGreaterThanOrEqual(0);
+    expect(frames).not.toContain('control_ui_secret');
+    server.close();
+    await bootP4({ readOnly: true });
+    const ro = await login();
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: `/api/v1/logs?source=container:${own}`,
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/logs/export',
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(403);
+    await push('{"level":30,"msg":"ro","token":"zz"}');
+    const roLogs = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/logs?source=host',
+          headers: ro.auth,
+        })
+      ).text,
+    );
+    expect(Object.keys(roLogs.entries[0]).sort()).toEqual([
+      'level',
+      'msg',
+      'seq',
+      'time',
+    ]);
+    const t2 = JSON.parse(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/events/ticket',
+          headers: ro.auth,
+        })
+      ).text,
+    ).ticket;
+    const roFrames = await new Promise<string>((resolve, reject) => {
+      let buf = '';
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: `/api/v1/events?ticket=${t2}`,
+          headers: { Cookie: ro.cookie },
+        },
+        (res) => {
+          res.on('data', (chunk) => (buf += String(chunk)));
+          setTimeout(async () => {
+            await push('{"level":30,"msg":"should-not-stream"}');
+            setTimeout(() => {
+              resolve(buf);
+              req.destroy();
+            }, 80);
+          }, 30);
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(roFrames).not.toContain('event: log');
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: `/api/v1/containers/${own}/stop`,
+          headers: { ...ro.auth, 'X-Confirm': own },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/containers/rebuild',
+          headers: { ...ro.auth, 'X-Confirm': 'rebuild' },
+        })
+      ).status,
+    ).toBe(403);
+    const roCfg = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/config',
+          headers: ro.auth,
+        })
+      ).text,
+    );
+    expect(roCfg.keys.every((k: { editable: boolean }) => k.editable)).toBe(
+      true,
+    );
+    expect(
+      (
+        await request({
+          method: 'PATCH',
+          path: '/api/v1/config',
+          headers: { ...ro.auth, ...H, 'X-Confirm': 'LOG_LEVEL' },
+          body: JSON.stringify({ key: 'LOG_LEVEL', value: 'warn' }),
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it('config: omits secrets, validates, rewrites with backup outside the root, limits and audits', async () => {
+    await bootP4();
+    const { auth } = await login();
+    const cfg = JSON.parse(
+      (await request({ method: 'GET', path: '/api/v1/config', headers: auth }))
+        .text,
+    );
+    expect(
+      cfg.keys.find((k: { key: string }) => k.key === 'ANTHROPIC_API_KEY'),
+    ).toBeUndefined();
+    expect(cfg.secret_keys_omitted).toBeGreaterThanOrEqual(1);
+    expect(
+      cfg.keys.find((k: { key: string }) => k.key === 'LOG_LEVEL'),
+    ).toMatchObject({ value: 'info', editable: true });
+    await request({ method: 'GET', path: '/api/v1/config', headers: auth });
+    expect(events(infoSpy, 'control_ui_config_read')).toHaveLength(1);
+    const patch = (key: string, value: unknown, confirm = key) =>
+      request({
+        method: 'PATCH',
+        path: '/api/v1/config',
+        headers: { ...auth, ...H, 'X-Confirm': confirm },
+        body: JSON.stringify({ key, value }),
+      });
+    expect((await patch('LOG_LEVEL', 'warn', '')).status).toBe(428);
+    expect((await patch('ANTHROPIC_API_KEY', 'x')).status).toBe(400);
+    expect((await patch('LOG_LEVEL', 'verbose')).status).toBe(400);
+    expect(
+      (await patch('CONTAINER_TIMEOUT', '20000\nGITHUB_WEBHOOK_SECRET=x'))
+        .status,
+    ).toBe(400);
+    const okReply = await patch('LOG_LEVEL', 'warn');
+    expect(okReply.status).toBe(200);
+    expect(JSON.parse(okReply.text)).toMatchObject({
+      restart_required: true,
+      key: 'LOG_LEVEL',
+    });
+    const text = fs.readFileSync(envPath, 'utf-8');
+    expect(text).toContain('# hello\nLOG_LEVEL=warn\nANTHROPIC_API_KEY=sk-x\n');
+    expect(
+      fs.readdirSync(path.join(configDir, 'control-ui', 'env-backups')),
+    ).toHaveLength(1);
+    expect(fs.readdirSync(root).filter((f) => f.startsWith('.env'))).toEqual([
+      '.env',
+    ]);
+    const audit = events(warnSpy, 'control_ui_config_write');
+    expect(audit).toHaveLength(1);
+    expect(JSON.stringify(audit[0][0])).not.toContain('warn"');
+    for (let i = 0; i < 5; i++)
+      await patch('LOG_LEVEL', i % 2 ? 'info' : 'warn');
+    expect((await patch('LOG_LEVEL', 'info')).status).toBe(429);
+  });
+
+  it('debug: health, counts, events, trace validation', async () => {
+    await bootP4();
+    const { auth } = await login();
+    const health = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/debug/health',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(health).toMatchObject({
+      docker: { ok: true, version: '27.0' },
+      db: { ok: true },
+      build_running: false,
+    });
+    const counts = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/debug/counts',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(counts).toMatchObject({ groups: 1, containers_active: 1 });
+    const ev = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/debug/events',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(Array.isArray(ev.events)).toBe(true);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/debug/trace?message_id=..',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/debug/trace?message_id=a%20b',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      JSON.parse(
+        (
+          await request({
+            method: 'GET',
+            path: '/api/v1/debug/trace?message_id=m1',
+            headers: auth,
+          })
+        ).text,
+      ),
+    ).toEqual({ messages: [] });
+    for (let i = 0; i < 30; i++)
+      await request({ method: 'GET', path: '/api/v1/system', headers: auth });
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/containers',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(429);
   });
 });

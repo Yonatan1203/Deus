@@ -4,6 +4,8 @@ export interface EventHub {
   attach(req: IncomingMessage, res: ServerResponse): boolean;
   broadcast(type: string, data: unknown): void;
   clientCount(): number;
+  /** Newest frames' metadata (never the payload) for the Debug tab. */
+  recent(n: number): { id: number; type: string; at: number }[];
   close(): void;
 }
 
@@ -14,7 +16,7 @@ export function createEventHub(
   const ringSize = opts.ringSize ?? 256;
   const maxClients = opts.maxClients ?? 8;
   const clients = new Map<ServerResponse, number>(); // res → consecutive full-buffer writes
-  const ring: { id: number; frame: string }[] = [];
+  const ring: { id: number; type: string; at: number; frame: string }[] = [];
   let nextId = 1;
 
   const timer = setInterval(() => {
@@ -43,7 +45,7 @@ export function createEventHub(
     broadcast(type, data) {
       const id = nextId++;
       const frame = `id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-      ring.push({ id, frame });
+      ring.push({ id, type, at: Date.now(), frame });
       if (ring.length > ringSize) ring.shift();
       for (const [res, stalls] of clients) {
         if (res.write(frame)) {
@@ -55,6 +57,9 @@ export function createEventHub(
           clients.set(res, stalls + 1);
         }
       }
+    },
+    recent(n) {
+      return ring.slice(-n).map(({ id, type, at }) => ({ id, type, at }));
     },
     clientCount() {
       return clients.size;

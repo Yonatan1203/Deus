@@ -42,6 +42,23 @@ import {
   updateTaskFromBody,
 } from './api/tasks.js';
 import { listWardens, setWardenEnabled } from './api/wardens.js';
+import {
+  createBuildRunner,
+  listContainers,
+  stopContainer,
+  type BuildRunner,
+} from './api/containers.js';
+import { createDockerRunner, type DockerRunner } from './api/docker.js';
+import { containerLogs, queryLogs, redactSecrets } from './api/logs.js';
+import { readSystem, type SystemView } from './api/system.js';
+import { readConfig, writeConfig } from './api/config.js';
+import {
+  debugCounts,
+  debugHealth,
+  debugTrace,
+  MESSAGE_ID_RE,
+} from './api/debug.js';
+import type { LogEntry, LogRing } from '../log-ring.js';
 import type { WebTurnDeps } from '../web-turn.js';
 import type { Channel } from '../types.js';
 import type { ControlStore } from './store.js';
@@ -83,6 +100,14 @@ export interface ControlDeps {
   vaultPath?: string | null;
   /** The WhatsApp adapter's auth dir (qr-data.txt lives in its parent). */
   whatsappAuthDir?: string;
+  /** Container runtime binary and this install's instance stamp (Phase 4). */
+  bin?: string;
+  instanceId?: string;
+  /** In-process log ring; absent → the Logs tab has no host source. */
+  logRing?: LogRing;
+  /** `.env` path and the config dir holding its backups. */
+  envPath?: string;
+  configDir?: string;
 }
 
 export interface ControlServerOptions {
@@ -93,6 +118,10 @@ export interface ControlServerOptions {
   now?: () => number;
   staticHandler?: typeof serveStatic;
   queuePollMs?: number;
+  docker?: DockerRunner;
+  buildRunner?: BuildRunner;
+  systemPollMs?: number;
+  logBatchMs?: number;
 }
 
 const BIND_HOST = '127.0.0.1';
@@ -110,6 +139,11 @@ const TASK_CREATES_PER_SESSION = 50;
 const ACTIVE_TASK_CAP = 100;
 const SESSION_COUNTERS_MAX = 1000;
 const MEMORY_WRITES_PER_MIN = 12;
+const CONFIG_WRITES_PER_MIN = 6;
+const DOCKER_READS_PER_MIN = 30;
+const SYSTEM_POLL_MS = 30_000;
+const LOG_BATCH_MS = 500;
+const LOG_BATCH_MAX = 100;
 const MEMORY_MAX_BYTES = 1024 * 1024;
 const MEMORY_BODY_CAP = Math.floor(MEMORY_MAX_BYTES * 1.5);
 
@@ -215,6 +249,35 @@ export function createControlServer(
   const claudeMdLimiter = createRateLimiter(CLAUDE_MD_WRITES_PER_MIN, 60_000);
   const taskLimiter = createRateLimiter(TASK_MUTATIONS_PER_MIN, 60_000);
   const memoryLimiter = createRateLimiter(MEMORY_WRITES_PER_MIN, 60_000);
+  const configLimiter = createRateLimiter(CONFIG_WRITES_PER_MIN, 60_000);
+  const dockerReadLimiter = createRateLimiter(DOCKER_READS_PER_MIN, 60_000);
+  const docker = opts.docker ?? createDockerRunner(deps.bin ?? 'docker');
+  const instanceId = deps.instanceId ?? '';
+  const build =
+    opts.buildRunner ?? createBuildRunner({ repoRoot: deps.repoRoot, hub });
+  // First-read audits, once per session per source; bounded like createCounts.
+  const readAudits = new Map<string, Set<string>>();
+  const auditRead = (
+    session: SessionInfo | null,
+    key: string,
+    event: string,
+    remoteAddr: string,
+  ) => {
+    const sid = session?.shortId ?? '';
+    let seen = readAudits.get(sid);
+    if (!seen) {
+      if (readAudits.size >= SESSION_COUNTERS_MAX)
+        readAudits.delete(readAudits.keys().next().value as string);
+      seen = new Set();
+      readAudits.set(sid, seen);
+    }
+    if (seen.has(key)) return;
+    seen.add(key);
+    logger.info(
+      { event, source: key, remoteAddr, actor: actor(session) },
+      'Control UI read',
+    );
+  };
   // Creates per session; cleared with the session store, bounded so it cannot grow forever.
   const createCounts = new Map<string, number>();
   const bumpCreateCount = (sid: string): boolean => {
@@ -238,6 +301,7 @@ export function createControlServer(
     if (state.rotated) {
       sessions.clear();
       createCounts.clear();
+      readAudits.clear();
       backoff.reset();
       logger.warn(
         { event: 'control_ui_credential_rotated' },
@@ -352,6 +416,7 @@ export function createControlServer(
     );
     sessions.clear();
     createCounts.clear();
+    readAudits.clear();
     ctx.res.setHeader('Set-Cookie', clearSessionCookie(isTls(ctx.req)));
     ctx.res.writeHead(204);
     ctx.res.end();
@@ -824,6 +889,284 @@ export function createControlServer(
     { maxBody: MEMORY_BODY_CAP },
   );
 
+  // ---- Phase 4: containers, logs, system, config, debug --------------------
+  const dockerRead = (ctx: RequestContext): boolean => {
+    if (
+      dockerReadLimiter.isRateLimited(
+        ctx.session?.shortId ?? ctx.remoteAddr,
+        now(),
+      )
+    ) {
+      writeJson(ctx.res, 429, { error: 'too many runtime reads' });
+      return false;
+    }
+    return true;
+  };
+  const snapshot = () => deps.runtime?.queue.snapshot() ?? [];
+  const containerDeps = () => ({ docker, instanceId, snapshot });
+
+  router.add('GET', '/api/v1/containers', async (ctx) => {
+    if (!dockerRead(ctx)) return;
+    writeJson(ctx.res, 200, await listContainers(containerDeps()));
+  });
+  router.add('POST', '/api/v1/containers/rebuild', async (ctx) => {
+    if (header(ctx.req, 'x-confirm') !== 'rebuild')
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    const r = await build.start();
+    if (r === 'unsupported')
+      return writeJson(ctx.res, 501, { error: 'rebuild needs a POSIX host' });
+    if (r === 'running')
+      return writeJson(ctx.res, 409, { error: 'a build is already running' });
+    const st = build.status();
+    logger.warn(
+      {
+        event: 'control_ui_container_rebuild',
+        image_ref: st.image_ref,
+        head: st.head,
+        dirty: st.dirty,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI started an image rebuild',
+    );
+    writeJson(ctx.res, 200, {
+      started: true,
+      image_ref: st.image_ref,
+      head: st.head,
+      dirty: st.dirty,
+    });
+  });
+  router.add('GET', '/api/v1/containers/build', (ctx) => {
+    writeJson(ctx.res, 200, build.status());
+  });
+  router.add('POST', '/api/v1/containers/:name/stop', async (ctx) => {
+    const name = ctx.params.name;
+    if (header(ctx.req, 'x-confirm') !== name)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    const r = await stopContainer(containerDeps(), name);
+    if ('status' in r) {
+      logger.warn(
+        {
+          event: 'control_ui_container_stop_refused',
+          name: name.slice(0, 128),
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI refused a container stop',
+      );
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    }
+    if ('error' in r) return writeJson(ctx.res, 502, { error: r.error });
+    logger.warn(
+      {
+        event: 'control_ui_container_stop',
+        name,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI stopped a container',
+    );
+    hub.broadcast('container', { name, action: 'stopped' });
+    writeJson(ctx.res, 200, r);
+  });
+
+  router.add('GET', '/api/v1/logs', async (ctx) => {
+    const source = ctx.url.searchParams.get('source') ?? 'host';
+    if (source.startsWith('container:')) {
+      if (deps.readOnly)
+        return writeJson(ctx.res, 403, {
+          error: 'read-only from the dashboard',
+        });
+      if (!dockerRead(ctx)) return;
+      const r = await containerLogs(
+        docker,
+        source.slice('container:'.length),
+        ctx.url.searchParams.get('lines'),
+        instanceId,
+      );
+      if ('status' in r) return writeJson(ctx.res, 404, { error: 'not found' });
+      if ('error' in r) return writeJson(ctx.res, 502, { error: r.error });
+      auditRead(
+        ctx.session,
+        `logs:${source}`,
+        'control_ui_logs_read',
+        ctx.remoteAddr,
+      );
+      return writeJson(ctx.res, 200, { source, lines: r.lines });
+    }
+    if (source !== 'host')
+      return writeJson(ctx.res, 400, { error: 'unknown source' });
+    if (!deps.logRing)
+      return writeJson(ctx.res, 503, { error: 'host logs unavailable' });
+    auditRead(ctx.session, 'logs:host', 'control_ui_logs_read', ctx.remoteAddr);
+    writeJson(ctx.res, 200, {
+      source,
+      entries: queryLogs(deps.logRing, {
+        level: ctx.url.searchParams.get('level') ?? undefined,
+        q: ctx.url.searchParams.get('q') ?? undefined,
+        lines: ctx.url.searchParams.get('lines'),
+        readOnly: deps.readOnly,
+      }),
+    });
+  });
+  router.add('GET', '/api/v1/logs/export', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    if (!deps.logRing)
+      return writeJson(ctx.res, 503, { error: 'host logs unavailable' });
+    const entries = queryLogs(deps.logRing, {
+      level: ctx.url.searchParams.get('level') ?? undefined,
+      q: ctx.url.searchParams.get('q') ?? undefined,
+      lines: 1000,
+    }) as LogEntry[];
+    logger.info(
+      {
+        event: 'control_ui_logs_export',
+        count: entries.length,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI exported host logs',
+    );
+    ctx.res.writeHead(200, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="deus-control-logs.txt"',
+    });
+    ctx.res.end(entries.map((e) => e.line).join('\n') + '\n');
+  });
+
+  router.add('GET', '/api/v1/system', async (ctx) => {
+    if (!dockerRead(ctx)) return;
+    writeJson(
+      ctx.res,
+      200,
+      await readSystem({
+        repoRoot: deps.repoRoot,
+        docker,
+        version: deps.version,
+      }),
+    );
+  });
+
+  router.add('GET', '/api/v1/config', (ctx) => {
+    if (!deps.envPath)
+      return writeJson(ctx.res, 503, { error: 'config unavailable' });
+    auditRead(ctx.session, 'config', 'control_ui_config_read', ctx.remoteAddr);
+    writeJson(
+      ctx.res,
+      200,
+      readConfig({
+        envPath: deps.envPath,
+        processEnv: process.env,
+        readOnly: deps.readOnly,
+      }),
+    );
+  });
+  router.add('PATCH', '/api/v1/config', async (ctx) => {
+    if (!deps.envPath || !deps.configDir)
+      return writeJson(ctx.res, 503, { error: 'config unavailable' });
+    const body = (ctx.body ?? {}) as { key?: unknown; value?: unknown };
+    const key = typeof body.key === 'string' ? body.key : '';
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(key))
+      return writeJson(ctx.res, 400, { error: 'invalid key' });
+    if (header(ctx.req, 'x-confirm') !== key)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (
+      configLimiter.isRateLimited(ctx.session?.shortId ?? ctx.remoteAddr, now())
+    )
+      return writeJson(ctx.res, 429, { error: 'too many config writes' });
+    const r = await writeConfig(
+      {
+        envPath: deps.envPath,
+        backupDir: path.join(deps.configDir, 'control-ui', 'env-backups'),
+        projectRoot: deps.repoRoot,
+      },
+      key,
+      body.value,
+    );
+    if ('status' in r) return writeJson(ctx.res, r.status, { error: r.error });
+    logger.warn(
+      {
+        event: 'control_ui_config_write',
+        key,
+        backup: r.backup,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI changed a config key (restart required)',
+    );
+    writeJson(ctx.res, 200, { restart_required: true, key, backup: r.backup });
+  });
+
+  const debugDeps = () => ({
+    docker,
+    store: deps.store,
+    runtime: deps.runtime,
+    channels: deps.channels,
+    hub,
+    buildRunning: () => build.status().running,
+  });
+  router.add('GET', '/api/v1/debug/health', async (ctx) => {
+    writeJson(ctx.res, 200, await debugHealth(debugDeps()));
+  });
+  router.add('GET', '/api/v1/debug/counts', (ctx) => {
+    writeJson(ctx.res, 200, debugCounts(debugDeps()));
+  });
+  router.add('GET', '/api/v1/debug/events', (ctx) => {
+    writeJson(ctx.res, 200, { events: hub.recent(50) });
+  });
+  router.add('GET', '/api/v1/debug/trace', (ctx) => {
+    const id = ctx.url.searchParams.get('message_id') ?? '';
+    if (!MESSAGE_ID_RE.test(id) || id.includes('..'))
+      return writeJson(ctx.res, 400, { error: 'invalid message id' });
+    writeJson(ctx.res, 200, debugTrace(debugDeps(), id));
+  });
+
+  // System poll: only while someone is watching; `alert` on a rising edge.
+  let lastAlert: SystemView['alert'] | undefined;
+  const systemPoll = setInterval(() => {
+    if (hub.clientCount() === 0) return;
+    readSystem({ repoRoot: deps.repoRoot, docker, version: deps.version })
+      .then((sys) => {
+        hub.broadcast('system', sys);
+        if (sys.alert && sys.alert !== lastAlert)
+          hub.broadcast('alert', { kind: sys.alert, disk: sys.disk });
+        lastAlert = sys.alert;
+      })
+      .catch(() => {});
+  }, opts.systemPollMs ?? SYSTEM_POLL_MS);
+  systemPoll.unref();
+
+  // Host log follow: batched, capped, never for the read-only viewer, and
+  // never carrying the dashboard's own audit lines (a write error that gets
+  // logged would otherwise feed straight back into the stream).
+  let logBatch: LogEntry[] = [];
+  let logDropped = 0;
+  let logTimer: ReturnType<typeof setInterval> | undefined;
+  let unsubscribeLog: (() => void) | undefined;
+  if (deps.logRing && !deps.readOnly) {
+    unsubscribeLog = deps.logRing.onEntry((e) => {
+      if (hub.clientCount() === 0) return;
+      if (String(e.fields.event ?? '').startsWith('control_ui_')) return;
+      if (logBatch.length >= LOG_BATCH_MAX) logDropped++;
+      else logBatch.push(e);
+    });
+    logTimer = setInterval(() => {
+      if (logBatch.length === 0) return;
+      const entries = logBatch.map((e) => ({
+        ...e,
+        msg: redactSecrets(e.msg),
+        line: redactSecrets(e.line),
+      }));
+      const dropped = logDropped;
+      logBatch = [];
+      logDropped = 0;
+      hub.broadcast('log', { entries, dropped });
+    }, opts.logBatchMs ?? LOG_BATCH_MS);
+    logTimer.unref();
+  }
+
   // Poll-and-diff: dashboards see container state change within one tick.
   let lastQueueJson = '';
   const queuePoll = setInterval(() => {
@@ -923,6 +1266,11 @@ export function createControlServer(
 
   server.on('close', () => {
     clearInterval(queuePoll);
+    clearInterval(systemPoll);
+    if (logTimer) clearInterval(logTimer);
+    if (unsubscribeLog) unsubscribeLog();
+    configLimiter.dispose();
+    dockerReadLimiter.dispose();
     loginLimiter.dispose();
     claudeMdLimiter.dispose();
     taskLimiter.dispose();

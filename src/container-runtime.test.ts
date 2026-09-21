@@ -25,6 +25,8 @@ import {
   ensureContainerRuntimeRunning,
   cleanupOrphans,
   _setSleepFnForTests,
+  CONTAINER_NAME_RE,
+  isOwnContainer,
 } from './container-runtime.js';
 import { FatalError } from './errors/index.js';
 import { logger } from './logger.js';
@@ -40,6 +42,22 @@ describe('readonlyMountArgs', () => {
   it('returns -v flag with :ro suffix', () => {
     const args = readonlyMountArgs('/host/path', '/container/path');
     expect(args).toEqual(['-v', '/host/path:/container/path:ro']);
+  });
+});
+
+describe('isOwnContainer', () => {
+  it("accepts only this install's container names, case-preserving", () => {
+    const id = 'abcdef12';
+    expect(isOwnContainer(`deus-MyProject-1758000000000-i${id}`, id)).toBe(
+      true,
+    );
+    expect(isOwnContainer(`deus-main-1758000000000-i${id}`, id)).toBe(true);
+    expect(isOwnContainer('deus-main-1758000000000-i00000000', id)).toBe(false);
+    expect(isOwnContainer(`deus-main-1758000000000-i${id} x`, id)).toBe(false);
+    expect(isOwnContainer(`--rm-deus-main-1758000000000-i${id}`, id)).toBe(
+      false,
+    );
+    expect(CONTAINER_NAME_RE.test(`deus-a_b-1758000000000-i${id}`)).toBe(false);
   });
 });
 

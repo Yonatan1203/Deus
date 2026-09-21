@@ -299,3 +299,62 @@ Deviations logged during the redesign:
 - `Deviation:` the Channels QR panel was rebuilt away by the queue/refresh redraw (above); fixed in `views/channels.js`, not a capture-only workaround.
 - `Deviation:` the v2 fixture copies the repo's own `.claude/agents` and `.claude/wardens` (public, generic) and symlinks `packages`/`container` so Agents/Wardens/MCPs are populated without instance content.
 - `Deviation:` `scripts/control-ui-screenshot.mjs` prints page errors to stderr so a broken view fails loudly instead of timing out silently.
+
+## Phase 4 — verification record (Containers, Logs, System, Config, Debug)
+
+Plan: `docs/superpowers/plans/2026-09-20-control-ui-phase4.md` — 5 plan-review
+rounds and 5 threat-model rounds before a line was written; every round's
+findings traced to the previous fix (charset of container names, `.env`
+newline injection, backups inside the container mount, the temp-file copy,
+read-only leaks via SSE/export, boot ordering of the shadowed temp dir).
+
+What landed:
+- **Containers** — `docker ps` scoped to this install's `-i<id>` suffix
+  (`isOwnContainer`, case-preserving, exported from `container-runtime.ts`),
+  typed-confirm **Stop** (`-t 5`), typed-confirm **Rebuild image** running the
+  fixed `container/build.sh` with an explicit child env, one build at a time,
+  SIGTERM→SIGKILL at 30 min, output streamed as `build` events; `start` dropped
+  (containers run `--rm`); rebuild is POSIX-only (501 on Windows).
+- **Logs** — an in-process pino ring (`src/log-ring.ts`, `info`+ only, host
+  name/pid stripped, secret-looking fields structurally redacted, then a string
+  backstop for `"key":"value"`, prefixed tokens and URL userinfo), `docker logs`
+  for own containers, batched `log` SSE follow (≤100/frame + `dropped`, never
+  the dashboard's own audit lines), export as an attachment.
+- **System** — `fs.statfs` disk with an `alert` at ≥85 %, load/RAM, docker
+  version + `system df` (cached 30 s), 30 s `system` poll only while a client
+  is attached.
+- **Config** — `.env` read with secret-looking keys **absent** (extended
+  denylist incl. `_URL`), values through the redactor; six editable keys with
+  per-key validation, control-character rejection before validation,
+  normalized values, atomic temp+rename from the shadowed `PROJECT_ROOT/.deus-tmp/`
+  (created before any container can spawn; 503 rather than lazily recreated),
+  backups under `CONFIG_DIR/control-ui/env-backups/` (0700/0600, newest 10),
+  symlink/drift → 409, serialized writes that never leave a dangling rejection,
+  6/min limiter, `restart_required: true` always.
+- **Debug** — health (runtime, db, channels, SSE clients, build), counts,
+  recent SSE frame metadata, message trace by id (never `content`/`sender`).
+- **Read-only** withholds: container log sources and export → 403, host entries
+  projected to `{seq,time,level,msg}`, no `log` stream, Config lists only the
+  editable keys. `chat_jid` stays in scope (Groups/Sessions already show it).
+- Every docker call goes through one `DockerRunner` (≤2 in flight, 15 s
+  timeout, errors mapped, never thrown); docker-backed reads share a 30/min
+  per-session limiter.
+
+| Check | Predicted | Observed | Disposition |
+|-------|-----------|----------|-------------|
+| Units | new tests green; whole suite grows only by the added cases; tsc 0; eslint 0; prettier clean | whole suite 2246 before Phase 4 → 2278 after round 1 (+32: 24 in the six new test files, 8 added to `db`, `container-mounter` and `server` tests) → **2279** after round 2 (+1: the `isOwnContainer` describe; the ordering-proving config assertions and the read-only stop/rebuild assertions were folded into existing cases); tsc 0; eslint 0; prettier clean | PASS |
+| Containers (stub runtime) | own rows listed incl. queue join; foreign row absent; ENOENT → `probe_error` | integration: `[own]` with `group_folder: main`; foreign excluded; fake failure → `{ containers: [], probe_error }` HTTP 200 | PASS |
+| Stop | 428 → 404 foreign (audited, name ≤128) → 200 own (audited) → 502 on runtime refusal → 403 read-only | all as predicted (`server.test.ts`; the read-only 403 is the shared mutation gate, now asserted route-by-route for stop and rebuild after the code review pointed out the row overclaimed) | PASS |
+| Rebuild | 428 → 200 with `image_ref/head/dirty` audited → 409 second → status shows running; SIGTERM/SIGKILL at 30 min (fake timers); git failure → nulls | as predicted (`containers.test.ts`, `server.test.ts`) | PASS |
+| Logs | level/q/lines filters; `[redacted]` for a planted token; no `hostname`/`pid`; container 404 foreign; export headers; one audit per session per source; batched frames ≤100 + `dropped`; `control_ui_*` never streamed; read-only: 403/403/projection/no stream | as predicted | PASS |
+| System | `used_pct` math; alert at 85 rising edge; docker ENOENT → `docker.error` | as predicted | PASS |
+| Config | secrets absent (incl. `OPENAI_BASE_URL`); 400 on unknown/invalid/injected values with the file untouched; normalized write, comments byte-identical; backup outside root, 0600, keeps 10; no `.env*` sibling after success/failure; symlink/drift 409; missing 404; `.deus-tmp` missing or symlinked → 503; serialized; no unhandled rejection; 7th write/min 429; read-only 403 | as predicted (`config.test.ts`, `server.test.ts`) | PASS |
+| Debug | health/counts/events shapes; trace `..`/space → 400; unknown id → `{ messages: [] }`; rows without `content`/`sender` | as predicted | PASS |
+| **Visual** — `docs/control-ui/artifacts/phase4-{containers,logs,system,config,debug}-{mobile,desktop}.png`, `phase4-more-mobile.png` | rail gains a *System* group (More sheet lists Configure + System); containers as a hairline list with Stop/Rebuild; logs with source/level/filter/lines/Follow/Export; system tiles + df table; config table with an open inline editor; debug health list + counts + events | captured against the synthetic fixture with a stub `docker` script and a generic `.env`; reviewed: only `Deus`, `deus-agent:latest`, fixture container names with the fixture instance id, placeholder log lines and `example.invalid` appear. Round 1 found the desktop rail clipping *Sign out* with 14 items and the mobile log line collapsing its message column — both fixed in CSS and recaptured. The verification gate then measured `scrollWidth` at 390 px on all 14 tabs (a viewport-clipped PNG cannot show sideways overflow): Config (+103 px), System (+23 px) and the pre-existing Sessions tab (+284 px) overflowed because `.table-wrap`, a grid item, kept `min-width: auto`; fixed with `min-width: 0` on `.table-wrap` and `.view`, re-measured 0 px on all 14 tabs | PASS |
+
+Deviations logged during Phase 4:
+- `Deviation:` `POST containers/:name/start` dropped (spec row struck through) — `--rm` containers cannot be started.
+- `Deviation:` the ring stores `info`+ only, so the Logs tab cannot show `debug` — agent stderr stays out by construction.
+- `Deviation:` the fixture store gained `countMessages`/`findMessagesById`/`dbPing` when the Debug tab first rendered against it (real `db.ts` had them).
+- `Deviation:` the disk bar is a styled `<progress>` element rather than a width set from script, so no inline style is ever written.
+- Residual, recorded: a host-side `./container/build.sh` running concurrently with a dashboard rebuild is not detected; `WHISPER_BIN`/`LLAMA_CPP_MODEL`/`DEUS_VAULT_PATH`-style host paths survive the secret denylist and are shown to the operator (never captured — the fixture `.env` is generic).

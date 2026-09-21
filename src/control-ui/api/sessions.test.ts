@@ -52,6 +52,9 @@ describe('control-ui sessions', () => {
       updateTask: () => {},
       deleteTask: () => {},
       getTaskRunLogs: () => [],
+      countMessages: () => 0,
+      findMessagesById: () => [],
+      dbPing: () => true,
       onTasksChanged: () => {},
     };
     const out = listSessions(store, runtime);
@@ -76,6 +79,9 @@ describe('control-ui sessions', () => {
       updateTask: () => {},
       deleteTask: () => {},
       getTaskRunLogs: () => [],
+      countMessages: () => 0,
+      findMessagesById: () => [],
+      dbPing: () => true,
       onTasksChanged: () => {},
     };
     const rt = {

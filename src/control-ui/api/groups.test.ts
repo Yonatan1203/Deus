@@ -49,6 +49,9 @@ const store = {
   updateTask: () => {},
   deleteTask: () => {},
   getTaskRunLogs: () => [],
+  countMessages: () => 0,
+  findMessagesById: () => [],
+  dbPing: () => true,
   onTasksChanged: () => {},
 };
 

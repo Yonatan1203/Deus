@@ -177,7 +177,11 @@ Odysseus keeps its OpenAI framing on top and its tests must pass unchanged.
   hides every write control including the chat composer. Read-only also
   **excludes the vault** from the Memory tab (only the repo `groups/` root is
   listed and readable) and refuses the WhatsApp pairing QR — the phone
-  deployment gets neither the personal corpus nor a credential. Recommended
+  deployment gets neither the personal corpus nor a credential. Read-only
+  also withholds agent output: container log sources and the log export are
+  refused, host log entries are projected to `{ seq, time, level, msg }`, the
+  `log` SSE stream is not started, and the Config tab lists only the editable
+  keys (jids stay in scope, as Groups/Sessions already show them). Recommended
   for a phone-only deployment. A per-session capability (view vs control
   sessions) that would allow this without an env flag is a recorded
   follow-up, not in scope.
@@ -229,7 +233,7 @@ security control — the same session can set it.
 | Tasks | `GET tasks`; `POST tasks` (explicit `chat_jid` validated for the folder; interval ≥ 60 s; 6/min per session; 50 per session); `PATCH tasks/:id`; `POST tasks/:id/run` (sets `next_run = now`; the scheduler polls every 60 s — the UI says so; shares the limiter; audited with a prompt hash); `DELETE tasks/:id` (`X-Confirm`; exposes the pre-existing hard delete, see `docs/decisions/no-db-deletion.md` follow-up); `GET tasks/:id/runs?limit=50` (text truncated to 4 KB) |
 | Channels | `GET channels` (adapters, configured/connected, wired groups, WhatsApp pairing state from the adapter's own `WHATSAPP_AUTH_DIR` resolution); `POST channels/whatsapp/qr` — a mutation (`X-Confirm: whatsapp`, audited, refused in read-only), served only while unpaired (409 once paired); the UI names the revocation path (WhatsApp → Linked devices) |
 | Memory | `GET memory/tree` (roots `vault` and `groups`; vault omitted in read-only; symlinks skipped); `GET memory/file?root=&path=` (realpath-confined, `.md` only, audited); `PUT memory/file { root, path, content }` (`X-Confirm-Edit: 1`, existing files only, 1 MB, `.bak-<ts>-<rand>` newest 10, 12/min per session). Vault `Persona/`, `Atoms/` and the root `CLAUDE.md` are read-only from the dashboard; `groups/**/CLAUDE.md` is refused here in favour of the Groups route; vault writes report `index_not_updated: true` |
-| Containers | `GET containers`; `POST containers/:name/stop` (`X-Confirm`); `POST containers/:name/start`; `POST containers/rebuild` (one at a time, `build` SSE events) |
+| Containers | `GET containers` (own instance only); `POST containers/:name/stop` (`X-Confirm`); ~~`POST containers/:name/start`~~ dropped — agent containers run with `--rm`, there is nothing to start; `POST containers/rebuild` (one at a time, `build` SSE events, POSIX only) |
 | Logs | `GET logs?source=&level=&q=&lines=`; `GET logs/export`; follow via `log` SSE events |
 | System | `GET system` → uptime, load, RAM, disk (`used_pct ≥ 85` raises `alert`), `docker system df` |
 | Config | `GET config` — keys matching `/TOKEN\|KEY\|SECRET\|PASSWORD\|CREDENTIAL\|AUTH/i` are **absent**, not masked; `PATCH config { key, value }` (`X-Confirm: <key>`) for the allowlist only; `.env` rewritten with `.bak-<ts>`; returns `restart_required: true` |

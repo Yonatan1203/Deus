@@ -38,6 +38,9 @@ function store(initial: ScheduledTask[] = []) {
       tasks.delete(id);
     }),
     getTaskRunLogs: () => [],
+    countMessages: () => 0,
+    findMessagesById: () => [],
+    dbPing: () => true,
     onTasksChanged: vi.fn(),
   };
 }

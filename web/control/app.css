@@ -158,7 +158,7 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 .rail { display: none; }
 .view {
   padding: 20px var(--gutter) calc(var(--tabbar) + 24px + env(safe-area-inset-bottom));
-  max-width: 1040px; width: 100%; margin: 0 auto; animation: view-in var(--dur) var(--ease);
+  max-width: 1040px; width: 100%; min-width: 0; margin: 0 auto; animation: view-in var(--dur) var(--ease);
 }
 @keyframes view-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 18px; flex-wrap: wrap; }
@@ -210,22 +210,22 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 @media (min-width: 768px) {
   .app { grid-template-columns: var(--rail) 1fr; }
   .rail {
-    display: flex; flex-direction: column; gap: 22px; grid-row: 1 / span 2;
-    padding: 20px 12px 16px; border-right: 1px solid var(--line); background: var(--bg);
+    display: flex; flex-direction: column; gap: 16px; grid-row: 1 / span 2;
+    padding: 18px 12px 14px; border-right: 1px solid var(--line); background: var(--bg);
     position: sticky; top: 0; height: 100dvh; overflow-y: auto;
   }
   .rail .brand { padding: 0 8px; }
-  .nav { display: grid; gap: 18px; }
+  .nav { display: grid; gap: 12px; }
   .nav-group { display: grid; gap: 2px; }
   .nav-group .eyebrow { padding: 0 10px 6px; font-size: 10px; color: var(--faint); }
   .nav a {
-    display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 10px;
+    display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 10px;
     border-radius: var(--radius-sm); text-decoration: none; color: var(--muted); font-size: 14px; font-weight: 500;
     position: relative; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
   }
   .nav a:hover { color: var(--text); background: var(--surface); }
   .nav a.active { color: var(--text); background: var(--surface-2); }
-  .nav a.active::before { content: ""; position: absolute; left: -12px; top: 9px; bottom: 9px; width: 2px; background: var(--text); border-radius: 0 2px 2px 0; }
+  .nav a.active::before { content: ""; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 2px; background: var(--text); border-radius: 0 2px 2px 0; }
   .nav a .icon { color: var(--muted); }
   .nav a.active .icon { color: var(--text); }
   .rail-foot { margin-top: auto; display: grid; gap: 6px; padding: 12px 8px 0; border-top: 1px solid var(--line); }
@@ -305,7 +305,7 @@ table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-family: var(--mono); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding-top: 4px; }
 td code { color: var(--muted); font-size: 12.5px; }
-.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
 .empty { color: var(--muted); padding: 40px 16px; text-align: center; border: 1px dashed var(--line-strong); border-radius: var(--radius); font-size: 14px; }
 
 /* Confirm dialog */
@@ -397,4 +397,35 @@ td code { color: var(--muted); font-size: 12.5px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* Phase 4: system tabs */
+.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+.tile { background: var(--surface); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 6px; box-shadow: inset 0 0 0 1px var(--line); }
+.tile .value { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 8px; }
+.tile .muted { font-size: 12.5px; }
+progress.bar { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border: 0; border-radius: 3px; background: var(--surface-3); overflow: hidden; color: var(--ok); }
+progress.bar::-webkit-progress-bar { background: var(--surface-3); border-radius: 3px; }
+progress.bar::-webkit-progress-value { background: var(--ok); border-radius: 3px; }
+progress.bar::-moz-progress-bar { background: var(--ok); border-radius: 3px; }
+progress.bar.bad { color: var(--bad); }
+progress.bar.bad::-webkit-progress-value, progress.bar.bad::-moz-progress-bar { background: var(--bad); }
+.log { font-family: var(--mono); font-size: 12.5px; line-height: 1.5; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--radius); padding: 10px 12px; max-height: 65vh; overflow: auto; display: grid; gap: 2px; }
+.logline { display: grid; grid-template-columns: 8px auto auto 1fr; gap: 8px; align-items: baseline; padding: 2px 0; }
+.logline .dot { align-self: center; }
+.logline .time, .logline .lvl { color: var(--muted); white-space: nowrap; }
+.logline .lmsg { white-space: pre-wrap; word-break: break-word; }
+.logline .lfields { grid-column: 4; color: var(--faint); white-space: pre-wrap; word-break: break-word; font-size: 11.5px; }
+.console { font-family: var(--mono); font-size: 12px; line-height: 1.5; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--radius); padding: 12px; max-height: 40vh; overflow: auto; white-space: pre-wrap; margin-top: 12px; }
+.build-state { margin-top: 12px; font-family: var(--mono); font-size: 12px; }
+.toolbar select { flex: 0 1 auto; width: auto; min-width: 120px; }
+.toolbar label.inline { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+table.kv td:first-child { white-space: nowrap; }
+table.kv input { min-height: 36px; }
+.health .row { padding: 10px 4px; }
+@media (max-width: 767px) {
+  .logline { display: block; padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .logline .dot { display: inline-block; margin-right: 6px; }
+  .logline .time, .logline .lvl { margin-right: 8px; }
+  .logline .lmsg, .logline .lfields { display: block; margin-top: 2px; }
 }

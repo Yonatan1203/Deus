@@ -41,6 +41,10 @@ describe('control-ui event hub', () => {
     });
     const res3 = fakeRes();
     hub.attach(req3 as never, res3 as never);
+    expect(hub.recent(5).map((f) => [f.id, f.type])).toEqual([
+      [2, 'warden'],
+      [3, 'warden'],
+    ]);
     const replay = res3.chunks.join('');
     expect(replay).toContain('"name":"b"');
     expect(replay).toContain('"name":"c"');

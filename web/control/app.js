@@ -9,6 +9,11 @@ import * as groups from './views/groups.js';
 import * as tasks from './views/tasks.js';
 import * as channels from './views/channels.js';
 import * as memory from './views/memory.js';
+import * as containers from './views/containers.js';
+import * as logs from './views/logs.js';
+import * as system from './views/system.js';
+import * as config from './views/config.js';
+import * as debug from './views/debug.js';
 
 const TOKEN_KEY = 'deus_ctl_token';
 const CHAT_KEY = 'deus_ctl_chat';
@@ -24,7 +29,13 @@ const VIEWS = {
   groups: { title: 'Groups', group: 'Configure', render: groups.render },
   channels: { title: 'Channels', group: 'Configure', render: channels.render },
   memory: { title: 'Memory', group: 'Configure', render: memory.render },
+  containers: { title: 'Containers', group: 'System', render: containers.render },
+  logs: { title: 'Logs', group: 'System', render: logs.render },
+  system: { title: 'System', group: 'System', render: system.render },
+  config: { title: 'Config', group: 'System', render: config.render },
+  debug: { title: 'Debug', group: 'System', render: debug.render },
 };
+const GROUPS = ['Operate', 'Configure', 'System'];
 const MOBILE_PRIMARY = ['chat', 'sessions', 'tasks', 'agents'];
 const DEFAULT_VIEW = 'chat';
 
@@ -119,6 +130,7 @@ async function stream(path, body, onFrame, signal) {
 }
 
 const api = {
+  token,
   get: (p) => call('GET', p),
   post: (p, b, extra) => call('POST', p, b, extra),
   patch: (p, b, extra) => call('PATCH', p, b, extra),
@@ -150,7 +162,7 @@ async function connectEvents() {
     $('live-dot').className = 'dot warn';
     if (!pollTimer) pollTimer = setInterval(() => bus.dispatchEvent(new CustomEvent('refresh')), 10_000);
   };
-  for (const type of ['warden', 'session', 'group', 'queue', 'task', 'memory']) {
+  for (const type of ['warden', 'session', 'group', 'queue', 'task', 'memory', 'container', 'build', 'system', 'alert', 'log']) {
     source.addEventListener(type, (e) =>
       bus.dispatchEvent(new CustomEvent(type, { detail: JSON.parse(e.data) })));
   }
@@ -176,7 +188,7 @@ function link(k) {
 function drawNav() {
   const nav = $('nav');
   clear(nav);
-  for (const group of ['Operate', 'Configure']) {
+  for (const group of GROUPS) {
     nav.append(h('div', { class: 'nav-group' },
       h('span', { class: 'eyebrow' }, group),
       ...Object.keys(VIEWS).filter((k) => VIEWS[k].group === group).map(link)));
@@ -191,7 +203,9 @@ function drawNav() {
       icon('more', { size: 18 }), h('span', {}, 'More')));
   const list = $('more-list');
   clear(list);
-  list.append(h('span', { class: 'eyebrow' }, 'Configure'), ...rest.map(link));
+  for (const group of GROUPS.slice(1)) {
+    list.append(h('span', { class: 'eyebrow' }, group), ...rest.filter((k) => VIEWS[k].group === group).map(link));
+  }
 }
 
 async function route() {

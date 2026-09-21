@@ -69,8 +69,19 @@ for (const [name, viewport] of viewports) {
         await page.click('#confirm-ok');
         await page.waitForSelector('#view .qr', { state: 'attached', timeout: 10_000 });
       }
+    } else if (tab === 'config') {
+      // Open one editable row so the inline editor is part of the capture.
+      await page.waitForSelector('#view table.kv', { timeout: 10_000 });
+      const edit = page.locator('#view table.kv button', { hasText: 'Edit' });
+      if (await edit.count()) await edit.first().click();
+    } else if (tab === 'logs') {
+      await page.waitForSelector('#view .log .logline', { timeout: 10_000 });
+    } else if (tab === 'system') {
+      await page.waitForSelector('#view .tile', { timeout: 10_000 });
+    } else if (tab === 'debug') {
+      await page.waitForSelector('#view .health .row', { timeout: 10_000 });
     } else {
-      await page.waitForSelector('#view .card, #view table, #view .row', { timeout: 10_000 });
+      await page.waitForSelector('#view .card, #view table, #view .row, #view .empty', { timeout: 10_000 });
     }
     await shoot(page, tab, name);
   }

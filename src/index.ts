@@ -27,6 +27,8 @@ import {
   NGROK_STATIC_DOMAIN,
   PROJECT_ROOT,
   TOOL_PROXY_PORT,
+  CONFIG_DIR,
+  deusInstanceId,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { startToolProxy } from './tool-proxy.js';
@@ -41,16 +43,21 @@ import {
 } from './channels/registry.js';
 import {
   cleanupOrphans,
+  CONTAINER_RUNTIME_BIN,
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
   stopContainerSync,
 } from './container-runtime.js';
+import { ensureControlTmpDir } from './control-ui/api/config.js';
 import {
   initDatabase,
   setSession as persistSession,
   storeChatMetadata,
   storeMessage,
   clearSession,
+  countMessages,
+  dbPing,
+  findMessagesById,
   listSessionRows,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
@@ -94,7 +101,7 @@ import {
   createAudioResolver,
   sweepAudioTmpDir,
 } from './openai-transcription.js';
-import { logger } from './logger.js';
+import { logger, logRing } from './logger.js';
 import { initRuntimeRegistry } from './agent-runtimes/registry.js';
 import { createClaudeRuntime } from './agent-runtimes/claude-backend.js';
 import { createOpenAIRuntime } from './agent-runtimes/openai-backend.js';
@@ -422,6 +429,10 @@ async function main(): Promise<void> {
   }
 
   // Create and connect all registered channels.
+  // The control UI's temp dir must exist before the first container is
+  // mounted: its shadow is decided per container start (see project-registry).
+  ensureControlTmpDir(PROJECT_ROOT);
+
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
   for (const channelName of getRegisteredChannelNames()) {
@@ -564,8 +575,16 @@ async function main(): Promise<void> {
       deleteTask,
       getTaskRunLogs,
       onTasksChanged: refreshTaskSnapshots,
+      countMessages,
+      findMessagesById,
+      dbPing,
     },
     channels: () => channels,
+    bin: CONTAINER_RUNTIME_BIN,
+    instanceId: deusInstanceId(),
+    logRing,
+    envPath: path.join(PROJECT_ROOT, '.env'),
+    configDir: CONFIG_DIR,
     vaultPath: resolveVaultPath(),
     // Resolved so a relative WHATSAPP_AUTH_DIR cannot differ from the adapter's view.
     whatsappAuthDir: path.resolve(

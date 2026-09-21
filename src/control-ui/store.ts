@@ -1,5 +1,5 @@
 import type { AgentRuntimeId } from '../agent-runtimes/types.js';
-import type { SessionRow } from '../db.js';
+import type { MessageTrace, SessionRow } from '../db.js';
 import type { ScheduledTask, TaskRunLog } from '../types.js';
 import type { WebTurnDeps } from '../web-turn.js';
 
@@ -34,6 +34,9 @@ export interface ControlStore {
   getTaskRunLogs(taskId: string, limit: number): TaskRunLog[];
   /** Rewrites the per-group task snapshots, as IPC does after a change. */
   onTasksChanged(): void;
+  countMessages(): number;
+  findMessagesById(id: string): MessageTrace[];
+  dbPing(): boolean;
 }
 
 export function isRegisteredFolder(

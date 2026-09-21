@@ -176,3 +176,6 @@ tools/architecture-explorer/graph-data.js
 # standalone run of the workflow's own Report Check Run step (for verifying it directly)
 result.json
 check_run_payload.json
+
+# Control UI in-flight .env rewrite (shadowed for containers)
+.deus-tmp/

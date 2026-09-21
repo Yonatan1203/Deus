@@ -3,8 +3,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
   clearSession,
+  countMessages,
   createTask,
+  dbPing,
   deleteTask,
+  findMessagesById,
   getAllBackendSessions,
   getAllChats,
   getAllRegisteredGroups,
@@ -1038,5 +1041,50 @@ describe('control-ui task run logs', () => {
     expect(runs[0].result).toHaveLength(4096);
     expect(runs[1].result).toBe('r2');
     expect(getTaskRunLogs('nope', 5)).toEqual([]);
+  });
+});
+
+describe('control-ui trace helpers', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+  });
+  it('finds messages by id without content or sender, and counts', () => {
+    storeChatMetadata('g@x', '2026-01-01T00:00:00Z');
+    storeChatMetadata('h@x', '2026-01-01T00:00:00Z');
+    storeMessage({
+      id: 'm1',
+      chat_jid: 'g@x',
+      sender: 's@x',
+      sender_name: 'S',
+      content: 'hello there',
+      timestamp: '2026-01-01T00:00:00Z',
+      is_from_me: false,
+    });
+    storeMessage({
+      id: 'm1',
+      chat_jid: 'h@x',
+      sender: 's@x',
+      sender_name: 'S',
+      content: 'hi',
+      timestamp: '2026-01-02T00:00:00Z',
+      is_from_me: true,
+    });
+    const rows = findMessagesById('m1');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({
+      id: 'm1',
+      chat_jid: 'h@x',
+      timestamp: '2026-01-02T00:00:00Z',
+      is_from_me: true,
+      is_bot_message: false,
+      content_length: 2,
+    });
+    for (const r of rows)
+      expect(Object.keys(r)).not.toEqual(
+        expect.arrayContaining(['content', 'sender', 'sender_name']),
+      );
+    expect(findMessagesById('nope')).toEqual([]);
+    expect(countMessages()).toBe(2);
+    expect(dbPing()).toBe(true);
   });
 });
