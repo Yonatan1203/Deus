@@ -429,3 +429,15 @@ table.kv input { min-height: 36px; }
   .logline .time, .logline .lvl { margin-right: 8px; }
   .logline .lmsg, .logline .lfields { display: block; margin-top: 2px; }
 }
+
+/* Phase C: Claude sessions */
+.claude { display: grid; gap: 16px; }
+.claude-row { width: 100%; text-align: left; border: 0; border-radius: 0; background: none; min-height: 0; font-weight: 400; }
+.claude-row:hover { background: var(--surface); }
+.claude-row.open { background: var(--surface-2); }
+.claude-row .waiting { margin-top: 6px; color: var(--text); font-size: 14px; white-space: pre-wrap; border-left: 2px solid var(--warn); padding-left: 10px; }
+.claude-row .name .chip { margin-left: 8px; }
+.claude-panel { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 16px; }
+.claude-transcript { max-height: 55vh; overflow-y: auto; }
+.claude .tool-row { border-left: 2px solid var(--line-strong); padding-left: 10px; }
+@media (min-width: 900px) { .claude { grid-template-columns: minmax(280px, 380px) 1fr; align-items: start; } .claude-panel { border-top: 0; padding-top: 0; border-left: 1px solid var(--line); padding-left: 20px; } }

@@ -69,6 +69,14 @@ for (const [name, viewport] of viewports) {
         await page.click('#confirm-ok');
         await page.waitForSelector('#view .qr', { state: 'attached', timeout: 10_000 });
       }
+    } else if (tab === 'claude') {
+      // Open the first session so the transcript panel is part of the capture.
+      await page.waitForSelector('#view .claude-row, #view .empty', { timeout: 10_000 });
+      const first = page.locator('#view .claude-row');
+      if (await first.count()) {
+        await first.first().click();
+        await page.waitForSelector('#view .claude-transcript .msg, #view .claude-transcript .empty, #view .claude-panel > p.muted', { timeout: 10_000 });
+      }
     } else if (tab === 'config') {
       // Open one editable row so the inline editor is part of the capture.
       await page.waitForSelector('#view table.kv', { timeout: 10_000 });

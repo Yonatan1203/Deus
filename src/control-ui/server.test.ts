@@ -1942,3 +1942,490 @@ describe('control-ui server — containers, logs, system, config, debug', () => 
     ).toBe(429);
   });
 });
+
+describe('control-ui server — claude sessions', () => {
+  const SID = 'a1b2c3d4-0000-4000-8000-000000000001';
+  const SID2 = 'b2c3d4e5-0000-4000-8000-000000000002';
+  type Row = Record<string, unknown>;
+  function fakeCli(
+    over: { rows?: Row[]; fail?: boolean; startOut?: string } = {},
+  ) {
+    const calls: string[][] = [];
+    const state = {
+      rows: over.rows,
+      fail: over.fail ?? false,
+      startOut: over.startOut ?? 'Started e5f6a7b8',
+    };
+    const rowsFor = () =>
+      state.rows ?? [
+        {
+          id: 'a1b2c3d4',
+          sessionId: SID,
+          name: 'Posts (fixture)',
+          kind: 'background',
+          state: 'blocked',
+          status: 'idle',
+          cwd: root,
+          startedAt: 5,
+        },
+        {
+          id: 'b2c3d4e5',
+          sessionId: SID2,
+          name: 'Images (fixture)',
+          kind: 'background',
+          state: 'working',
+          status: 'busy',
+          cwd: path.join(root, 'wt'),
+          startedAt: 6,
+        },
+        {
+          id: 'c3d4e5f6',
+          sessionId: null,
+          name: 'terminal',
+          kind: 'interactive',
+          state: 'working',
+          cwd: root,
+          startedAt: 7,
+        },
+        {
+          id: 'd4e5f6a7',
+          sessionId: SID,
+          name: 'foreign',
+          kind: 'background',
+          state: 'working',
+          cwd: os.tmpdir(),
+          startedAt: 8,
+        },
+      ];
+    const run = async (argv: string[]) => {
+      calls.push(argv);
+      if (state.fail) return { ok: false as const, error: 'timeout' };
+      if (argv[0] === 'agents')
+        return {
+          ok: true as const,
+          stdout: JSON.stringify(rowsFor()),
+          stderr: '',
+        };
+      if (argv[0] === 'logs')
+        return {
+          ok: true as const,
+          stdout: 'log line\ntoken=abc\n',
+          stderr: '',
+        };
+      if (argv[0] === 'stop')
+        return { ok: true as const, stdout: `stopped ${argv[1]}`, stderr: '' };
+      if (argv[0] === '--bg')
+        return { ok: true as const, stdout: state.startOut, stderr: '' };
+      return { ok: false as const, error: 'unexpected' };
+    };
+    return {
+      calls,
+      state,
+      cli: {
+        run,
+        cached: (_k: string, _t: number, argv: string[]) => run(argv),
+      },
+    };
+  }
+  let projects: string;
+  let configDir: string;
+  const bootC = (
+    over: Partial<ControlDeps> = {},
+    cli = fakeCli(),
+    extra: Record<string, unknown> = {},
+  ) => {
+    projects = path.join(root, 'projects');
+    fs.mkdirSync(path.join(projects, 'p1'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'wt'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projects, 'p1', `${SID}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: 'Make the posts' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Approve the hero shot?' }],
+          },
+        }),
+      ].join('\n') + '\n',
+    );
+    configDir = path.join(root, 'cfg');
+    const { runtime } = fakeRuntime();
+    return boot(
+      {
+        runtime,
+        store: fakeStore(root),
+        claudeBin: '/fake/claude',
+        claudeProjectsDir: projects,
+        configDir,
+        ...over,
+      },
+      undefined,
+      undefined,
+      { hostCli: cli.cli, claudePollMs: 60_000, ...extra },
+    ).then(() => cli);
+  };
+  // logger.warn is already a spy from the Phase 4 block; a second spyOn would
+  // stack and lose pino's receiver.
+  const warnSpy = vi.mocked(logger.warn);
+  beforeEach(() => {
+    warnSpy.mockClear(); // braces: a returned spy would register as a cleanup hook
+  });
+  const ev = (name: string) =>
+    warnSpy.mock.calls.filter(
+      (c) => (c[0] as { event?: string })?.event === name,
+    );
+  const j = (r: { text: string }) => JSON.parse(r.text);
+
+  it('lists only rows under the repo, with waiting_on and started_here', async () => {
+    await bootC();
+    const { auth } = await login();
+    const r = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/claude/sessions',
+        headers: auth,
+      }),
+    );
+    expect(r.sessions.map((s: { id: string }) => s.id)).toEqual([
+      'a1b2c3d4',
+      'b2c3d4e5',
+      'c3d4e5f6',
+    ]);
+    expect(r.sessions[0]).toMatchObject({
+      waiting_on: 'Approve the hero shot?',
+      started_here: false,
+      cwd_rel: '.',
+      resumable: true,
+    });
+    expect(r.sessions[1]).toMatchObject({ cwd_rel: 'wt' });
+    expect(r.sessions[2]).toMatchObject({
+      kind: 'interactive',
+      resumable: false,
+    });
+  });
+
+  it('answers unavailable/503 when the CLI fails, never an empty list', async () => {
+    const cli = await bootC();
+    const { auth } = await login();
+    cli.state.fail = true;
+    const r = await request({
+      method: 'GET',
+      path: '/api/v1/claude/sessions',
+      headers: auth,
+    });
+    expect(r.status).toBe(200);
+    expect(j(r)).toMatchObject({ unavailable: true, sessions: [] });
+    for (const p of [
+      '/api/v1/claude/sessions/a1b2c3d4/transcript',
+      '/api/v1/claude/sessions/a1b2c3d4/logs',
+    ])
+      expect(
+        (await request({ method: 'GET', path: p, headers: auth })).status,
+      ).toBe(503);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/claude/sessions/a1b2c3d4/stop',
+          headers: { ...auth, 'X-Confirm': 'a1b2c3d4' },
+        })
+      ).status,
+    ).toBe(503);
+    expect(
+      ev('control_ui_claude_refused').some(
+        (c) => (c[0] as { reason: string }).reason === 'list_unavailable',
+      ),
+    ).toBe(true);
+  });
+
+  it('transcript/logs resolve through the list; unknown/foreign ids refused', async () => {
+    await bootC();
+    const { auth } = await login();
+    const t = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/claude/sessions/a1b2c3d4/transcript?limit=5',
+        headers: auth,
+      }),
+    );
+    expect(t.rows).toEqual([
+      { role: 'user', text: 'Make the posts' },
+      { role: 'assistant', text: 'Approve the hero shot?' },
+    ]);
+    const l = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/claude/sessions/a1b2c3d4/logs',
+        headers: auth,
+      }),
+    );
+    expect(l.lines).toEqual(['log line', 'token=[redacted]']);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions/d4e5f6a7/transcript',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions/zz/transcript',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    expect(ev('control_ui_claude_refused')).toHaveLength(2);
+    for (let i = 0; i < 27; i++)
+      await request({
+        method: 'GET',
+        path: '/api/v1/claude/sessions',
+        headers: auth,
+      });
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions/a1b2c3d4/logs',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(429);
+  });
+
+  it('start: confirm, validation, global limiter, ceiling, structural id, ledger', async () => {
+    const cli = await bootC();
+    const { auth } = await login();
+    const start = (body: unknown, confirm = 'start', a = auth) =>
+      request({
+        method: 'POST',
+        path: '/api/v1/claude/sessions',
+        headers: { ...a, ...H, 'X-Confirm': confirm },
+        body: JSON.stringify(body),
+      });
+    expect((await start({ name: 'X', prompt: 'go' }, '')).status).toBe(428);
+    expect((await start({ name: '-x', prompt: 'go' })).status).toBe(400);
+    expect((await start({ name: 'ok', prompt: '' })).status).toBe(400);
+    cli.state.rows = [
+      {
+        id: 'e5f6a7b8',
+        sessionId: SID2,
+        name: 'Posts run',
+        kind: 'background',
+        state: 'working',
+        cwd: root,
+        startedAt: 9,
+      },
+    ];
+    const ok = await start({ name: 'Posts run', prompt: 'do it --not-a-flag' });
+    expect(ok.status).toBe(200);
+    expect(j(ok)).toEqual({ started: true, id: 'e5f6a7b8' });
+    const spawn = cli.calls.find((c) => c[0] === '--bg')!;
+    expect(spawn).toEqual([
+      '--bg',
+      '--name=Posts run',
+      '--permission-mode=bypassPermissions',
+      '--',
+      'do it --not-a-flag',
+    ]);
+    expect(ev('control_ui_claude_start')[0][0]).toMatchObject({
+      id: 'e5f6a7b8',
+      name: 'Posts run',
+    });
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(configDir, 'control-ui', 'claude-started.json'),
+          'utf-8',
+        ),
+      ),
+    ).toEqual([{ id: 'e5f6a7b8', started_at: 9 }]);
+    expect(
+      j(
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions',
+          headers: auth,
+        }),
+      ).sessions[0],
+    ).toMatchObject({ started_here: true });
+    cli.state.startOut = 'no id here';
+    const un = await start({ name: 'Two', prompt: 'x' });
+    expect(un.status).toBe(502);
+    expect(ev('control_ui_claude_start_unparsed')).toHaveLength(1);
+    cli.state.startOut = 'Started f6a7b8c9';
+    expect((await start({ name: 'Three', prompt: 'x' })).status).toBe(200);
+    const second = await login();
+    expect(
+      (await start({ name: 'Four', prompt: 'x' }, 'start', second.auth)).status,
+    ).toBe(429);
+    fs.writeFileSync(
+      path.join(configDir, 'control-ui', 'claude-started.json'),
+      '{corrupt',
+    );
+    server.close();
+    await bootC({}, cli);
+    const a3 = (await login()).auth;
+    cli.state.startOut = 'Started 11112222';
+    expect(
+      (await start({ name: 'Five', prompt: 'x' }, 'start', a3)).status,
+    ).toBe(409);
+  });
+
+  it('refuses start when 3 dashboard-started sessions are working', async () => {
+    const cli = await bootC();
+    const { auth } = await login();
+    const ids = ['e5f6a7b8', 'f6a7b8c9', 'a7b8c9d0'];
+    cli.state.rows = ids.map((id) => ({
+      id,
+      sessionId: SID2,
+      name: id,
+      kind: 'background',
+      state: 'working',
+      cwd: root,
+      startedAt: 1,
+    }));
+    fs.mkdirSync(path.join(configDir, 'control-ui'), { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'control-ui', 'claude-started.json'),
+      JSON.stringify(ids.map((id) => ({ id, started_at: 1 }))),
+    );
+    const r = await request({
+      method: 'POST',
+      path: '/api/v1/claude/sessions',
+      headers: { ...auth, ...H, 'X-Confirm': 'start' },
+      body: JSON.stringify({ name: 'More', prompt: 'x' }),
+    });
+    expect(r.status).toBe(409);
+    expect(j(r)).toMatchObject({ live: 3 });
+  });
+
+  it('message: continued vs copied by id equality; stop refuses interactive; read-only withholds', async () => {
+    const cli = await bootC();
+    const { auth } = await login();
+    const msg = (id: string, body = { prompt: 'reply' }) =>
+      request({
+        method: 'POST',
+        path: `/api/v1/claude/sessions/${id}/message`,
+        headers: { ...auth, ...H, 'X-Confirm': id },
+        body: JSON.stringify(body),
+      });
+    cli.state.startOut = 'Continuing a1b2c3d4';
+    const cont = await msg('a1b2c3d4');
+    expect(cont.status).toBe(200);
+    expect(j(cont)).toEqual({ continued: true, id: 'a1b2c3d4' });
+    expect(cli.calls.find((c) => c[0] === '--bg')).toEqual([
+      '--bg',
+      '--name=Posts fixture',
+      '--permission-mode=bypassPermissions',
+      `--resume=${SID}`,
+      '--',
+      'reply',
+    ]);
+    cli.state.startOut = 'Session busy; started a copy e5f6a7b8';
+    const cop = await msg('b2c3d4e5');
+    expect(j(cop)).toEqual({
+      copied: true,
+      id: 'b2c3d4e5',
+      new_id: 'e5f6a7b8',
+    });
+    expect(
+      ev('control_ui_claude_message').map(
+        (c) => (c[0] as { outcome: string }).outcome,
+      ),
+    ).toEqual(['continued', 'copied']);
+    expect((await msg('c3d4e5f6')).status).toBe(409);
+    for (let i = 0; i < 8; i++) await msg('a1b2c3d4');
+    expect((await msg('a1b2c3d4')).status).toBe(429);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/claude/sessions/c3d4e5f6/stop',
+          headers: { ...auth, 'X-Confirm': 'c3d4e5f6' },
+        })
+      ).status,
+    ).toBe(409);
+    const stop = await request({
+      method: 'POST',
+      path: '/api/v1/claude/sessions/b2c3d4e5/stop',
+      headers: { ...auth, 'X-Confirm': 'b2c3d4e5' },
+    });
+    expect(stop.status).toBe(200);
+    expect(cli.calls.at(-2)).toEqual(['stop', 'b2c3d4e5']);
+    for (let i = 0; i < 6; i++)
+      await request({
+        method: 'POST',
+        path: '/api/v1/claude/sessions/b2c3d4e5/stop',
+        headers: { ...auth, 'X-Confirm': 'b2c3d4e5' },
+      });
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/claude/sessions/b2c3d4e5/stop',
+          headers: { ...auth, 'X-Confirm': 'b2c3d4e5' },
+        })
+      ).status,
+    ).toBe(429);
+    server.close();
+    await bootC({ readOnly: true }, cli);
+    const ro = await login();
+    const list = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/claude/sessions',
+        headers: ro.auth,
+      }),
+    );
+    expect(list.sessions[0]).toHaveProperty('waiting_on');
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions/a1b2c3d4/transcript',
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions/a1b2c3d4/logs',
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/claude/sessions',
+          headers: { ...ro.auth, ...H, 'X-Confirm': 'start' },
+          body: JSON.stringify({ name: 'x', prompt: 'y' }),
+        })
+      ).status,
+    ).toBe(403);
+    server.close();
+    await bootC({ claudeBin: null }, cli, { hostCli: undefined });
+    const nb = await login();
+    expect(
+      j(
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions',
+          headers: nb.auth,
+        }),
+      ),
+    ).toMatchObject({ unavailable: true });
+  });
+});

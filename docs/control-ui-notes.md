@@ -382,3 +382,64 @@ Deviations logged during Phase 5:
 - `Deviation:` the all-in-one deploy script was refused by the session's
   command classifier (it bundled a service restart with a unit edit); the same
   steps ran one at a time, each verified.
+
+## Phase C — verification record (Claude sessions tab)
+
+Spec: `docs/superpowers/specs/2026-09-21-control-ui-scope2-design.md`; plan:
+`docs/superpowers/plans/2026-09-21-control-ui-phaseC.md` (4 plan-review
+rounds, 3 threat-model rounds — the CLI's output as untrusted input, the
+read-only line, structural id parsing, tail-bounded transcripts and the
+failed-list oracle all came out of those rounds).
+
+Operator decisions recorded in the spec: browser-started sessions run with
+`bypassPermissions` (the dashboard is deliberately the operator's shell
+behind the SSH tunnel); cwd fixed to this repo; the tab mirrors the terminal
+Agents view, so stop/message reach any background session under the repo.
+
+What landed:
+- **Host CLI runner** — `createDockerRunner` generalised into `createHostCli`
+  (one `execFile` site for the container runtime and the Claude Code CLI;
+  semaphore 2, timeout, errors mapped, optional cwd/env).
+- **List** through `claude agents --json --all --cwd=<repo>`, kept only when
+  `realpath(cwd)` is under the repo (the flag is an optimisation; the filter
+  is the control); a failed or unparseable list is `{ unavailable, error }`
+  on the list route and 503 on every id-resolving route — never an empty
+  list. `waiting_on` for blocked sessions is the transcript's last assistant
+  text from a 256 KB tail read, memoized on mtime+size.
+- **Transcript** located by session id only (`<projects>/<dir>/<id>.jsonl`,
+  realpath-confined, never a symlink, subagent files never opened), tail-
+  bounded to 2 MB, user rows with string content rendered, sidechain rows and
+  every other row type skipped, text nodes only in the view.
+- **Start** (`--bg --name=<n> --permission-mode=bypassPermissions -- <prompt>`;
+  the prompt after `--`, names cannot start with `-`, validated before the
+  limiter), **message** (`--resume=<sid>`; `continued` when the printed id
+  equals the requested job id, otherwise `copied` with the new id), **stop**
+  (`claude stop <id>`; interactive rows refused with 409); ids parsed as
+  exactly one distinct 8-hex value else 502 + `_unparsed` audit; every
+  mutation re-lists uncached and re-checks `kind`/`resumable` in the route.
+- **Limits:** starts 3/10 min globally and a ceiling of 3 dashboard-started
+  sessions working (ledger `CONFIG_DIR/control-ui/claude-started.json`, a cost
+  guard: unreadable → 409, pruned only after a successful list); messages
+  10/10 min; list/transcript/logs 30/min; stops 6/min.
+- **Read-only** serves the list with `waiting_on` and refuses transcripts,
+  logs and every mutation.
+- **Audit:** `control_ui_claude_start {name, promptHash, id}`,
+  `_start_unparsed`, `_message {id, promptHash, outcome, new_id}`, `_stop`,
+  `_refused {id ≤ 64, reason}`, reads once per session.
+
+| Check | Predicted | Observed | Disposition |
+|-------|-----------|----------|-------------|
+| Units | host-cli, claude-sessions, logs override, server routes green; tsc 0; eslint 0; prettier clean | `src/control-ui` + `db` + `log-ring` + `mounter` + `cross-platform`: see the gate run in this record's commit; tsc 0; eslint 0; prettier clean | PASS |
+| List | own rows only (realpath), `waiting_on` on blocked, `started_here` from the ledger; CLI failure → `unavailable` | as predicted (`server.test.ts`) — a row with a foreign cwd returned by the fake is absent | PASS |
+| Id-resolving routes | 404 + refused audit for unknown/malformed; 503 + `list_unavailable` when the CLI fails; 31st read/min → 429 | as predicted | PASS |
+| Start | 428 → 400 (leading `-` name, empty prompt, no budget spent) → 200 `{started,id}` with the ledger row's `started_at` taken from the re-list when the id is already visible (else the start time) → 502 + `_unparsed` when no id is printed → 429 on the 4th start across two logins → 409 on a corrupt ledger → 409 when 3 dashboard-started sessions are working | as predicted | PASS |
+| Message / stop | continued vs copied by id equality with the exact `--resume=` argv; 409 on non-resumable; 11th/10 min → 429; stop 409 on interactive, 7th/min → 429 | as predicted | PASS |
+| Read-only | list keeps `waiting_on`; transcript/logs/start 403 | as predicted | PASS |
+| **Visual** — `docs/control-ui/artifacts/phaseC-claude-{mobile,desktop}.png`, `phaseC-more-mobile.png` | Claude tab in *Operate* and as the second mobile tab; rows with state dots, "waiting for you" quoting the question, worktree path, age; transcript panel with tool rows and a composer | captured against a fixture with a fake `claude` CLI (canned generic rows, `Posts pipeline (fixture)` …) and synthetic transcripts; round 1 caught the capture racing the transcript fetch (selector tightened) and the fake reading its root from an env var the allowlist strips (now taken from the `--cwd=` argument); 0 px horizontal overflow on all 15 tabs at 390 px | PASS |
+
+Deviations logged during Phase C:
+- `Deviation:` the plan's `beforeEach(() => spy.mockClear())` returned the spy, which vitest registers as a cleanup hook and later calls without its receiver — the test now uses a braced body; recorded because it is an easy trap for the next test in this file.
+- `Deviation:` the name regex is checked in the route before the limiter (the first draft checked it inside `startClaudeSession`, so an invalid name spent budget).
+- `Deviation:` the resumed session's display name is reduced to the allowed charset before `--name=` (real names carry parentheses).
+- `Deviation:` the "New session" form is inline in the tab rather than a dialog.
+- `Deviation:` the code review found the dropped-row count computed but never logged and the `logs` route without a first-read audit; both are wired now (`control_ui_claude_dropped` on change, `control_ui_claude_read` on logs). The verification gate found the `readTail` partial-line test non-discriminating (a truncated JSONL line never parses anyway); an adversarial case — a non-JSON line whose suffix parses — now pins the discard.

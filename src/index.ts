@@ -49,6 +49,8 @@ import {
   stopContainerSync,
 } from './container-runtime.js';
 import { ensureControlTmpDir } from './control-ui/api/config.js';
+import { resolveClaudeBin } from './control-ui/api/claude-sessions.js';
+import { homeDir } from './platform.js';
 import {
   initDatabase,
   setSession as persistSession,
@@ -585,6 +587,8 @@ async function main(): Promise<void> {
     logRing,
     envPath: path.join(PROJECT_ROOT, '.env'),
     configDir: CONFIG_DIR,
+    claudeBin: resolveClaudeBin(process.env.PATH ?? ''),
+    claudeProjectsDir: path.join(homeDir, '.claude', 'projects'),
     vaultPath: resolveVaultPath(),
     // Resolved so a relative WHATSAPP_AUTH_DIR cannot differ from the adapter's view.
     whatsappAuthDir: path.resolve(
