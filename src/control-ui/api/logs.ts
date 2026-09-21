@@ -15,7 +15,7 @@ const LEVELS: Record<string, number> = {
 // Backstop over already-structurally-redacted host lines and over raw
 // container output: quoted/unquoted key:value, known token prefixes, URL
 // userinfo. Best-effort by nature — read-only mode withholds container logs.
-const SECRET_KEYS =
+export const SECRET_KEYS =
   'api[_-]?key|token|secret|password|passwd|credential|authorization';
 const QUOTED_KV = new RegExp(`"(${SECRET_KEYS})"\\s*:\\s*"[^"]*"`, 'gi');
 const BARE_KV = new RegExp(
@@ -34,10 +34,14 @@ export function redactSecrets(s: string): string {
     .replace(URL_USERINFO, '$1[redacted]@');
 }
 
-export function clampLines(v: unknown, fallback = 200): number {
+export function clampLines(
+  v: unknown,
+  fallback = 200,
+  max = LOG_LINES_MAX,
+): number {
   const n = Math.floor(Number(v));
   if (!Number.isFinite(n) || n < 1) return fallback;
-  return Math.min(n, LOG_LINES_MAX);
+  return Math.min(n, max);
 }
 
 export type HostLogView =

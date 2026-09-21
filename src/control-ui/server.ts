@@ -49,7 +49,12 @@ import {
   type BuildRunner,
 } from './api/containers.js';
 import { createDockerRunner, type DockerRunner } from './api/docker.js';
-import { containerLogs, queryLogs, redactSecrets } from './api/logs.js';
+import {
+  clampLines,
+  containerLogs,
+  queryLogs,
+  redactSecrets,
+} from './api/logs.js';
 import { readSystem, type SystemView } from './api/system.js';
 import { readConfig, writeConfig } from './api/config.js';
 import {
@@ -59,6 +64,21 @@ import {
   MESSAGE_ID_RE,
 } from './api/debug.js';
 import type { LogEntry, LogRing } from '../log-ring.js';
+import { createHostCli, type HostCli } from './api/host-cli.js';
+import {
+  CLAUDE_JOB_ID_RE,
+  CLAUDE_NAME_RE,
+  createLedger,
+  createWaitingOnReader,
+  listClaudeSessions,
+  readLogs as readClaudeLogs,
+  readTranscript,
+  spawnEnv,
+  startClaudeSession,
+  stopClaudeSession,
+  validatePrompt,
+  type ClaudeSession,
+} from './api/claude-sessions.js';
 import type { WebTurnDeps } from '../web-turn.js';
 import type { Channel } from '../types.js';
 import type { ControlStore } from './store.js';
@@ -108,6 +128,9 @@ export interface ControlDeps {
   /** `.env` path and the config dir holding its backups. */
   envPath?: string;
   configDir?: string;
+  /** Claude Code CLI (absolute path, resolved at boot) and its projects dir; null → the Claude tab answers 503. */
+  claudeBin?: string | null;
+  claudeProjectsDir?: string;
 }
 
 export interface ControlServerOptions {
@@ -122,6 +145,8 @@ export interface ControlServerOptions {
   buildRunner?: BuildRunner;
   systemPollMs?: number;
   logBatchMs?: number;
+  hostCli?: HostCli;
+  claudePollMs?: number;
 }
 
 const BIND_HOST = '127.0.0.1';
@@ -144,6 +169,13 @@ const DOCKER_READS_PER_MIN = 30;
 const SYSTEM_POLL_MS = 30_000;
 const LOG_BATCH_MS = 500;
 const LOG_BATCH_MAX = 100;
+const CLAUDE_STARTS_PER_10MIN = 3;
+const CLAUDE_MESSAGES_PER_10MIN = 10;
+const CLAUDE_READS_PER_MIN = 30;
+const CLAUDE_STOPS_PER_MIN = 6;
+const CLAUDE_LIVE_MAX = 3;
+const CLAUDE_POLL_MS = 3000;
+const CLAUDE_TAB_ACTIVE_MS = 60_000;
 const MEMORY_MAX_BYTES = 1024 * 1024;
 const MEMORY_BODY_CAP = Math.floor(MEMORY_MAX_BYTES * 1.5);
 
@@ -252,6 +284,32 @@ export function createControlServer(
   const configLimiter = createRateLimiter(CONFIG_WRITES_PER_MIN, 60_000);
   const dockerReadLimiter = createRateLimiter(DOCKER_READS_PER_MIN, 60_000);
   const docker = opts.docker ?? createDockerRunner(deps.bin ?? 'docker');
+  const claudeStartLimiter = createRateLimiter(
+    CLAUDE_STARTS_PER_10MIN,
+    600_000,
+  );
+  const claudeMessageLimiter = createRateLimiter(
+    CLAUDE_MESSAGES_PER_10MIN,
+    600_000,
+  );
+  const claudeReadLimiter = createRateLimiter(CLAUDE_READS_PER_MIN, 60_000);
+  const claudeStopLimiter = createRateLimiter(CLAUDE_STOPS_PER_MIN, 60_000);
+  const claudeCli: HostCli | null =
+    opts.hostCli ??
+    (deps.claudeBin
+      ? createHostCli(deps.claudeBin, {
+          cwd: deps.repoRoot,
+          env: spawnEnv(process.env),
+        })
+      : null);
+  const claudeLedger = deps.configDir
+    ? createLedger(
+        path.join(deps.configDir, 'control-ui', 'claude-started.json'),
+      )
+    : null;
+  const waitingOn = deps.claudeProjectsDir
+    ? createWaitingOnReader(deps.claudeProjectsDir)
+    : undefined;
   const instanceId = deps.instanceId ?? '';
   const build =
     opts.buildRunner ?? createBuildRunner({ repoRoot: deps.repoRoot, hub });
@@ -1167,6 +1225,376 @@ export function createControlServer(
     logTimer.unref();
   }
 
+  // ---- Claude Code sessions ------------------------------------------------
+  // The CLI's output is untrusted input: rows are filtered on realpath(cwd),
+  // ids are parsed structurally, kind/resumable are re-checked per route, and
+  // a failed list is never an empty list.
+  let claudeTabSeen = 0;
+  let claudeListCache: { at: number; sessions: ClaudeSession[] } | null = null;
+  let claudeLastDropped = -1;
+  const claudeUnavailable = (res: ServerResponse) =>
+    writeJson(res, 503, {
+      error: claudeCli ? 'session list unavailable' : 'claude CLI not found',
+    });
+  const claudeList = async (fresh: boolean) => {
+    if (!claudeCli) return { error: 'claude CLI not found' } as const;
+    if (
+      !fresh &&
+      claudeListCache &&
+      now() - claudeListCache.at < CLAUDE_POLL_MS
+    )
+      return { sessions: claudeListCache.sessions, dropped: 0 };
+    const r = await listClaudeSessions(claudeCli, deps.repoRoot, {
+      readOnly: deps.readOnly,
+      waitingOn,
+    });
+    if ('sessions' in r) {
+      claudeListCache = { at: now(), sessions: r.sessions };
+      claudeLedger?.prune(new Set(r.sessions.map((s) => s.id))); // only after a successful list
+      if (r.dropped !== claudeLastDropped) {
+        // Rows outside this repo are filtered on realpath(cwd); the count is
+        // the only trace that another instance's sessions were seen.
+        claudeLastDropped = r.dropped;
+        logger.info(
+          { event: 'control_ui_claude_dropped', dropped: r.dropped },
+          'Control UI filtered sessions outside the repo',
+        );
+      }
+    }
+    return r;
+  };
+  const claudeRefused = (ctx: RequestContext, id: string, reason: string) =>
+    logger.warn(
+      {
+        event: 'control_ui_claude_refused',
+        id: id.slice(0, 64),
+        reason,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI refused a Claude session action',
+    );
+  // Resolves :id through a fresh list; answers the response itself on failure.
+  const claudeRow = async (
+    ctx: RequestContext,
+  ): Promise<ClaudeSession | null> => {
+    const id = ctx.params.id;
+    if (!CLAUDE_JOB_ID_RE.test(id)) {
+      claudeRefused(ctx, id, 'invalid_id');
+      writeJson(ctx.res, 404, { error: 'not found' });
+      return null;
+    }
+    const r = await claudeList(true);
+    if (!('sessions' in r)) {
+      claudeRefused(ctx, id, 'list_unavailable');
+      claudeUnavailable(ctx.res);
+      return null;
+    }
+    const row = r.sessions.find((s) => s.id === id);
+    if (!row) {
+      claudeRefused(ctx, id, 'not_listed');
+      writeJson(ctx.res, 404, { error: 'not found' });
+    }
+    return row ?? null;
+  };
+  const claudeRead = (ctx: RequestContext): boolean => {
+    if (
+      claudeReadLimiter.isRateLimited(
+        ctx.session?.shortId ?? ctx.remoteAddr,
+        now(),
+      )
+    ) {
+      writeJson(ctx.res, 429, { error: 'too many session reads' });
+      return false;
+    }
+    return true;
+  };
+
+  router.add('GET', '/api/v1/claude/sessions', async (ctx) => {
+    if (!claudeRead(ctx)) return;
+    claudeTabSeen = now();
+    if (!claudeCli)
+      return writeJson(ctx.res, 200, {
+        sessions: [],
+        unavailable: true,
+        error: 'claude CLI not found',
+      });
+    const r = await claudeList(false);
+    if (!('sessions' in r))
+      return writeJson(ctx.res, 200, {
+        sessions: [],
+        unavailable: true,
+        error: redactSecrets(r.error).slice(0, 200),
+      });
+    const started = new Set((claudeLedger?.read() ?? []).map((e) => e.id));
+    writeJson(ctx.res, 200, {
+      sessions: r.sessions.map((s) => ({
+        ...s,
+        started_here: started.has(s.id),
+      })),
+    });
+  });
+  router.add('GET', '/api/v1/claude/sessions/:id/transcript', async (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    if (!claudeRead(ctx)) return;
+    const row = await claudeRow(ctx);
+    if (!row) return;
+    if (!row.session_id || !deps.claudeProjectsDir)
+      return writeJson(ctx.res, 404, { error: 'no transcript' });
+    const limit = clampLines(ctx.url.searchParams.get('limit'), 200, 500);
+    const t = readTranscript(deps.claudeProjectsDir, row.session_id, limit);
+    if (!t) return writeJson(ctx.res, 404, { error: 'no transcript' });
+    auditRead(
+      ctx.session,
+      `claude:${row.id}`,
+      'control_ui_claude_read',
+      ctx.remoteAddr,
+    );
+    writeJson(ctx.res, 200, t);
+  });
+  router.add('GET', '/api/v1/claude/sessions/:id/logs', async (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    if (!claudeRead(ctx)) return;
+    const row = await claudeRow(ctx);
+    if (!row || !claudeCli) return;
+    const r = await readClaudeLogs(claudeCli, row.id);
+    if ('error' in r) return writeJson(ctx.res, 502, { error: r.error });
+    auditRead(
+      ctx.session,
+      `claude-logs:${row.id}`,
+      'control_ui_claude_read',
+      ctx.remoteAddr,
+    );
+    writeJson(ctx.res, 200, r);
+  });
+  router.add('POST', '/api/v1/claude/sessions', async (ctx) => {
+    if (header(ctx.req, 'x-confirm') !== 'start')
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (!claudeCli) return claudeUnavailable(ctx.res);
+    const body = (ctx.body ?? {}) as { name?: unknown; prompt?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const prompt = validatePrompt(body.prompt);
+    // Validated before the limiter so invalid input never spends budget.
+    if (!CLAUDE_NAME_RE.test(name) || prompt === null)
+      return writeJson(ctx.res, 400, { error: 'name and prompt are required' });
+    if (claudeStartLimiter.isRateLimited('global', now()))
+      return writeJson(ctx.res, 429, { error: 'too many session starts' });
+    const ledgerRaw = claudeLedger ? claudeLedger.read() : [];
+    if (ledgerRaw === null)
+      return writeJson(ctx.res, 409, {
+        error: 'live-session ledger unreadable',
+      });
+    const ledger = ledgerRaw;
+    const listed = await claudeList(true);
+    if (!('sessions' in listed)) return claudeUnavailable(ctx.res);
+    const live = listed.sessions.filter(
+      (s) => s.state === 'working' && ledger.some((e) => e.id === s.id),
+    ).length;
+    if (live >= CLAUDE_LIVE_MAX)
+      return writeJson(ctx.res, 409, {
+        error: `${live} dashboard-started sessions are already working`,
+        live,
+      });
+    const promptHash = crypto
+      .createHash('sha256')
+      .update(prompt)
+      .digest('hex')
+      .slice(0, 12);
+    const r = await startClaudeSession(claudeCli, name, prompt);
+    if ('error' in r)
+      return writeJson(ctx.res, r.error.startsWith('invalid') ? 400 : 502, {
+        error: r.error,
+      });
+    if ('unparsed' in r) {
+      logger.warn(
+        {
+          event: 'control_ui_claude_start_unparsed',
+          name,
+          promptHash,
+          stdout: r.stdout,
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI started a Claude session but could not parse its id',
+      );
+      return writeJson(ctx.res, 502, {
+        error: 'could not determine the session id',
+      });
+    }
+    const after = await claudeList(true);
+    const row =
+      'sessions' in after
+        ? after.sessions.find((s) => s.id === r.id)
+        : undefined;
+    logger.warn(
+      {
+        event: 'control_ui_claude_start',
+        name,
+        promptHash,
+        id: r.id,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI started a Claude session',
+    );
+    if (
+      claudeLedger &&
+      !claudeLedger.add({ id: r.id, started_at: row?.started_at ?? now() })
+    )
+      return writeJson(ctx.res, 500, {
+        error: 'ledger write failed',
+        id: r.id,
+      });
+    hub.broadcast('csession', { action: 'started', id: r.id });
+    writeJson(ctx.res, 200, { started: true, id: r.id });
+  });
+  router.add('POST', '/api/v1/claude/sessions/:id/message', async (ctx) => {
+    if (header(ctx.req, 'x-confirm') !== ctx.params.id)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    const body = (ctx.body ?? {}) as { prompt?: unknown };
+    const prompt = validatePrompt(body.prompt);
+    if (prompt === null)
+      return writeJson(ctx.res, 400, { error: 'prompt is required' });
+    if (
+      claudeMessageLimiter.isRateLimited(
+        ctx.session?.shortId ?? ctx.remoteAddr,
+        now(),
+      )
+    )
+      return writeJson(ctx.res, 429, { error: 'too many messages' });
+    const row = await claudeRow(ctx);
+    if (!row || !claudeCli) return;
+    if (!row.resumable || !row.session_id) {
+      claudeRefused(ctx, row.id, 'not_resumable');
+      return writeJson(ctx.res, 409, {
+        error: 'this session cannot take messages',
+      });
+    }
+    const promptHash = crypto
+      .createHash('sha256')
+      .update(prompt)
+      .digest('hex')
+      .slice(0, 12);
+    // The resumed session keeps a display name derived from its own, reduced to
+    // the allowed charset so it can never be parsed as an option.
+    const resumeName =
+      row.name
+        .replace(/[^\p{L}\p{N} ._-]/gu, '')
+        .replace(/^[^\p{L}\p{N}]+/u, '')
+        .trim()
+        .slice(0, 60) || 'session';
+    const r = await startClaudeSession(
+      claudeCli,
+      resumeName,
+      prompt,
+      row.session_id,
+    );
+    if ('error' in r) return writeJson(ctx.res, 502, { error: r.error });
+    if ('unparsed' in r) {
+      logger.warn(
+        {
+          event: 'control_ui_claude_start_unparsed',
+          id: row.id,
+          promptHash,
+          stdout: r.stdout,
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI messaged a Claude session but could not parse the resulting id',
+      );
+      return writeJson(ctx.res, 502, {
+        error: 'could not determine the session id',
+      });
+    }
+    const continued = r.id === row.id;
+    await claudeList(true);
+    logger.warn(
+      {
+        event: 'control_ui_claude_message',
+        id: row.id,
+        promptHash,
+        outcome: continued ? 'continued' : 'copied',
+        new_id: r.id,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI messaged a Claude session',
+    );
+    hub.broadcast('csession', {
+      action: continued ? 'continued' : 'copied',
+      id: r.id,
+    });
+    writeJson(
+      ctx.res,
+      200,
+      continued
+        ? { continued: true, id: r.id }
+        : { copied: true, id: row.id, new_id: r.id },
+    );
+  });
+  router.add('POST', '/api/v1/claude/sessions/:id/stop', async (ctx) => {
+    if (header(ctx.req, 'x-confirm') !== ctx.params.id)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (
+      claudeStopLimiter.isRateLimited(
+        ctx.session?.shortId ?? ctx.remoteAddr,
+        now(),
+      )
+    )
+      return writeJson(ctx.res, 429, { error: 'too many stops' });
+    const row = await claudeRow(ctx);
+    if (!row || !claudeCli) return;
+    if (row.kind !== 'background') {
+      claudeRefused(ctx, row.id, 'interactive');
+      return writeJson(ctx.res, 409, {
+        error: 'interactive sessions are stopped from the terminal',
+      });
+    }
+    const r = await stopClaudeSession(claudeCli, row.id);
+    if ('error' in r) return writeJson(ctx.res, 502, { error: r.error });
+    logger.warn(
+      {
+        event: 'control_ui_claude_stop',
+        id: row.id,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI stopped a Claude session',
+    );
+    await claudeList(true);
+    hub.broadcast('csession', { action: 'stopped', id: row.id });
+    writeJson(ctx.res, 200, r);
+  });
+
+  // Poll-and-diff only while the Claude tab is in use; skipped while a tick is in flight.
+  let claudeLastJson = '';
+  let claudePolling = false;
+  const claudePoll = setInterval(() => {
+    if (
+      !claudeCli ||
+      claudePolling ||
+      hub.clientCount() === 0 ||
+      now() - claudeTabSeen > CLAUDE_TAB_ACTIVE_MS
+    )
+      return;
+    claudePolling = true;
+    claudeList(true)
+      .then((r) => {
+        if (!('sessions' in r)) return;
+        const json = JSON.stringify(r.sessions);
+        if (json === claudeLastJson) return;
+        claudeLastJson = json;
+        hub.broadcast('csession', { sessions: r.sessions });
+      })
+      .catch(() => {})
+      .finally(() => {
+        claudePolling = false;
+      });
+  }, opts.claudePollMs ?? CLAUDE_POLL_MS);
+  claudePoll.unref();
+
   // Poll-and-diff: dashboards see container state change within one tick.
   let lastQueueJson = '';
   const queuePoll = setInterval(() => {
@@ -1267,6 +1695,11 @@ export function createControlServer(
   server.on('close', () => {
     clearInterval(queuePoll);
     clearInterval(systemPoll);
+    clearInterval(claudePoll);
+    claudeStartLimiter.dispose();
+    claudeMessageLimiter.dispose();
+    claudeReadLimiter.dispose();
+    claudeStopLimiter.dispose();
     if (logTimer) clearInterval(logTimer);
     if (unsubscribeLog) unsubscribeLog();
     configLimiter.dispose();

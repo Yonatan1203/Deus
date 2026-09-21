@@ -32,6 +32,7 @@ describe('control-ui logs', () => {
     expect(clampLines('5')).toBe(5);
     expect(clampLines(0)).toBe(200);
     expect(clampLines(99_999)).toBe(1000);
+    expect(clampLines(99_999, 200, 500)).toBe(500);
   });
 
   it('filters by level and substring, newest last, projected in read-only', async () => {

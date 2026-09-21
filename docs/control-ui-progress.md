@@ -13,3 +13,12 @@ Notes and assumptions: `docs/control-ui-notes.md`.
 | Visual redesign (v2) | done 2026-09-20 | "Console" direction: neutral surfaces, self-hosted Geist, SVG icons, rail groups + 4-tab bar with More sheet, chat as document; record + `v2-*` screenshots in notes |
 | 4 Containers + Logs + System + Config + Debug | done 2026-09-21 | instance-scoped containers + confirmed stop/rebuild, info+ log ring with structural redaction, system tiles, allow-listed `.env` editor with shadowed temp dir + external backups, debug health/counts/trace; record + `phase4-*` screenshots in notes |
 | 5 Deploy + verify | done 2026-09-21 | merged into the instance checkout, `CONTROL_UI_ENABLED=1` + `CONTROL_UI_PORT=3017` added to the service unit (backup kept outside the checkout), credential generated once, restart verified: bound to 127.0.0.1:3017 only, every API route 401 unauthenticated, other listeners unchanged; instance facts live in the operator's local notes, not here |
+
+## Scope 2 (spec `2026-09-21-control-ui-scope2-design.md`)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| C Claude sessions | done 2026-09-21 | list/transcript/start/message/stop through the Claude Code job CLI; bypassPermissions by operator decision; record + `phaseC-*` screenshots in notes |
+| W Workflows | pending | progress registry + `scripts/workflow.mjs`, percent/step/preview link |
+| A Live artifacts | pending | registry + ask-to-register convention |
+| D Connect Gmail to the assistant | pending | native OAuth for `packages/mcp-gmail` through the tunnel loopback |
