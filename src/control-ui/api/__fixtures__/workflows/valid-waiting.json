@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "id": "wf-0123456789ad",
+  "name": "Posts batch 12",
+  "kind": "posts",
+  "status": "waiting",
+  "percent": 40,
+  "step": "3/7 rendering",
+  "steps_total": 7,
+  "outputs": [],
+  "started_at": "2026-09-21T10:00:00.000Z",
+  "updated_at": "2026-09-21T10:05:00.000Z",
+  "rev": 3,
+  "message": "Needs approval",
+  "session_id": "a1b2c3d4"
+}

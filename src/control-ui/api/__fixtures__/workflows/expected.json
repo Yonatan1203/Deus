@@ -1,0 +1,14 @@
+{
+  "valid-running": "ok",
+  "valid-done": "ok",
+  "valid-waiting": "ok",
+  "valid-failed": "ok",
+  "valid-minimal": "ok",
+  "valid-hebrew": "ok",
+  "invalid-kind": "bad-kind",
+  "invalid-percent": "bad-percent",
+  "invalid-url": "bad-url",
+  "invalid-id": "bad-id",
+  "invalid-schema-name": "bad-schema",
+  "invalid-schema-rev": "bad-schema"
+}

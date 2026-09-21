@@ -441,3 +441,17 @@ table.kv input { min-height: 36px; }
 .claude-transcript { max-height: 55vh; overflow-y: auto; }
 .claude .tool-row { border-left: 2px solid var(--line-strong); padding-left: 10px; }
 @media (min-width: 900px) { .claude { grid-template-columns: minmax(280px, 380px) 1fr; align-items: start; } .claude-panel { border-top: 0; padding-top: 0; border-left: 1px solid var(--line); padding-left: 20px; } }
+
+/* Phase W: Workflows */
+.wf-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
+.wf-card { display: grid; gap: 10px; align-content: start; }
+.wf-card.invalid { opacity: 0.7; }
+.wf-card .title > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.wf-progress { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; font-size: 13px; }
+.wf-step { color: var(--text); font-size: 14px; }
+.wf-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wf-links { display: grid; gap: 6px; font-size: 14px; }
+.wf-link { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.wf-link.withheld { font-size: 13px; }
+.wf-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+.wf-notice { padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: var(--radius); font-size: 13px; }

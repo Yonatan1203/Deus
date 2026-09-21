@@ -229,6 +229,25 @@ npm run build
 
 Further dev info: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 
+## Reporting long-running work
+
+For any order that takes more than a minute (creating posts, product images,
+site images…), report progress with the workflow CLI so the control UI's
+Workflows tab can show it:
+
+```bash
+WF=$(node scripts/workflow.mjs start --name "Posts batch 12" --kind posts)
+node scripts/workflow.mjs progress "$WF" --percent 40 --step "3/7 rendering"
+node scripts/workflow.mjs finish "$WF" --preview https://claude.ai/artifact/…
+node scripts/workflow.mjs fail "$WF" --message "Shopify API 500"
+```
+
+Kinds: `posts`, `product_images`, `site_images`, `other`. Pass
+`--session <8-hex job id>` only when you know it. The dashboard reads only
+these records. A non-zero exit from the CLI (for example exit 4 after the
+operator archived the record) is bookkeeping, never a reason to abort the
+order itself.
+
 ## Verification Baseline
 
 Pick tests by the touched layer. Common checks:

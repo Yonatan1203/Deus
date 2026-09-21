@@ -49,6 +49,10 @@ rules are enforced by pre-commit hooks and CI.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full human-readable contributor guide.
 
+For orders that take more than a minute, report progress with
+`node scripts/workflow.mjs start|progress|finish|fail` (see AGENTS.md
+§ Reporting long-running work).
+
 ## Development
 
 Run commands directly. Do not tell the user to run them.

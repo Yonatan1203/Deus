@@ -104,7 +104,6 @@ export async function listClaudeSessions(
   cli: HostCli,
   root: string,
   opts: {
-    readOnly?: boolean;
     projectsDir?: string;
     waitingOn?: (sessionId: string) => string | null;
   } = {},

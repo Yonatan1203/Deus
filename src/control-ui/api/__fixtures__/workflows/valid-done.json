@@ -1,0 +1,21 @@
+{
+  "v": 1,
+  "id": "wf-0123456789ac",
+  "name": "Posts batch 12",
+  "kind": "posts",
+  "status": "done",
+  "percent": 100,
+  "step": "3/7 rendering",
+  "steps_total": 7,
+  "outputs": [
+    {
+      "label": "Drive folder",
+      "url": "https://drive.google.com/x"
+    }
+  ],
+  "started_at": "2026-09-21T10:00:00.000Z",
+  "updated_at": "2026-09-21T10:05:00.000Z",
+  "rev": 3,
+  "finished_at": "2026-09-21T10:30:00.000Z",
+  "preview_url": "https://claude.ai/artifact/abc"
+}

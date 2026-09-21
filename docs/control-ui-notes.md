@@ -443,3 +443,87 @@ Deviations logged during Phase C:
 - `Deviation:` the resumed session's display name is reduced to the allowed charset before `--name=` (real names carry parentheses).
 - `Deviation:` the "New session" form is inline in the tab rather than a dialog.
 - `Deviation:` the code review found the dropped-row count computed but never logged and the `logs` route without a first-read audit; both are wired now (`control_ui_claude_dropped` on change, `control_ui_claude_read` on logs). The verification gate found the `readTail` partial-line test non-discriminating (a truncated JSONL line never parses anyway); an adversarial case — a non-JSON line whose suffix parses — now pins the discard.
+
+## Phase W — verification record (Workflows tab)
+
+Plan: `docs/superpowers/plans/2026-09-21-control-ui-phaseW.md` (plan-reviewer
+rounds 1–3, threat-modeler rounds 1–4, all folded; final verdicts SHIP).
+
+What shipped:
+
+- `scripts/workflow.mjs` — `start | progress | finish | fail | show | list |
+  validate`; records under `CONFIG_DIR/control-ui/workflows/<id>.json` (0600,
+  dir 0700), written `wx` temp + rename, integer `rev` optimistic token
+  re-checked right before the rename (exit 3 on a change), terminal records
+  only accept added outputs, hourly temp sweep, `--session` explicit only.
+  Exit codes 0/2/3/4; a non-zero exit is bookkeeping for the caller.
+- `src/control-ui/api/allowed-url.ts` — the one place a server-supplied
+  string is cleared to become an `href`: `https:` + exact allow-list
+  (`claude.ai` + `CONTROL_UI_PREVIEW_HOSTS`), `http:` + exact local hosts, no
+  userinfo, ≤ 2048, secret-looking query keys rejected (segment-anchored
+  `SECRET_KEYS`). Shape failures vs policy failures are distinct results.
+- `src/control-ui/api/workflows.ts` — `validateRecord` (fresh literal, closed
+  reason enum, id bound to the filename), `readRecordFile` (`O_NOFOLLOW` +
+  `fstat` ≤ 64 KB, one read, one parse), `projectRecord` (read-only withholds
+  prose on the data path; policy-failed URLs are withheld as
+  `preview_blocked` / `blocked`, never sent as text; `\p{Cc}`/`\p{Cf}`
+  stripped + `redactSecrets` on display strings), `listWorkflows` (scan cap
+  5 000, parse candidates = newest 600 by mtime, tiers fresh non-terminal →
+  terminal/invalid → stale non-terminal keyed on file mtime, list cap 200,
+  `scanned`/`candidates`/`truncated`), `archiveWorkflows` (30-day sweep
+  skip-and-count; `{ id }` shape-checked before any join, 409 for an active
+  record, `stale: true` for one idle > 24 h, 409 on an existing target),
+  `createWorkflowWatcher` (debounced `fs.watch`, poll fallback, refuses a
+  symlinked dir).
+- `server.ts` — `GET /api/v1/workflows` (60/min per session),
+  `POST /api/v1/workflows/archive` (`X-Confirm: archive`, 6/min, 403
+  read-only, audited `control_ui_workflow_archive`), registry dir created at
+  boot, `workflow` SSE frames from the watcher through the same projected
+  list function as the route. Phase C's unused `readOnly` option on
+  `listClaudeSessions` removed so nobody copies an ignored parameter.
+- `web/control/views/workflows.js` — cards with kind chip, status badge,
+  `<progress>` + percent, step, message, reported-session badge (only when
+  the id is in the Phase C list), preview/output links as label + hostname,
+  withheld links as inert enum text, status filter, per-card and bulk
+  archive with typed `archive`, truncation notice. Text nodes only.
+- Convention: `AGENTS.md` § Reporting long-running work; one line in
+  `CLAUDE.md`.
+
+Verification (worktree, 2026-09-21):
+
+- `npx vitest run src/control-ui scripts/tests/workflow.test.ts` — 24 files,
+  137 tests green (new: `allowed-url.test.ts`, `workflows.test.ts` incl. the
+  12-fixture validator agreement test against the CLI,
+  `scripts/tests/workflow.test.ts`, and a `workflows` describe in `server.test.ts` covering
+  401/503/429, read-only projection on both the route and the SSE frame,
+  one debounced frame for a burst of three writes, archive 428/400/404/409/
+  200/`stale`, the audit line and the 6/min budget).
+- `npx tsc --noEmit`, `npx eslint src/control-ui`, `node --check` on the
+  CLI and the view: clean.
+- Capture: `phaseW-workflows-{mobile,desktop}.png` from the fixture (running
+  40 % with a joined session, waiting 60 % with a withheld Drive link, done
+  with preview + contact sheet, failed, one invalid file). Overflow probe:
+  0 px on all 16 tabs at 390 px. Handler failures in the fixture log: 0.
+
+Deviations logged during Phase W:
+
+- `Deviation:` the plan's Design bullet still mentioned a `$CLAUDE_JOB_ID`
+  default for `--session`; Global Constraints and the threat answers say
+  "no env default". The stricter reading won: `--session` is explicit only.
+- `Deviation:` the `SECRET_KEYS` query-key test is anchored to key
+  *segments* (`^(?:[^_-]*[_-])?(…)(?:[_-][^_-]*)?$`) rather than the whole
+  key, so `access_token` and `x-api-key` reject too; `tokenizer` passes.
+  Over-rejection fails closed to a withheld link.
+- `Deviation:` the CLI validates `--name`/`--kind` up front with a specific
+  message (exit 3) — the fixture's first capture showed a name with a colon
+  landing as an opaque `bad-schema` card. The name rule itself is unchanged.
+- `Deviation:` the first view build showed a "reported session not listed"
+  chip when a record's `session_id` was absent from the Phase C list; the
+  plan says no badge at all in that case, and the code review caught the
+  gap — the chip is gone.
+- Later, not now (from the threat rounds): `O_NONBLOCK` is set on the open
+  where the platform has it; the fd is closed in `finally`; `DT_UNKNOWN`
+  dirents on exotic filesystems would hide records with no marker.
+- `CONTROL_UI_PREVIEW_HOSTS` widens the preview allow-list for Phase A too,
+  because `isAllowedUrl` is shared. Empty by default, so the default equals
+  the spec.

@@ -13,6 +13,7 @@ vi.mock('../webui-consolidation.js', () => ({
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { IS_WINDOWS } from '../platform.js';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import {
@@ -2427,5 +2428,334 @@ describe('control-ui server — claude sessions', () => {
         }),
       ),
     ).toMatchObject({ unavailable: true });
+  });
+});
+
+describe('control-ui server — workflows', () => {
+  const warnSpy = vi.mocked(logger.warn);
+  let configDir: string;
+  let wfDir: string;
+  beforeEach(() => {
+    warnSpy.mockClear();
+    clock = Date.parse('2026-09-21T12:00:00.000Z');
+    configDir = path.join(root, 'cfg');
+    wfDir = path.join(configDir, 'control-ui', 'workflows');
+  });
+  const j = (r: { text: string }) => JSON.parse(r.text);
+  const ev = (name: string) =>
+    warnSpy.mock.calls.filter(
+      (c) => (c[0] as { event?: string })?.event === name,
+    );
+  let seq = 0;
+  const wf = (over: Record<string, unknown> = {}) => ({
+    v: 1,
+    id: `wf-${(seq++).toString(16).padStart(12, '0')}`,
+    name: 'Posts batch',
+    kind: 'posts',
+    status: 'running',
+    percent: 40,
+    step: 'rendering',
+    message: 'hello',
+    session_id: 'a1b2c3d4',
+    preview_url: 'https://claude.ai/artifact/a',
+    outputs: [{ label: 'Drive', url: 'https://claude.ai/o' }],
+    started_at: '2026-09-21T10:00:00.000Z',
+    updated_at: '2026-09-21T10:05:00.000Z',
+    rev: 1,
+    ...over,
+  });
+  const plant = (r: { id: string }, ageMs = 0) => {
+    const file = path.join(wfDir, `${r.id}.json`);
+    fs.writeFileSync(file, JSON.stringify(r));
+    const t = new Date(clock - ageMs);
+    fs.utimesSync(file, t, t);
+    return file;
+  };
+  const bootW = (over: Partial<ControlDeps> = {}, extra = {}) =>
+    boot(
+      {
+        runtime: fakeRuntime().runtime,
+        store: fakeStore(root),
+        configDir,
+        ...over,
+      },
+      undefined,
+      undefined,
+      { workflowDebounceMs: 50, workflowPollMs: 100, ...extra },
+    );
+  const sse = (
+    auth: Record<string, string>,
+    cookie: string,
+    event: string,
+    act: () => void,
+    waitMs = 700,
+  ) =>
+    request({
+      method: 'POST',
+      path: '/api/v1/events/ticket',
+      headers: auth,
+    }).then(
+      (t) =>
+        new Promise<string[]>((resolve, reject) => {
+          const { ticket } = JSON.parse(t.text);
+          let buf = '';
+          const req = http.request(
+            {
+              host: '127.0.0.1',
+              port,
+              path: `/api/v1/events?ticket=${ticket}`,
+              headers: { Cookie: cookie },
+            },
+            (res) => {
+              res.on('data', (c) => (buf += String(c)));
+              setTimeout(act, 30);
+              setTimeout(() => {
+                req.destroy();
+                resolve(
+                  buf
+                    .split('\n\n')
+                    .filter((f) => f.includes(`event: ${event}`)),
+                );
+              }, waitMs);
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        }),
+    );
+
+  it('creates the registry dir, lists records, and refuses without auth', async () => {
+    await bootW();
+    expect(fs.statSync(wfDir).isDirectory()).toBe(true);
+    if (!IS_WINDOWS) expect(fs.statSync(wfDir).mode & 0o777).toBe(0o700);
+    expect(
+      (await request({ method: 'GET', path: '/api/v1/workflows' })).status,
+    ).toBe(401);
+    const { auth } = await login();
+    let r = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/workflows',
+        headers: auth,
+      }),
+    );
+    expect(r).toEqual({
+      workflows: [],
+      scanned: 0,
+      candidates: 0,
+      truncated: 0,
+    });
+    plant(
+      wf({ name: 'older', preview_url: 'https://claude.ai/p?token=S3CR3T' }),
+      60_000,
+    );
+    plant(wf({ name: 'newer' }));
+    plant(wf({ kind: 'videos' }), 120_000);
+    r = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/workflows',
+        headers: auth,
+      }),
+    );
+    expect(
+      r.workflows.map(
+        (w: { name?: string; reason?: string }) => w.name ?? w.reason,
+      ),
+    ).toEqual(['newer', 'older', 'bad-kind']);
+    expect(r.workflows[1]).toMatchObject({
+      preview_url: null,
+      preview_blocked: 'secret-query',
+      step: 'rendering',
+      session_id: 'a1b2c3d4',
+    });
+    expect(JSON.stringify(r)).not.toContain('S3CR3T');
+    expect(r.workflows[0].outputs).toEqual([
+      { label: 'Drive', url: 'https://claude.ai/o' },
+    ]);
+  });
+
+  it('answers 503 without a config dir or with a symlinked registry, and 429 past the read budget', async () => {
+    await bootW({ configDir: undefined });
+    const { auth } = await login();
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/workflows',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(503);
+    await new Promise<void>((r) => server.close(() => r()));
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-real-'));
+    fs.mkdirSync(path.join(configDir, 'control-ui'), { recursive: true });
+    fs.symlinkSync(real, wfDir);
+    await bootW();
+    const s2 = await login();
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/workflows',
+          headers: s2.auth,
+        })
+      ).status,
+    ).toBe(503);
+    fs.rmSync(real, { recursive: true, force: true });
+    await new Promise<void>((r) => server.close(() => r()));
+    fs.unlinkSync(wfDir);
+    await bootW();
+    const s3 = await login();
+    for (let i = 0; i < 60; i++)
+      expect(
+        (
+          await request({
+            method: 'GET',
+            path: '/api/v1/workflows',
+            headers: s3.auth,
+          })
+        ).status,
+      ).toBe(200);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/workflows',
+          headers: s3.auth,
+        })
+      ).status,
+    ).toBe(429);
+  });
+
+  it('read-only projects on the data path: route and SSE frame carry no prose', async () => {
+    await bootW({ readOnly: true });
+    const { auth, cookie } = await login();
+    plant(wf());
+    const r = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/workflows',
+        headers: auth,
+      }),
+    );
+    expect(Object.keys(r.workflows[0]).sort()).toEqual([
+      'id',
+      'kind',
+      'name',
+      'percent',
+      'started_at',
+      'status',
+      'updated_at',
+    ]);
+    const frames = await sse(auth, cookie, 'workflow', () =>
+      plant(wf({ name: 'second' })),
+    );
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+    const payload = JSON.parse(frames[0].split('data: ')[1]);
+    expect(payload.workflows).toHaveLength(2);
+    for (const w of payload.workflows)
+      for (const k of [
+        'step',
+        'message',
+        'outputs',
+        'preview_url',
+        'session_id',
+      ])
+        expect(w).not.toHaveProperty(k);
+    expect(JSON.stringify(payload)).not.toContain('hello');
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/workflows/archive',
+          headers: { ...auth, ...H, 'X-Confirm': 'archive' },
+          body: '{}',
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it('broadcasts one debounced workflow frame for a burst of writes', async () => {
+    await bootW();
+    const { auth, cookie } = await login();
+    const frames = await sse(auth, cookie, 'workflow', () => {
+      for (let i = 0; i < 3; i++) plant(wf({ name: `w${i}` }));
+    });
+    expect(frames).toHaveLength(1);
+    const payload = JSON.parse(frames[0].split('data: ')[1]);
+    expect(
+      payload.workflows.map((w: { name: string }) => w.name).sort(),
+    ).toEqual(['w0', 'w1', 'w2']);
+    expect(payload).toMatchObject({ scanned: 3, candidates: 3, truncated: 0 });
+  });
+
+  it('archives with typed confirmation, shape-checks the id first, and audits', async () => {
+    await bootW();
+    const { auth } = await login();
+    const post = (body: string, confirm?: string) =>
+      request({
+        method: 'POST',
+        path: '/api/v1/workflows/archive',
+        headers: {
+          ...auth,
+          ...H,
+          ...(confirm ? { 'X-Confirm': confirm } : {}),
+        },
+        body,
+      });
+    expect((await post('{}')).status).toBe(428);
+    expect((await post('{"id":"../x"}', 'archive')).status).toBe(400);
+    expect((await post('{"id":["wf-aaaaaaaaaaaa"]}', 'archive')).status).toBe(
+      400,
+    );
+    expect((await post('{"id":"wf-aaaaaaaaaaaa"}', 'archive')).status).toBe(
+      404,
+    );
+    expect(fs.readdirSync(wfDir).filter((n) => n.endsWith('.json'))).toEqual(
+      [],
+    );
+    const DAY = 24 * 60 * 60 * 1000;
+    const old = wf({
+      status: 'done',
+      percent: 100,
+      finished_at: new Date(clock - 40 * DAY).toISOString(),
+    });
+    const recent = wf({
+      status: 'done',
+      percent: 100,
+      finished_at: new Date(clock - 2 * DAY).toISOString(),
+    });
+    const fresh = wf({ status: 'running' });
+    const stale = wf({ status: 'running' });
+    plant(old);
+    plant(recent);
+    plant(fresh, 60 * 60 * 1000);
+    plant(stale, 25 * 60 * 60 * 1000);
+    let r = await post('{}', 'archive');
+    expect(r.status).toBe(200);
+    expect(j(r)).toEqual({ archived: 1, skipped: 0 });
+    expect(fs.existsSync(path.join(wfDir, 'archive', `${old.id}.json`))).toBe(
+      true,
+    );
+    expect(fs.existsSync(path.join(wfDir, `${recent.id}.json`))).toBe(true);
+    r = await post(`{"id":"${fresh.id}"}`, 'archive');
+    expect(r.status).toBe(409);
+    expect(j(r).error).toBe('workflow still active');
+    r = await post(`{"id":"${stale.id}"}`, 'archive');
+    expect(j(r)).toEqual({ archived: 1, skipped: 0, stale: true });
+    r = await post(`{"id":"${recent.id}"}`, 'archive');
+    expect(j(r)).toEqual({ archived: 1, skipped: 0 });
+    plant(recent);
+    expect((await post(`{"id":"${recent.id}"}`, 'archive')).status).toBe(409);
+    const audits = ev('control_ui_workflow_archive');
+    expect(audits).toHaveLength(3);
+    expect(audits[1][0]).toMatchObject({
+      id: stale.id,
+      stale: true,
+      archived: 1,
+    });
+    // Six archive calls reached the limiter (the 428 and the two 400s did not).
+    expect((await post('{}', 'archive')).status).toBe(429);
   });
 });
