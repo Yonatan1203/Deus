@@ -112,3 +112,24 @@ describe('control-ui logs', () => {
     ).toEqual({ error: 'timeout' });
   });
 });
+
+describe('redactSecrets — OAuth shapes', () => {
+  it('covers segment keys, authorization codes and Google token prefixes', () => {
+    expect(redactSecrets('client_secret=FIX-abc&code=4/xyz-123 tail')).toBe(
+      'client_secret=[redacted] tail',
+    );
+    expect(redactSecrets('GET /cb?state=s1&code=4/abc&x=1')).toBe(
+      'GET /cb?state=s1&code=[redacted]&x=1',
+    );
+    expect(
+      redactSecrets('{"refresh_token":"1//09abc","access_token":"ya29.def"}'),
+    ).toBe('{"refresh_token":"[redacted]","access_token":"[redacted]"}');
+    expect(redactSecrets('token ya29.a0AfH6SMB and 1//0gXyz-refresh')).toBe(
+      'token [redacted] and [redacted]',
+    );
+    // Transcript prose stays readable: `code` is not a key on its own.
+    expect(redactSecrets('status code: 500 from the API')).toBe(
+      'status code: 500 from the API',
+    );
+  });
+});

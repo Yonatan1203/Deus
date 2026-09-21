@@ -17,19 +17,29 @@ const LEVELS: Record<string, number> = {
 // userinfo. Best-effort by nature — read-only mode withholds container logs.
 export const SECRET_KEYS =
   'api[_-]?key|token|secret|password|passwd|credential|authorization';
-const QUOTED_KV = new RegExp(`"(${SECRET_KEYS})"\\s*:\\s*"[^"]*"`, 'gi');
-const BARE_KV = new RegExp(
-  `\\b(${SECRET_KEYS})(\\s*[=:]\\s*)(?:Bearer\\s+)?\\S+`,
+// Keys match on segments (`client_secret`, `refresh_token`, `x-api-key`), not
+// whole words: `_` is a word character, so a `\b` before `secret` never fires.
+const QUOTED_KV = new RegExp(
+  `"([\\w-]*(?:${SECRET_KEYS}))"\\s*:\\s*"[^"]*"`,
   'gi',
 );
+const BARE_KV = new RegExp(
+  `\\b([\\w-]*(?:${SECRET_KEYS}))(\\s*[=:]\\s*)(?:Bearer\\s+)?\\S+`,
+  'gi',
+);
+// OAuth authorization codes travel as a query parameter named `code`; kept
+// out of SECRET_KEYS on purpose — that list also shapes transcript rendering,
+// where "status code: 500" must stay readable.
+const OAUTH_CODE = /([?&]code=)[^&\s]+/gi;
 const TOKEN_PREFIX =
-  /\b(ghp_|gho_|ghs_|glpat-|xox[baprs]-|AIza|sk-|eyJ[A-Za-z0-9_-]{10,})\S+/g;
+  /\b(ghp_|gho_|ghs_|glpat-|xox[baprs]-|AIza|sk-|ya29\.|eyJ[A-Za-z0-9_-]{10,})\S+|\b1\/\/\S+/g;
 const URL_USERINFO = /(https?:\/\/)[^/\s@]*:[^/\s@]*@/g;
 
 export function redactSecrets(s: string): string {
   return s
     .replace(QUOTED_KV, '"$1":"[redacted]"')
     .replace(BARE_KV, '$1$2[redacted]')
+    .replace(OAUTH_CODE, '$1[redacted]')
     .replace(TOKEN_PREFIX, '[redacted]')
     .replace(URL_USERINFO, '$1[redacted]@');
 }

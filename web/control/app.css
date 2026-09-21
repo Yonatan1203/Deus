@@ -464,3 +464,11 @@ table.kv input { min-height: 36px; }
 .art-link { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 .art-link.withheld { font-weight: 500; }
 .wf-foot-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* Phase D: Gmail account panel + OAuth callback page */
+.gmail-panel { display: grid; gap: 10px; }
+.gmail-panel textarea { font-family: var(--mono); font-size: 12px; }
+body.oauth-done { display: grid; place-items: center; min-height: 100dvh; padding: 24px 16px; }
+.oauth-card { display: grid; gap: 12px; max-width: 480px; padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.oauth-card h1 { font-size: 20px; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.oauth-card .button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 16px; border-radius: 8px; background: var(--text); color: var(--bg); font-weight: 600; text-decoration: none; width: fit-content; }
