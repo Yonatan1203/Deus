@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "wf-0123456789af",
+  "name": "x",
+  "kind": "other",
+  "status": "running",
+  "percent": 0,
+  "outputs": [],
+  "started_at": "2026-09-21T10:00:00.000Z",
+  "updated_at": "2026-09-21T10:00:00.000Z",
+  "rev": 1
+}

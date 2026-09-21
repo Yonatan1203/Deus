@@ -77,6 +77,8 @@ for (const [name, viewport] of viewports) {
         await first.first().click();
         await page.waitForSelector('#view .claude-transcript .msg, #view .claude-transcript .empty, #view .claude-panel > p.muted', { timeout: 10_000 });
       }
+    } else if (tab === 'workflows') {
+      await page.waitForSelector('#view .wf-card, #view .empty', { timeout: 10_000 });
     } else if (tab === 'config') {
       // Open one editable row so the inline editor is part of the capture.
       await page.waitForSelector('#view table.kv', { timeout: 10_000 });

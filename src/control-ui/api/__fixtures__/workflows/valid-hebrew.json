@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "id": "wf-0123456789b0",
+  "name": "\u05ea\u05de\u05d5\u05e0\u05d5\u05ea \u05de\u05d5\u05e6\u05e8 (batch 3)",
+  "kind": "site_images",
+  "status": "running",
+  "percent": 40,
+  "step": "3/7 rendering",
+  "steps_total": 7,
+  "outputs": [],
+  "started_at": "2026-09-21T10:00:00.000Z",
+  "updated_at": "2026-09-21T10:05:00.000Z",
+  "rev": 3
+}

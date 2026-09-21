@@ -15,6 +15,7 @@ import * as system from './views/system.js';
 import * as config from './views/config.js';
 import * as debug from './views/debug.js';
 import * as claude from './views/claude.js';
+import * as workflows from './views/workflows.js';
 
 const TOKEN_KEY = 'deus_ctl_token';
 const CHAT_KEY = 'deus_ctl_chat';
@@ -23,6 +24,7 @@ const CHAT_KEY = 'deus_ctl_chat';
 const VIEWS = {
   chat: { title: 'Chat', group: 'Operate', render: chat.render },
   claude: { title: 'Claude', group: 'Operate', render: claude.render },
+  workflows: { title: 'Workflows', group: 'Operate', render: workflows.render },
   sessions: { title: 'Sessions', group: 'Operate', render: sessions.render },
   tasks: { title: 'Tasks', group: 'Operate', render: tasks.render },
   agents: { title: 'Agents', group: 'Configure', render: agents.render },
@@ -164,7 +166,7 @@ async function connectEvents() {
     $('live-dot').className = 'dot warn';
     if (!pollTimer) pollTimer = setInterval(() => bus.dispatchEvent(new CustomEvent('refresh')), 10_000);
   };
-  for (const type of ['warden', 'session', 'group', 'queue', 'task', 'memory', 'container', 'build', 'system', 'alert', 'log', 'csession']) {
+  for (const type of ['warden', 'session', 'group', 'queue', 'task', 'memory', 'container', 'build', 'system', 'alert', 'log', 'csession', 'workflow']) {
     source.addEventListener(type, (e) =>
       bus.dispatchEvent(new CustomEvent(type, { detail: JSON.parse(e.data) })));
   }

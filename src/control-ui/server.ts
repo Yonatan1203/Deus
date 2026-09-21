@@ -65,6 +65,15 @@ import {
 } from './api/debug.js';
 import type { LogEntry, LogRing } from '../log-ring.js';
 import { createHostCli, type HostCli } from './api/host-cli.js';
+import { parsePreviewHosts } from './api/allowed-url.js';
+import {
+  archiveWorkflows,
+  createWorkflowWatcher,
+  listWorkflows,
+  registryDirOk,
+  WORKFLOW_ID_RE,
+  type WorkflowWatcher,
+} from './api/workflows.js';
 import {
   CLAUDE_JOB_ID_RE,
   CLAUDE_NAME_RE,
@@ -128,6 +137,8 @@ export interface ControlDeps {
   /** `.env` path and the config dir holding its backups. */
   envPath?: string;
   configDir?: string;
+  /** `CONTROL_UI_PREVIEW_HOSTS`, raw; parsed once here. */
+  previewHosts?: string;
   /** Claude Code CLI (absolute path, resolved at boot) and its projects dir; null → the Claude tab answers 503. */
   claudeBin?: string | null;
   claudeProjectsDir?: string;
@@ -147,6 +158,8 @@ export interface ControlServerOptions {
   logBatchMs?: number;
   hostCli?: HostCli;
   claudePollMs?: number;
+  workflowDebounceMs?: number;
+  workflowPollMs?: number;
 }
 
 const BIND_HOST = '127.0.0.1';
@@ -176,6 +189,10 @@ const CLAUDE_STOPS_PER_MIN = 6;
 const CLAUDE_LIVE_MAX = 3;
 const CLAUDE_POLL_MS = 3000;
 const CLAUDE_TAB_ACTIVE_MS = 60_000;
+const WORKFLOW_READS_PER_MIN = 60;
+const WORKFLOW_ARCHIVES_PER_MIN = 6;
+const WORKFLOW_ARCHIVE_DAYS = 30;
+const WORKFLOW_WATCH_DEBOUNCE_MS = 500;
 const MEMORY_MAX_BYTES = 1024 * 1024;
 const MEMORY_BODY_CAP = Math.floor(MEMORY_MAX_BYTES * 1.5);
 
@@ -294,6 +311,11 @@ export function createControlServer(
   );
   const claudeReadLimiter = createRateLimiter(CLAUDE_READS_PER_MIN, 60_000);
   const claudeStopLimiter = createRateLimiter(CLAUDE_STOPS_PER_MIN, 60_000);
+  const workflowReadLimiter = createRateLimiter(WORKFLOW_READS_PER_MIN, 60_000);
+  const workflowArchiveLimiter = createRateLimiter(
+    WORKFLOW_ARCHIVES_PER_MIN,
+    60_000,
+  );
   const claudeCli: HostCli | null =
     opts.hostCli ??
     (deps.claudeBin
@@ -1245,7 +1267,6 @@ export function createControlServer(
     )
       return { sessions: claudeListCache.sessions, dropped: 0 };
     const r = await listClaudeSessions(claudeCli, deps.repoRoot, {
-      readOnly: deps.readOnly,
       waitingOn,
     });
     if ('sessions' in r) {
@@ -1568,6 +1589,100 @@ export function createControlServer(
     writeJson(ctx.res, 200, r);
   });
 
+  // Workflow registry: records written by scripts/workflow.mjs under CONFIG_DIR.
+  // The dir is created here (0700) so the watcher can start before the first
+  // record; a symlinked or non-directory path refuses to list and to watch.
+  const workflowDir = deps.configDir
+    ? path.join(deps.configDir, 'control-ui', 'workflows')
+    : null;
+  const previewHosts = parsePreviewHosts(deps.previewHosts);
+  if (workflowDir) {
+    try {
+      fs.mkdirSync(workflowDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      logger.warn(
+        { err: (err as Error).message },
+        'Control UI could not create the workflow registry',
+      );
+    }
+  }
+  const workflowList = () =>
+    workflowDir
+      ? listWorkflows(workflowDir, {
+          readOnly: deps.readOnly,
+          hosts: previewHosts,
+          now,
+        })
+      : ({ error: 'registry unavailable' } as const);
+  router.add('GET', '/api/v1/workflows', (ctx) => {
+    if (workflowReadLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many requests' });
+    const r = workflowList();
+    if ('error' in r) return writeJson(ctx.res, 503, { error: r.error });
+    writeJson(ctx.res, 200, r);
+  });
+  router.add('POST', '/api/v1/workflows/archive', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    if (header(ctx.req, 'x-confirm') !== 'archive')
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    const body = (ctx.body ?? {}) as { id?: unknown };
+    // The only browser string that reaches a path: shape-checked here, before
+    // the limiter and before anything is joined.
+    if (
+      body.id !== undefined &&
+      (typeof body.id !== 'string' || !WORKFLOW_ID_RE.test(body.id))
+    )
+      return writeJson(ctx.res, 400, { error: 'invalid id' });
+    if (workflowArchiveLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many archive requests' });
+    if (!workflowDir)
+      return writeJson(ctx.res, 503, { error: 'registry unavailable' });
+    const r = archiveWorkflows(workflowDir, {
+      olderThanDays: WORKFLOW_ARCHIVE_DAYS,
+      id: body.id,
+      now,
+    });
+    if (r.status !== 200)
+      return writeJson(ctx.res, r.status, { error: r.error });
+    logger.warn(
+      {
+        event: 'control_ui_workflow_archive',
+        id: body.id ?? null,
+        archived: r.archived,
+        skipped: r.skipped,
+        stale: r.stale ?? false,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI archived workflow records',
+    );
+    const out: Record<string, unknown> = {
+      archived: r.archived,
+      skipped: r.skipped,
+    };
+    if (r.stale) out.stale = true;
+    writeJson(ctx.res, 200, out);
+  });
+  // Every producer of the record shape goes through workflowList(), so a
+  // read-only deployment's SSE frames carry the same projection as the route.
+  let workflowWatcher: WorkflowWatcher | null = null;
+  if (workflowDir && registryDirOk(workflowDir)) {
+    workflowWatcher = createWorkflowWatcher(
+      workflowDir,
+      () => {
+        if (hub.clientCount() === 0) return;
+        const r = workflowList();
+        if ('error' in r) return;
+        hub.broadcast('workflow', r);
+      },
+      {
+        debounceMs: opts.workflowDebounceMs ?? WORKFLOW_WATCH_DEBOUNCE_MS,
+        pollMs: opts.workflowPollMs,
+      },
+    );
+  }
+
   // Poll-and-diff only while the Claude tab is in use; skipped while a tick is in flight.
   let claudeLastJson = '';
   let claudePolling = false;
@@ -1700,6 +1815,9 @@ export function createControlServer(
     claudeMessageLimiter.dispose();
     claudeReadLimiter.dispose();
     claudeStopLimiter.dispose();
+    workflowReadLimiter.dispose();
+    workflowArchiveLimiter.dispose();
+    if (workflowWatcher) workflowWatcher.close();
     if (logTimer) clearInterval(logTimer);
     if (unsubscribeLog) unsubscribeLog();
     configLimiter.dispose();

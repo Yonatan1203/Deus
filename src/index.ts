@@ -29,6 +29,7 @@ import {
   TOOL_PROXY_PORT,
   CONFIG_DIR,
   deusInstanceId,
+  CONTROL_UI_PREVIEW_HOSTS,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { startToolProxy } from './tool-proxy.js';
@@ -587,6 +588,7 @@ async function main(): Promise<void> {
     logRing,
     envPath: path.join(PROJECT_ROOT, '.env'),
     configDir: CONFIG_DIR,
+    previewHosts: CONTROL_UI_PREVIEW_HOSTS,
     claudeBin: resolveClaudeBin(process.env.PATH ?? ''),
     claudeProjectsDir: path.join(homeDir, '.claude', 'projects'),
     vaultPath: resolveVaultPath(),

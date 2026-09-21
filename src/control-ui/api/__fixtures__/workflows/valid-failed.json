@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "id": "wf-0123456789ae",
+  "name": "Posts batch 12",
+  "kind": "product_images",
+  "status": "failed",
+  "percent": 40,
+  "step": "3/7 rendering",
+  "steps_total": 7,
+  "outputs": [],
+  "started_at": "2026-09-21T10:00:00.000Z",
+  "updated_at": "2026-09-21T10:05:00.000Z",
+  "rev": 3,
+  "message": "Shopify 500",
+  "finished_at": "2026-09-21T10:31:00.000Z"
+}

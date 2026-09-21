@@ -135,6 +135,9 @@ export const CONTROL_UI_PORT = parseInt(
 export const CONTROL_UI_READONLY =
   process.env.CONTROL_UI_READONLY === '1' ||
   process.env.CONTROL_UI_READONLY === 'true';
+// Exact hostnames (comma-separated) allowed as workflow/artifact preview
+// links besides claude.ai — `.example.com`/`*.example.com` never match.
+export const CONTROL_UI_PREVIEW_HOSTS = process.env.CONTROL_UI_PREVIEW_HOSTS;
 export const CONTROL_UI_CREDENTIAL_FILE =
   process.env.CONTROL_UI_CREDENTIAL_FILE ||
   path.join(CONFIG_DIR, 'control-ui.json');
