@@ -264,6 +264,32 @@ Never add without asking; never add scratch or one-off artifacts. Only
 `CONTROL_UI_PREVIEW_HOSTS`. A finished workflow's preview can also be added
 from its card in the Workflows tab.
 
+## Browser jobs
+
+Some things the operator needs have no API — replying to a supplier on Alibaba,
+following an account on Instagram. For those, **propose a job and let the
+operator approve it**:
+
+```bash
+node scripts/browser-job.mjs propose --site instagram --kind follow --handle @someone
+node scripts/browser-job.mjs propose --site alibaba --kind reply --thread T123 --body "..."
+node scripts/browser-job.mjs list
+```
+
+What this is not: a way to browse. A job is a closed action with validated
+parameters, and it may only target something already on the operator's own
+allow-list — a proposal outside it is refused before it is written. The
+operator approves each one in the dashboard's Browser tab, where the full text
+of any message is shown before it is sent in their name.
+
+Never edit `scripts/browser-rules.mjs` or the rules files: the caps, the
+allow-lists and the autonomy switch are the operator's, and they are what bound
+this. If a job should be possible and isn't, say so and ask — do not widen the
+rules.
+
+Exit codes: 0 ok · 2 usage · 3 refused · 4 not found. A refusal is information,
+never a reason to work around the gate.
+
 ## Verification Baseline
 
 Pick tests by the touched layer. Common checks:

@@ -23,6 +23,7 @@ const ICONS = {
   plus: ['M12 5v14M5 12h14'],
   workflows: ['M4 6h16', 'M4 12h10', 'M4 18h6', 'M17 15l3 3-3 3'],
   artifacts: ['M4 4h16v16H4z', 'M4 9h16', 'M9 9v11'],
+  browser: ['M3 5h18v14H3z', 'M3 9h18', 'M7 7h.01M10 7h.01'],
   external: ['M14 4h6v6', 'M20 4l-9 9', 'M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6'],
   archive: ['M3 5h18v4H3z', 'M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9', 'M10 13h4'],
   refresh: ['M21 12a9 9 0 1 1-2.6-6.4', 'M21 3v6h-6'],

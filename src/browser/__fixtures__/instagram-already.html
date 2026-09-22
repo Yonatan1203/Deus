@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ourfriend</title></head>
+<body><h1>ourfriend</h1><button data-testid="following-button">Following</button>
+<script>
+  // A click here would UNFOLLOW. The fixture reports one so the test can prove
+  // the adapter never makes it.
+  document.querySelector('[data-testid="following-button"]')
+    .addEventListener('click', () => console.log('CLICKED'));
+</script></body></html>

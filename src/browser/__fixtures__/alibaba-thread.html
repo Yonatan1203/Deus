@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Thread T1</title></head>
+<body>
+  <div id="thread">Supplier: please confirm the MOQ.</div>
+  <textarea data-testid="reply-box"></textarea>
+  <button data-testid="send-reply">Send</button>
+  <script>
+    document.querySelector('[data-testid="send-reply"]').addEventListener('click', () => {
+      const body = document.querySelector('[data-testid="reply-box"]').value;
+      const d = document.createElement('div');
+      d.setAttribute('data-testid', 'message-sent');
+      d.textContent = body;
+      document.body.append(d);
+    });
+  </script>
+</body></html>

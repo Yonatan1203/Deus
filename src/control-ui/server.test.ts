@@ -3526,3 +3526,490 @@ describe('control-ui server — gmail', () => {
     expect(JSON.stringify(call)).not.toContain(SECRET);
   });
 });
+
+describe('control-ui server — browser jobs', () => {
+  const warnSpy = vi.mocked(logger.warn);
+  let configDir: string;
+  let bdir: string;
+  beforeEach(() => {
+    warnSpy.mockClear();
+    clock = Date.parse('2026-09-23T12:00:00.000Z'); // a Wednesday, outside quiet hours
+    configDir = path.join(root, 'cfg');
+    bdir = path.join(configDir, 'browser');
+  });
+  const j = (r: { text: string }) => JSON.parse(r.text);
+  const ev = (name: string) =>
+    warnSpy.mock.calls.filter(
+      (c) => (c[0] as { event?: string })?.event === name,
+    );
+  const bootB = (over: Partial<ControlDeps> = {}, extra = {}) =>
+    boot(
+      {
+        runtime: fakeRuntime().runtime,
+        store: fakeStore(root),
+        configDir,
+        ...over,
+      },
+      undefined,
+      undefined,
+      { browserPollMs: 60_000, browserSweepMs: 3_600_000, ...extra },
+    );
+  const rules = (over: Record<string, unknown> = {}) => ({
+    enabled: true,
+    autonomous: false,
+    weekly_cap: 25,
+    daily_cap: 4,
+    min_gap_seconds: 45,
+    jitter_seconds: 0,
+    quiet_hours: null,
+    allow: { kinds: ['instagram.follow'], handles: ['@ours'], threads: [] },
+    ...over,
+  });
+  const put = (
+    auth: Record<string, string>,
+    site: string,
+    body: object,
+    confirm?: string,
+  ) =>
+    request({
+      method: 'PUT',
+      path: `/api/v1/browser/sites/${site}/rules`,
+      headers: { ...auth, ...H, ...(confirm ? { 'X-Confirm': confirm } : {}) },
+      body: JSON.stringify(body),
+    });
+  const propose = (auth: Record<string, string>, body: object) =>
+    request({
+      method: 'POST',
+      path: '/api/v1/browser/jobs',
+      headers: { ...auth, ...H },
+      body: JSON.stringify(body),
+    });
+  const approve = (
+    auth: Record<string, string>,
+    id: string,
+    confirm?: string,
+  ) =>
+    request({
+      method: 'POST',
+      path: `/api/v1/browser/jobs/${id}/approve`,
+      headers: { ...auth, ...(confirm ? { 'X-Confirm': confirm } : {}) },
+    });
+  const rejectJob = (auth: Record<string, string>, id: string) =>
+    request({
+      method: 'POST',
+      path: `/api/v1/browser/jobs/${id}/reject`,
+      headers: { ...auth },
+    });
+  const onDisk = (id: string) =>
+    JSON.parse(
+      fs.readFileSync(path.join(bdir, 'jobs', `${id}.json`), 'utf-8'),
+    ) as Record<string, unknown>;
+
+  it('creates the dir, reports both sites disabled, and refuses without auth', async () => {
+    await bootB();
+    expect(fs.statSync(bdir).isDirectory()).toBe(true);
+    if (!IS_WINDOWS) expect(fs.statSync(bdir).mode & 0o777).toBe(0o700);
+    expect(
+      (await request({ method: 'GET', path: '/api/v1/browser' })).status,
+    ).toBe(401);
+    const { auth } = await login();
+    const r = j(
+      await request({ method: 'GET', path: '/api/v1/browser', headers: auth }),
+    );
+    expect(r.sites).toHaveLength(2);
+    expect(r.sites[0]).toMatchObject({
+      site: 'instagram',
+      counts: { day: 0, week: 0 },
+      execution: 'unavailable',
+    });
+    expect(r.sites[0].rules.enabled).toBe(false);
+    expect(r.jobs).toEqual([]);
+  });
+
+  it('saves rules, but only the typed site name earns autonomy', async () => {
+    await bootB();
+    const { auth } = await login();
+    expect((await put(auth, 'instagram', rules({ daily_cap: 0 }))).status).toBe(
+      400,
+    );
+    expect(
+      (await put(auth, 'instagram', rules({ daily_cap: 26 }))).status,
+    ).toBe(400);
+    expect((await put(auth, 'twitter', rules())).status).toBe(404);
+    expect((await put(auth, 'instagram', rules())).status).toBe(200);
+    expect(ev('control_ui_browser_rules_saved')[0][0]).toMatchObject({
+      site: 'instagram',
+      weekly_cap: 25,
+      autonomous: false,
+    });
+    // Autonomy without the typed confirmation is refused outright.
+    expect(
+      (await put(auth, 'instagram', rules({ autonomous: true }))).status,
+    ).toBe(428);
+    const okAuto = await put(
+      auth,
+      'instagram',
+      rules({ autonomous: true }),
+      'instagram',
+    );
+    expect(okAuto.status).toBe(200);
+    expect(j(okAuto).rules.autonomous).toBe(true);
+    const file = path.join(bdir, 'rules', 'instagram.json');
+    const rec = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<
+      string,
+      unknown
+    >;
+    expect(rec.autonomy_scope_sha256).toBeTruthy();
+    // A cap edited outside the dashboard keeps the stamp and loses the grant.
+    fs.writeFileSync(file, JSON.stringify({ ...rec, weekly_cap: 500 }));
+    const after = j(
+      await request({ method: 'GET', path: '/api/v1/browser', headers: auth }),
+    );
+    expect(after.sites[0].rules.autonomous).toBe(false);
+  });
+
+  it('sets status and provenance itself, and enforces the allow-list at propose time', async () => {
+    await bootB();
+    const { auth } = await login();
+    await put(auth, 'instagram', rules());
+    expect(
+      (
+        await propose(auth, {
+          kind: 'instagram.dm',
+          params: { handle: '@ours' },
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await propose(auth, {
+          kind: 'instagram.follow',
+          params: { handle: '@stranger' },
+        })
+      ).status,
+    ).toBe(400);
+    const r = await propose(auth, {
+      kind: 'instagram.follow',
+      params: { handle: '@OURS' },
+      status: 'approved', // ignored
+      proposed_by: 'session:someone-else', // ignored
+      proposed_at: new Date(clock + 3_600_000).toISOString(), // ignored
+    });
+    expect(r.status).toBe(201);
+    const { id } = j(r);
+    const rec = onDisk(id);
+    expect(rec.status).toBe('proposed');
+    expect(String(rec.proposed_by)).toMatch(/^session:[0-9a-f]+$/);
+    expect(Date.parse(String(rec.proposed_at))).toBeLessThanOrEqual(clock);
+    expect(ev('control_ui_browser_job_proposed')[0][0]).toMatchObject({
+      site: 'instagram',
+      kind: 'instagram.follow',
+    });
+  });
+
+  it('approves with the typed id, records the decision, and stops at sandbox-unavailable without spawning anything', async () => {
+    const spawn = vi.fn();
+    await bootB({}, { hostCli: { run: spawn } });
+    const { auth } = await login();
+    await put(auth, 'instagram', rules());
+    const { id } = j(
+      await propose(auth, {
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+      }),
+    );
+    expect((await approve(auth, id)).status).toBe(428);
+    expect((await approve(auth, id, 'bj-000000000000')).status).toBe(428);
+    const ok = await approve(auth, id, id);
+    expect(ok.status).toBe(200);
+    expect(j(ok)).toMatchObject({
+      id,
+      status: 'blocked',
+      reason: 'sandbox-unavailable',
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    const rec = onDisk(id);
+    expect(rec).toMatchObject({
+      status: 'blocked',
+      reason: 'sandbox-unavailable',
+    });
+    expect(String(rec.approved_by)).toMatch(/^session:/);
+    expect(rec.params_sha256).toBeTruthy();
+    expect(rec.rules_sha256).toBeTruthy();
+    expect(rec.approved_rev).toBe(1);
+    const audit = ev('control_ui_browser_job_approved')[0][0];
+    expect(audit).toMatchObject({ id, auto: false });
+    expect(JSON.stringify(audit)).not.toContain('@ours');
+    // Approving twice is refused: the job is no longer a proposal.
+    expect((await approve(auth, id, id)).status).toBe(409);
+  });
+
+  it('rejects only a job that is still waiting, and says so otherwise', async () => {
+    await bootB();
+    const { auth } = await login();
+    await put(auth, 'instagram', rules());
+    const { id } = j(
+      await propose(auth, {
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+      }),
+    );
+    expect((await rejectJob(auth, id)).status).toBe(204);
+    expect(onDisk(id)).toMatchObject({ status: 'rejected' });
+    // Rejecting again must not rewrite a terminal record. `running` counts
+    // toward the caps, so in E2 an ungated reject would silently decrement
+    // them and erase the audit of an action that may already have happened.
+    const again = await rejectJob(auth, id);
+    expect(again.status).toBe(409);
+    expect(onDisk(id)).toMatchObject({ status: 'rejected', rev: 2 });
+  });
+
+  it('does not report an approval it could not write', async () => {
+    await bootB();
+    const { auth } = await login();
+    await put(auth, 'instagram', rules());
+    const { id } = j(
+      await propose(auth, {
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+      }),
+    );
+    // The operator typed the id to get here. If the record cannot land, the
+    // answer must not be "approved" — the job would stay proposed and the
+    // poller would re-select it on every tick.
+    //
+    // The fault is injected at the rename rather than by removing write
+    // permission, because these tests run as root and root ignores the mode
+    // bits: a chmod here passes silently and proves nothing.
+    const real = fs.renameSync;
+    const spy = vi
+      .spyOn(fs, 'renameSync')
+      .mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+        if (String(to).includes(`${path.sep}jobs${path.sep}`))
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        return real(from, to);
+      });
+    try {
+      const r = await approve(auth, id, id);
+      expect(r.status).toBe(503);
+      expect(onDisk(id)).toMatchObject({ status: 'proposed' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refuses an approval the caps or the attention marker would not allow', async () => {
+    await bootB();
+    const { auth } = await login();
+    await put(auth, 'instagram', rules({ daily_cap: 1, weekly_cap: 25 }));
+    const first = j(
+      await propose(auth, {
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+      }),
+    );
+    // A prior action today fills the cap.
+    fs.writeFileSync(
+      path.join(bdir, 'jobs', 'bj-aaaaaaaaaaaa.json'),
+      JSON.stringify({
+        v: 1,
+        id: 'bj-aaaaaaaaaaaa',
+        site: 'instagram',
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+        status: 'done',
+        proposed_by: 'cli',
+        proposed_at: new Date(clock - 7_200_000).toISOString(),
+        finished_at: new Date(clock - 7_200_000).toISOString(),
+        rev: 2,
+      }),
+    );
+    const capped = await approve(auth, first.id, first.id);
+    expect(capped.status).toBe(409);
+    expect(j(capped).error).toBe('daily-cap');
+    // An unreadable record makes the count inexact, and an inexact count refuses.
+    fs.writeFileSync(
+      path.join(bdir, 'jobs', 'bj-bbbbbbbbbbbb.json'),
+      '{"v":1,',
+    );
+    await put(auth, 'instagram', rules({ daily_cap: 4, weekly_cap: 25 }));
+    const second = j(
+      await propose(auth, {
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+      }),
+    );
+    expect(j(await approve(auth, second.id, second.id)).error).toBe(
+      'counts-unavailable',
+    );
+    fs.unlinkSync(path.join(bdir, 'jobs', 'bj-bbbbbbbbbbbb.json'));
+    // The attention marker stops everything for that site.
+    fs.mkdirSync(path.join(bdir, 'attention'), { recursive: true });
+    fs.writeFileSync(path.join(bdir, 'attention', 'instagram'), 'challenge');
+    expect(j(await approve(auth, second.id, second.id)).error).toBe(
+      'needs-attention',
+    );
+    const cleared = await request({
+      method: 'POST',
+      path: '/api/v1/browser/sites/instagram/attention/clear',
+      headers: { ...auth, 'X-Confirm': 'instagram' },
+    });
+    expect(cleared.status).toBe(204);
+    expect(j(await approve(auth, second.id, second.id))).toMatchObject({
+      status: 'blocked',
+    });
+  });
+
+  it('rejects, expires stale proposals at read time, and withholds params in read-only', async () => {
+    await bootB();
+    const { auth } = await login();
+    await put(auth, 'instagram', rules());
+    const { id } = j(
+      await propose(auth, {
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+      }),
+    );
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: `/api/v1/browser/jobs/${id}/reject`,
+          headers: auth,
+        })
+      ).status,
+    ).toBe(204);
+    expect(onDisk(id).status).toBe('rejected');
+    expect(ev('control_ui_browser_job_rejected')).toHaveLength(1);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/browser/jobs/nope/reject',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    // A proposal older than a day lists as expired without its file changing.
+    const old = j(
+      await propose(auth, {
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+      }),
+    );
+    const file = path.join(bdir, 'jobs', `${old.id}.json`);
+    const rec = onDisk(old.id);
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        ...rec,
+        proposed_at: new Date(clock - 25 * 3_600_000).toISOString(),
+      }),
+    );
+    const listed = j(
+      await request({ method: 'GET', path: '/api/v1/browser', headers: auth }),
+    );
+    expect(
+      listed.jobs.find((x: { id: string }) => x.id === old.id).status,
+    ).toBe('expired');
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8')).status).toBe('proposed');
+    expect(j(await approve(auth, old.id, old.id)).error).toBe('expired');
+    // Read-only: the list answers, the params do not.
+    await new Promise<void>((r) => server.close(() => r()));
+    await bootB({ readOnly: true });
+    const ro = await login();
+    const body = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/browser',
+        headers: ro.auth,
+      }),
+    );
+    expect(body.jobs.length).toBeGreaterThan(0);
+    for (const job of body.jobs) {
+      expect(job).not.toHaveProperty('params');
+      expect(job).not.toHaveProperty('result');
+    }
+    expect((await put(ro.auth, 'instagram', rules())).status).toBe(403);
+    expect(
+      (
+        await propose(ro.auth, {
+          kind: 'instagram.follow',
+          params: { handle: '@ours' },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await approve(ro.auth, id, id)).status).toBe(403);
+  });
+
+  it('auto-approves a follow only with autonomy on, a client connected, and never a reply', async () => {
+    await bootB({}, { browserPollMs: 40 });
+    const { auth, cookie } = await login();
+    await put(auth, 'instagram', rules({ autonomous: true }), 'instagram');
+    await put(
+      auth,
+      'alibaba',
+      {
+        enabled: true,
+        autonomous: true,
+        weekly_cap: 10,
+        daily_cap: 2,
+        min_gap_seconds: 15,
+        jitter_seconds: 0,
+        quiet_hours: null,
+        allow: { kinds: ['alibaba.reply'], handles: [], threads: ['T1'] },
+      },
+      'alibaba',
+    );
+    const follow = j(
+      await propose(auth, {
+        kind: 'instagram.follow',
+        params: { handle: '@ours' },
+      }),
+    );
+    const reply = j(
+      await propose(auth, {
+        kind: 'alibaba.reply',
+        params: { thread_id: 'T1', body: 'hello' },
+      }),
+    );
+    // No client connected: the poller does nothing at all.
+    await new Promise((r) => setTimeout(r, 120));
+    expect(onDisk(follow.id).status).toBe('proposed');
+    // With a client, the follow is approved and the reply never is.
+    const { ticket } = JSON.parse(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/events/ticket',
+          headers: auth,
+        })
+      ).text,
+    );
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: `/api/v1/events?ticket=${ticket}`,
+          headers: { Cookie: cookie },
+        },
+        () => {
+          setTimeout(() => {
+            req.destroy();
+            resolve();
+          }, 300);
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(onDisk(follow.id).status).toBe('blocked');
+    expect(onDisk(follow.id).approved_by).toBe('rules');
+    expect(onDisk(reply.id).status).toBe('proposed');
+    const auto = ev('control_ui_browser_job_approved').filter(
+      (c) => (c[0] as { auto?: boolean }).auto,
+    );
+    expect(auto.length).toBeGreaterThanOrEqual(1);
+  });
+});

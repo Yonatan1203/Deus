@@ -209,8 +209,11 @@ export function withLock<T>(
   dir: string,
   fn: () => T,
   now: () => number = Date.now,
+  // The lock is named after the file it guards: other registries live in their
+  // own directories and must not serialise behind (or litter) this one's name.
+  lockFor: string = REGISTRY_FILE,
 ): T {
-  const lock = path.join(dir, `${REGISTRY_FILE}.lock`);
+  const lock = path.join(dir, `${lockFor}.lock`);
   const nonce = crypto.randomBytes(8).toString('hex');
   const acquire = (): boolean => {
     try {

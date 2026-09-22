@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ourfriend</title></head>
+<body>
+  <h1>ourfriend</h1>
+  <button data-testid="follow-button">Follow</button>
+  <script>
+    // Mimics the real page: the control swaps once the follow lands.
+    document.querySelector('[data-testid="follow-button"]').addEventListener('click', (e) => {
+      const b = document.createElement('button');
+      b.setAttribute('data-testid', 'following-button');
+      b.textContent = 'Following';
+      e.target.replaceWith(b);
+    });
+  </script>
+</body></html>

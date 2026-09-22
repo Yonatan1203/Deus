@@ -472,3 +472,12 @@ body.oauth-done { display: grid; place-items: center; min-height: 100dvh; paddin
 .oauth-card { display: grid; gap: 12px; max-width: 480px; padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .oauth-card h1 { font-size: 20px; letter-spacing: -0.01em; overflow-wrap: anywhere; }
 .oauth-card .button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 16px; border-radius: 8px; background: var(--text); color: var(--bg); font-weight: 600; text-decoration: none; width: fit-content; }
+
+/* Phase E1: Browser jobs */
+.section-title { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin-top: 20px; }
+.attention { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); }
+.attention p { color: var(--text); font-size: 14px; }
+.small-note { font-size: 12px; }
+.job-params { display: grid; gap: 2px; margin-top: 6px; font-size: 14px; }
+.job-params p { overflow-wrap: anywhere; }
+.row.job { grid-template-columns: 1fr auto; align-items: start; }
