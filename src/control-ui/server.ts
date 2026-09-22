@@ -68,6 +68,25 @@ import type { LogEntry, LogRing } from '../log-ring.js';
 import { createHostCli, type HostCli } from './api/host-cli.js';
 import { parsePreviewHosts } from './api/allowed-url.js';
 import {
+  capCheck,
+  clearAttention,
+  countActions,
+  getAttention,
+  JOB_ID_RE,
+  lastActionAt,
+  listJobs as listBrowserJobs,
+  newJobId,
+  paramsHash,
+  readJob,
+  readRules,
+  sweepJobs,
+  validateJob as validateBrowserJob,
+  writeJob,
+  writeRules,
+  type JobRecord,
+} from './api/browser-store.js';
+import { getSite, JOB_KINDS, SITES, type JobKind } from '../browser/sites.js';
+import {
   callbackPage,
   createGmailAuth,
   dirState as gmailDirState,
@@ -191,6 +210,8 @@ export interface ControlServerOptions {
   claudePollMs?: number;
   workflowDebounceMs?: number;
   workflowPollMs?: number;
+  browserPollMs?: number;
+  browserSweepMs?: number;
   /** Construction-only test hooks for the Gmail flow (never from env or config). */
   gmailAuthOverrides?: Pick<
     GmailAuthOptions,
@@ -232,6 +253,10 @@ const WORKFLOW_WATCH_DEBOUNCE_MS = 500;
 const ARTIFACT_READS_PER_MIN = 60;
 const ARTIFACT_WRITES_PER_MIN = 6;
 const GMAIL_MUTATIONS_PER_MIN = 6;
+const BROWSER_READS_PER_MIN = 60;
+const BROWSER_MUTATIONS_PER_MIN = 12;
+const BROWSER_POLL_MS = 30_000;
+const BROWSER_SWEEP_MS = 60 * 60_000;
 const GMAIL_CALLBACK_FAILS_PER_MIN = 10;
 const GMAIL_KEYS_BODY_MAX = 16 * 1024;
 const OAUTH_DONE_FALLBACK =
@@ -398,6 +423,11 @@ export function createControlServer(
     60_000,
   );
   const gmailLimiter = createRateLimiter(GMAIL_MUTATIONS_PER_MIN, 60_000);
+  const browserReadLimiter = createRateLimiter(BROWSER_READS_PER_MIN, 60_000);
+  const browserWriteLimiter = createRateLimiter(
+    BROWSER_MUTATIONS_PER_MIN,
+    60_000,
+  );
   const gmailCallbackLimiter = createRateLimiter(
     GMAIL_CALLBACK_FAILS_PER_MIN,
     60_000,
@@ -1974,6 +2004,369 @@ export function createControlServer(
     ctx.res.end();
   });
 
+  // Browser jobs: the control plane for acting on sites that have no API.
+  // This phase cannot act — there is no runner and no session credential here,
+  // so an approval records the operator's decision and the job stops at
+  // `sandbox-unavailable`. What it does hold is the part worth getting right
+  // before anything can click: the operator's rules and budgets, the enforced
+  // allow-lists, and an approvals queue where a proposal drafted from a
+  // supplier's own words is read by a human before it goes anywhere.
+  const browserDir = deps.configDir
+    ? path.join(deps.configDir, 'browser')
+    : null;
+  if (browserDir) {
+    try {
+      fs.mkdirSync(browserDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      logger.warn(
+        { err: (err as Error).message },
+        'Control UI could not create the browser job dir',
+      );
+    }
+  }
+  const browserAudit = (
+    ctx: RequestContext,
+    event: string,
+    extra: Record<string, unknown> = {},
+  ) =>
+    logger.warn(
+      {
+        event,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+        ...extra,
+      },
+      'Control UI browser jobs',
+    );
+  const siteParam = (ctx: RequestContext) => getSite(ctx.params.site);
+  // Takes the directory rather than closing over it: TypeScript cannot carry a
+  // `string | null` narrowing across the closure, and the only caller,
+  // GET /api/v1/browser, has already answered 503 when it is missing.
+  const browserState = (dir: string) => {
+    const at = now();
+    return SITES.map((site) => {
+      const view = readRules(dir, site.id);
+      const counts = countActions(dir, site.id, at);
+      return {
+        site: site.id,
+        rules: view.rules,
+        invalid: view.invalid ?? false,
+        reason: view.reason,
+        counts: counts.counts,
+        counts_exact: counts.exact,
+        attention: getAttention(dir, site.id),
+        execution: 'unavailable' as const,
+      };
+    });
+  };
+  const browserJobsPayload = (readOnly: boolean) => {
+    if (!browserDir) return { jobs: [], scanned: 0, truncated: 0 };
+    const r = listBrowserJobs(browserDir, { readOnly, now: now });
+    return 'error' in r ? { jobs: [], scanned: 0, truncated: 0 } : r;
+  };
+  router.add('GET', '/api/v1/browser', (ctx) => {
+    if (browserReadLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many requests' });
+    if (!browserDir)
+      return writeJson(ctx.res, 503, { error: 'browser registry unavailable' });
+    writeJson(ctx.res, 200, {
+      sites: browserState(browserDir),
+      ...browserJobsPayload(deps.readOnly),
+    });
+  });
+  router.add('PUT', '/api/v1/browser/sites/:site/rules', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    const site = siteParam(ctx);
+    if (!site) return writeJson(ctx.res, 404, { error: 'unknown site' });
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    // Turning autonomy on is the one thing here that needs the operator's own
+    // hand: the typed site name is what earns the confirmation stamp, and the
+    // stamp is bound to the caps and allow-list it was given for.
+    const wantsAutonomy = body.autonomous === true;
+    if (wantsAutonomy && header(ctx.req, 'x-confirm') !== site.id)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (browserWriteLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (!browserDir)
+      return writeJson(ctx.res, 503, { error: 'browser registry unavailable' });
+    const r = writeRules(browserDir, site.id, body, {
+      confirmAutonomy: wantsAutonomy,
+      now: now,
+    });
+    if (!r.ok)
+      return writeJson(ctx.res, r.reason === 'busy' ? 409 : 400, {
+        error: r.reason === 'bad-schema' ? 'invalid rules' : r.reason,
+      });
+    browserAudit(ctx, 'control_ui_browser_rules_saved', {
+      site: site.id,
+      enabled: r.rules.enabled,
+      autonomous: r.rules.autonomous,
+      weekly_cap: r.rules.weekly_cap,
+      daily_cap: r.rules.daily_cap,
+    });
+    writeJson(ctx.res, 200, { rules: r.rules });
+  });
+  router.add('POST', '/api/v1/browser/sites/:site/attention/clear', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    const site = siteParam(ctx);
+    if (!site) return writeJson(ctx.res, 404, { error: 'unknown site' });
+    if (header(ctx.req, 'x-confirm') !== site.id)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (browserWriteLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (!browserDir)
+      return writeJson(ctx.res, 503, { error: 'browser registry unavailable' });
+    clearAttention(browserDir, site.id);
+    browserAudit(ctx, 'control_ui_browser_attention_cleared', {
+      site: site.id,
+    });
+    ctx.res.writeHead(204);
+    ctx.res.end();
+  });
+  router.add('POST', '/api/v1/browser/jobs', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const kind = body.kind;
+    if (
+      typeof kind !== 'string' ||
+      !(JOB_KINDS as readonly string[]).includes(kind)
+    )
+      return writeJson(ctx.res, 400, { error: 'unknown kind' });
+    const site = getSite(String(kind).split('.')[0]);
+    if (!site) return writeJson(ctx.res, 400, { error: 'unknown kind' });
+    if (browserWriteLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (!browserDir)
+      return writeJson(ctx.res, 503, { error: 'browser registry unavailable' });
+    // Status, provenance and the timestamp come from here, never from the
+    // body: attribution the operator cannot trust is worse than none.
+    const params = (body.params ?? {}) as Record<string, unknown>;
+    const draft: JobRecord = {
+      v: 1,
+      id: newJobId(),
+      site: site.id,
+      kind: kind as JobKind,
+      params: Object.fromEntries(
+        Object.entries(params).filter(([, v]) => typeof v === 'string'),
+      ) as Record<string, string>,
+      status: 'proposed',
+      proposed_by: `session:${ctx.session?.shortId ?? 'unknown'}`,
+      proposed_at: new Date(now()).toISOString(),
+      rev: 1,
+    };
+    const v = validateBrowserJob(draft, draft.id, now);
+    if (!v.ok) return writeJson(ctx.res, 400, { error: v.reason });
+    const view = readRules(browserDir, site.id);
+    const gate = capCheck(
+      view,
+      v.job,
+      countActions(browserDir, site.id, now()),
+      now(),
+      { attention: getAttention(browserDir, site.id) },
+    );
+    // Only the allow-list is checked at propose time: caps and pacing are the
+    // approval's business, and a proposal refused for being early is noise.
+    if (
+      !gate.ok &&
+      (gate.reason === 'not-allowed' ||
+        gate.reason === 'rules-invalid' ||
+        gate.reason === 'disabled')
+    )
+      return writeJson(ctx.res, 400, { error: gate.reason });
+    if (!writeJob(browserDir, v.job).ok)
+      return writeJson(ctx.res, 503, { error: 'browser registry unavailable' });
+    browserAudit(ctx, 'control_ui_browser_job_proposed', {
+      site: site.id,
+      kind,
+      proposed_by: v.job.proposed_by,
+    });
+    hub.broadcast('browser', browserJobsPayload(deps.readOnly));
+    writeJson(ctx.res, 201, { id: v.job.id });
+  });
+  const approveJob = (
+    job: JobRecord,
+    by: string,
+    at: number,
+  ): { status: number; body: Record<string, unknown> } => {
+    if (!browserDir)
+      return { status: 503, body: { error: 'browser registry unavailable' } };
+    const view = readRules(browserDir, job.site);
+    const gate = capCheck(
+      view,
+      job,
+      countActions(browserDir, job.site, at),
+      at,
+      {
+        // Thunk, not a value: every refusal above the gap test short-circuits
+        // the directory walk instead of computing it and discarding it.
+        lastAt: () => lastActionAt(browserDir, job.site, at),
+        attention: getAttention(browserDir, job.site),
+      },
+    );
+    if (!gate.ok) return { status: 409, body: { error: gate.reason } };
+    const approved: JobRecord = {
+      ...job,
+      status: 'blocked',
+      approved_by: by,
+      approved_at: new Date(at).toISOString(),
+      approved_rev: job.rev,
+      params_sha256: paramsHash(job.params),
+      rules_mtime: view.mtimeMs,
+      rules_sha256: view.sha256,
+      // E1 has no runner: the approval is real and recorded, the action is not
+      // possible yet, and the record says exactly that rather than pretending.
+      reason: 'sandbox-unavailable',
+      finished_at: new Date(at).toISOString(),
+      rev: job.rev + 1,
+    };
+    // The operator typed the job id to get here, so "approved" must not be
+    // reported unless the record actually landed: the job would stay
+    // `proposed` and the poller would re-select it on every tick. Matches the
+    // propose route, which checks the identical call.
+    if (!writeJob(browserDir, approved).ok)
+      return { status: 503, body: { error: 'browser registry unavailable' } };
+    return {
+      status: 200,
+      body: { id: job.id, status: approved.status, reason: approved.reason },
+    };
+  };
+  router.add('POST', '/api/v1/browser/jobs/:id/approve', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    const id = ctx.params.id;
+    if (!JOB_ID_RE.test(id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    if (header(ctx.req, 'x-confirm') !== id)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (browserWriteLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (!browserDir)
+      return writeJson(ctx.res, 503, { error: 'browser registry unavailable' });
+    const r = readJob(browserDir, id, now);
+    if (!r.ok) return writeJson(ctx.res, 404, { error: 'not found' });
+    // An expired proposal answers with the closed reason the gate uses, so the
+    // tab and the CLI see one vocabulary rather than two.
+    if (r.job.status === 'expired')
+      return writeJson(ctx.res, 409, { error: 'expired' });
+    if (r.job.status !== 'proposed')
+      return writeJson(ctx.res, 409, { error: `job is ${r.job.status}` });
+    const out = approveJob(
+      r.job,
+      `session:${ctx.session?.shortId ?? 'unknown'}`,
+      now(),
+    );
+    browserAudit(ctx, 'control_ui_browser_job_approved', {
+      id,
+      site: r.job.site,
+      kind: r.job.kind,
+      auto: false,
+      outcome: out.status === 200 ? out.body.reason : out.body.error,
+    });
+    hub.broadcast('browser', browserJobsPayload(deps.readOnly));
+    writeJson(ctx.res, out.status, out.body);
+  });
+  router.add('POST', '/api/v1/browser/jobs/:id/reject', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    const id = ctx.params.id;
+    if (!JOB_ID_RE.test(id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    if (browserWriteLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many changes' });
+    if (!browserDir)
+      return writeJson(ctx.res, 503, { error: 'browser registry unavailable' });
+    const r = readJob(browserDir, id, now);
+    if (!r.ok) return writeJson(ctx.res, 404, { error: 'not found' });
+    // Only a job still waiting can be rejected, matching approve. Without this
+    // any job in any state could be rewritten to `rejected`: harmless while
+    // nothing runs, but `running` counts toward the caps, so in E2 rejecting a
+    // running job would quietly decrement them and erase the audit of an
+    // action that may already have happened.
+    if (r.job.status !== 'proposed')
+      return writeJson(ctx.res, 409, { error: 'job is not waiting' });
+    if (
+      !writeJob(browserDir, {
+        ...r.job,
+        status: 'rejected',
+        finished_at: new Date(now()).toISOString(),
+        rev: r.job.rev + 1,
+      }).ok
+    )
+      return writeJson(ctx.res, 503, {
+        error: 'browser registry unavailable',
+      });
+    browserAudit(ctx, 'control_ui_browser_job_rejected', {
+      id,
+      site: r.job.site,
+    });
+    hub.broadcast('browser', browserJobsPayload(deps.readOnly));
+    ctx.res.writeHead(204);
+    ctx.res.end();
+  });
+
+  // Auto-approval, when the operator has turned it on for a site: at most one
+  // job per tick, only `instagram.follow` (words in the operator's name and an
+  // inbox read always wait for a human), and only while someone is actually at
+  // the dashboard — the same client-gated shape as claudePoll. It re-runs the
+  // full gate, so it can approve nothing the operator's own rules do not.
+  const browserPoll = setInterval(() => {
+    if (!browserDir || deps.readOnly || hub.clientCount() === 0) return;
+    const at = now();
+    let changed = false;
+    for (const site of SITES) {
+      const view = readRules(browserDir, site.id);
+      if (!view.rules.enabled || !view.rules.autonomous) continue;
+      const list = listBrowserJobs(browserDir, { readOnly: false, now });
+      if ('error' in list) continue;
+      // Last match, not first: the listing is newest-first, so taking the
+      // first would approve the newest proposal every tick and starve older
+      // ones behind any steady stream of new ones. Oldest-first makes the
+      // queue fair and drains it in the order the operator sees it.
+      // (`findLast` would read better but needs a newer lib target.)
+      // Bounded honesty: `listJobs` slices before this runs, so this is the
+      // oldest of the newest 200, not the globally oldest. Harmless while the
+      // sweeper keeps the directory small and nothing executes; if E2 ever
+      // faces a backlog deeper than that slice, starvation returns here.
+      const waiting = list.jobs.filter(
+        (j) =>
+          j.site === site.id &&
+          j.status === 'proposed' &&
+          j.kind === 'instagram.follow',
+      );
+      const next = waiting[waiting.length - 1];
+      if (!next) continue;
+      const r = readJob(browserDir, next.id, now);
+      if (!r.ok) continue;
+      const out = approveJob(r.job, 'rules', at);
+      if (out.status !== 200) continue;
+      changed = true;
+      logger.warn(
+        {
+          event: 'control_ui_browser_job_approved',
+          id: r.job.id,
+          site: site.id,
+          kind: r.job.kind,
+          auto: true,
+          rules_mtime: view.mtimeMs,
+          outcome: out.body.reason,
+        },
+        'Control UI browser jobs',
+      );
+    }
+    if (changed) hub.broadcast('browser', browserJobsPayload(false));
+  }, opts.browserPollMs ?? BROWSER_POLL_MS);
+  browserPoll.unref();
+  // Pruning is the server's own business, never a read's side effect: a
+  // read-only client listing jobs must not delete anything.
+  const browserSweep = setInterval(() => {
+    if (!browserDir || deps.readOnly) return;
+    sweepJobs(browserDir, now());
+  }, opts.browserSweepMs ?? BROWSER_SWEEP_MS);
+  browserSweep.unref();
+
   // Artifacts registry: one operator-curated file under CONFIG_DIR/control-ui.
   // The read-time URL check inside listArtifacts is the security control for
   // every href the tab renders; the write-time check only keeps unshowable
@@ -2248,6 +2641,10 @@ export function createControlServer(
     artifactWriteLimiter.dispose();
     gmailLimiter.dispose();
     gmailCallbackLimiter.dispose();
+    browserReadLimiter.dispose();
+    browserWriteLimiter.dispose();
+    clearInterval(browserPoll);
+    clearInterval(browserSweep);
     if (logTimer) clearInterval(logTimer);
     if (unsubscribeLog) unsubscribeLog();
     configLimiter.dispose();

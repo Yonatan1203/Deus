@@ -1,5 +1,46 @@
 # Known Limitations
 
+## Browser Job Approval Drains Only the Newest Page of the Queue
+
+When a site is set to run without asking, the approver takes one waiting job per
+site per cycle, and it takes the oldest one so a steady stream of new proposals
+cannot starve older ones. That fairness is bounded: it picks the oldest of the
+most recent 200 jobs the listing returns, not the globally oldest.
+
+This is unreachable today. Nothing executes in this phase, and the sweeper keeps
+the job directory far below that size by pruning expired proposals after a week
+and finished records after 30 days. It matters only if a future execution phase
+ever faces a backlog deeper than one page, which is where starvation would come
+back. The selection site in `src/control-ui/server.ts` carries the same note.
+
+## Browser Autonomy Survives a Hand-Edited Pause
+
+Browser jobs normally wait for the operator to approve them by typing the job
+id. One narrow path does not: with `autonomous: true`, Instagram follows inside
+the caps run without a per-action tick. That flag is only honoured when the
+rules record also carries a confirmation hash covering the whole record, which
+only the dashboard's rules route writes and only behind the typed site name.
+
+**The limitation:** pausing a site by hand-editing `enabled: false` in
+`CONFIG_DIR/browser/rules/<site>.json` makes autonomy inert, but editing the
+field back restores the record byte-for-byte, so the hash matches again and
+autonomy resumes at the previously confirmed scope. A counter or nonce outside
+the hashed scope would not close this, because the same actor could write that
+too.
+
+**What this is not.** Every writer in the system destroys the confirmation —
+the control server's own writer deletes both confirmation fields from any input,
+and `scripts/browser-rules.mjs` rebuilds the record without them — so pausing a
+site through any supported path does end autonomy until it is re-confirmed.
+Only a raw file edit that preserves both fields can round-trip a pause, and that
+requires write access to `CONFIG_DIR` at the control server's own uid. The
+mechanism is designed to stop content-driven mistakes, such as a session
+proposing whatever a supplier's message asked for. It is not designed to stop a
+compromised same-uid session, which nothing at one uid can stop.
+
+Full reasoning in
+[decisions/browser-autonomy-confirmation-hashing.md](decisions/browser-autonomy-confirmation-hashing.md).
+
 ## Backend Parity Is In Progress
 
 Deus now has a backend-neutral host runtime with per-group and per-task backend selection, but Claude remains the compatibility baseline and default backend. The new OpenAI backend is opt-in and still chasing full parity with the long-established Claude path.

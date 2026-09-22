@@ -700,3 +700,131 @@ Deviations logged during Phase D:
 - The capture shows the connected state from fixture files; the consent
   flow itself is exercised only in tests (no real Google call runs anywhere
   in the repo).
+
+## Phase E1 — verification record (browser job control plane)
+
+Plan: `docs/superpowers/plans/2026-09-21-browser-agent-phaseE1.md`; spec:
+`docs/superpowers/specs/2026-09-21-browser-agent-design.md`. Plan-reviewer
+rounds 1–3 and threat-modeler rounds 1–3 on this artifact, both ending SHIP,
+after a **re-scope**: the original single Phase E carried the privileged
+execution model too, and three threat rounds on it did not converge (each fix
+moved the problem — ending at the finding that the runner's own code sits
+under `/root`, 0700, where a lower-uid child cannot load it). That is the
+round-count checkpoint in `plan-review-rules.md`; the disputed component is
+Phase E2, scoped in the plan's final section and tracked as its own task.
+
+What shipped:
+
+- `src/browser/sites.ts` — the closed site and kind tables, and `urlFor`, the
+  only place a navigable URL is built: origin always from the table, each
+  segment encoded on its own, dot-only segments refused, and the **same**
+  handle normalisation the allow-list membership test uses.
+- `src/control-ui/api/browser-store.ts` — rules with weekly **and** daily caps
+  (the operator's plan is written in weeks; a weekly figure in a daily field
+  would have allowed roughly seven times the intended volume), enforced
+  allow-lists, `capCheck` with a closed refusal enum, and `countActions`,
+  which walks the jobs directory itself and returns `{ counts, exact }` —
+  counting from the UI's bounded listing would have failed *open*, since a
+  truncated list reads as headroom and terminal records are what fall out of
+  it first. `autonomous: true` is honoured only with an `autonomy_confirmed_at`
+  **and** an `autonomy_scope_sha256` over the whole validated record minus
+  those two fields, so a confirmation cannot survive the caps or allow-list
+  being edited afterwards.
+- `scripts/browser-job.mjs` (session-facing: writes `proposed` and nothing
+  else, refuses a target outside the operator's allow-list) and
+  `scripts/browser-rules.mjs` (**operator tool, deliberately not in AGENTS.md**
+  — it can write caps and lists, and cannot make autonomy effective).
+- `src/browser/adapters/{types,instagram,alibaba}.ts` — one adapter per site
+  behind one interface, selectors in a single object each. **Adapters never
+  navigate**: the engine hands them a page, so "never leaves the site" is
+  structural and the fixture tests need no retargeting seam for E2 to inherit.
+- `server.ts` — `GET /api/v1/browser`, `PUT …/sites/:site/rules` (typed site
+  to enable autonomy, the only writer of the confirmation), `POST
+  …/attention/clear` (typed site), `POST …/jobs` (status, provenance and
+  timestamp set server-side, ignored from the body), `POST …/jobs/:id/approve`
+  (typed id) and `…/reject`; a client-gated auto-approve poller that approves
+  at most one `instagram.follow` per tick per site and never an `alibaba.*`;
+  a sweep on its own timer that prunes expired proposals after a week and
+  terminal records after 30 days; `browser` SSE frames through the same
+  projection the REST list uses.
+- `web/control/views/browser.js` — per-site cards with the caps and today's
+  and this week's counts, the approvals queue (**the full body of a reply is
+  rendered in the confirm dialog before it can be approved**), the run log,
+  and an attention banner with a typed clear.
+- Convention: `AGENTS.md` § Browser jobs, plus a line in `CLAUDE.md`.
+
+**This phase cannot act.** There is no runner, no session credential and no
+spawn: approving records the decision and marks the job
+`blocked: sandbox-unavailable`, and the tab says so on every card.
+
+**No browser launches on any production path.** The adapter tests do launch a
+sandbox-disabled Chromium against local fixture HTML over loopback, which the
+verification gate drove and confirmed; the shipped code imports Playwright as a
+type only, and the emitted JavaScript carries no reference to it.
+
+Verification (worktree, 2026-09-22):
+
+- `npx vitest run` — 154 files, 2 463 tests green, whole repo. The scoped run
+  (`src/control-ui src/browser src/channels/lifecycle.test.ts scripts/tests`)
+  is 34 files, 287 tests. New: `browser-store.test.ts`
+  (20, including the two discriminating autonomy cases — a hand-written
+  `autonomous: true` reads false, and a confirmation kept across a cap edit
+  reads false — and the counter reporting `exact: false` rather than a short
+  count, and the two performance invariants behind the pacing lookup — that it
+  stops at the week boundary rather than reading the whole directory, and that
+  it is not consulted at all when a refusal above the gap test already
+  decided), `scripts/tests/browser-cli.test.ts` (7, the CLI/store agreement),
+  `src/browser/adapters/adapters.test.ts` (8, against real Chromium and local
+  fixtures: all five blocked shapes, and already-following proven not to click
+  via the fixture's own console), and a "browser jobs" describe in
+  `server.test.ts` (9, including an injected spawn spy asserted never called,
+  and a poller tick that approves a follow while leaving a supplier reply
+  waiting).
+- `npx tsc --noEmit`, `npx eslint src/control-ui src/browser src/channels
+  src/index.ts`: clean. `node --check` on both CLIs and the view: clean.
+- Capture: `phaseE-browser-{mobile,desktop}.png` from a fixture (two sites
+  with rules, a follow and a supplier reply waiting, one blocked job).
+  Overflow probe: 0 px on all 18 tabs at 390 px. Handler failures: 0.
+  `/api/v1/browser` answers 401 unauthenticated.
+
+Deviations logged during Phase E1:
+
+- `Deviation:` the approve route first answered `job is expired` for a stale
+  proposal; it now answers the closed reason `expired`, so the tab, the gate
+  and the CLI share one vocabulary.
+- `Deviation:` `withLock` (Phase A) hard-coded `artifacts.json.lock`; it takes
+  the lock filename now, and its existing callers pass their own.
+- `Deviation:` the adapter test proves "never clicks when already following"
+  through the fixture's own `console.log` rather than in-page DOM code, since
+  this tsconfig has no DOM lib.
+- `Deviation:` the plan's `oracle-author` step was dispatched before
+  implementation and returned late, so the blind oracle
+  (`browser-store.oracle.test.ts`, 51 tests) was reconciled in a later session
+  rather than alongside the code. It opened at 11 failures against the
+  implementation. Five were absorbed by harness shims translating signature
+  guesses the oracle had flagged in its own header (`readRules` returning a
+  view, `countActions` taking the browser root, `capCheck` taking a validated
+  view, `urlFor` returning `string | null`). Four `validateJob` assertions
+  moved from a guessed flat reason name to closed-set membership, since the
+  plan froze that those records are rejected and never froze the vocabulary.
+  One fixture was corrected because it contradicted its own comment. One
+  expectation was inverted — autonomy after a hand-edited pause and resume —
+  with the reasoning at the test site, in the ADR and in
+  `KNOWN_LIMITATIONS.md`, and the plan sentence that prompted it corrected in
+  place. Every edit carries its own stated reason; none is silent.
+- `Deviation:` the oracle found a real fail-open, which is what it is for.
+  `enumerateJobs` skipped any file whose name was not a valid job id without
+  marking the count inexact, so a well-formed `done` record under an odd name
+  was invisible to the caps while the count still claimed to be exact. It now
+  degrades exactness on any unrecognised entry, and the verification gate
+  reproduced the old and new behaviour side by side: at a daily cap of 2 with
+  2 actions on disk, the old code allowed a third.
+- `Deviation:` the approve route discarded its write result and answered 200
+  regardless, so a failed write told the operator their typed confirmation was
+  recorded while the job stayed waiting — and the poller re-selected it every
+  tick. It now answers 503, matching the propose route. The reject route gained
+  the same status guard approve already had.
+- `Deviation:` over the 5 000-file scan cap, `enumerateJobs` returned no
+  entries at all, which also blinded the sweeper — the one thing that could
+  prune the directory back under the cap. It now returns them with
+  `exact: false`, so the count still refuses while pruning can clear the wedge.
