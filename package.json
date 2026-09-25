@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p packages/mcp-channel-core && for d in packages/*/; do [ \"$d\" != 'packages/mcp-channel-core/' ] && [ -f \"$d/tsconfig.json\" ] && tsc -p \"$d\"; done && tsc && tsc -p tsconfig.skills.json",
+    "build": "node scripts/vendor-xterm.mjs && tsc -p packages/mcp-channel-core && for d in packages/*/; do [ \"$d\" != 'packages/mcp-channel-core/' ] && [ -f \"$d/tsconfig.json\" ] && tsc -p \"$d\"; done && tsc && tsc -p tsconfig.skills.json",
     "postbuild": "python3 scripts/codebase_map.py --output .claude/codebase_map.md",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
@@ -65,6 +65,9 @@
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.10",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-webgl": "0.18.0",
+    "@xterm/xterm": "5.5.0",
     "dotenv-cli": "^11.0.0",
     "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",

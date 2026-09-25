@@ -101,3 +101,16 @@
 ## Self-review
 
 Spec coverage: list/transcript/logs/start/message/stop/SSE/read-only/audit ✓. Placeholders: none. Type consistency: `HostCli`, `ClaudeSession`, `resolveClaudeBin`, `readTranscript`, the four limiter names (`claudeStartLimiter`, `claudeMessageLimiter`, `claudeReadLimiter`, `claudeStopLimiter`) used identically in Tasks 1–3.
+
+---
+
+**Superseded in part (2026-09-25) by `2026-09-25-claude-tab-live.md`.** The
+typed-id confirmation on `message` and the `message` / `transcript` routes are
+removed: the Claude tab now attaches the dashboard to the live session with
+`claude attach <id>` (the same way the operator's terminal does), so typing in
+the dashboard is typing in that session. The operator decided no typed
+confirmation is needed for input, because the dashboard is reachable only
+through an SSH tunnel plus its own login, i.e. by someone who already has a
+shell. `stop` keeps its typed confirmation. Dashboard-started sessions now use
+`--permission-mode auto`, matching the operator's terminal, instead of
+`bypassPermissions`.

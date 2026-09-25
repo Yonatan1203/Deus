@@ -187,6 +187,8 @@ export interface SessionStore {
     ticket: string | undefined,
     id: string | undefined,
   ): SessionInfo | null;
+  /** True while the login is within both expiry windows. Never extends it. */
+  isLive(id: string): boolean;
   destroy(id: string): void;
   clear(): void;
   size(): number;
@@ -281,6 +283,9 @@ export function createSessionStore(now: () => number = Date.now): SessionStore {
       if (!r) return null;
       r.lastSeen = now();
       return info(id, r);
+    },
+    isLive(id) {
+      return live(id) !== null;
     },
     destroy(id) {
       sessions.delete(id);

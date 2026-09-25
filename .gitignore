@@ -182,3 +182,6 @@ check_run_payload.json
 
 # Scratch baselines a verification gate copies out for an old-vs-new comparison.
 *.__baseline__.*
+
+# Vendored at build time by scripts/vendor-xterm.mjs
+web/control/vendor/

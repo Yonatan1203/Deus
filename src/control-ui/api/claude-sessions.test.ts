@@ -11,7 +11,6 @@ import {
   parsePrintedId,
   readLogs,
   readTail,
-  readTranscript,
   resolveClaudeBin,
   spawnEnv,
   startArgv,
@@ -47,17 +46,9 @@ describe('claude sessions — validation & argv', () => {
     expect(startArgv('N', '--not-a-flag')).toEqual([
       '--bg',
       '--name=N',
-      '--permission-mode=bypassPermissions',
+      '--permission-mode=auto',
       '--',
       '--not-a-flag',
-    ]);
-    expect(startArgv('N', 'p', SID)).toEqual([
-      '--bg',
-      '--name=N',
-      '--permission-mode=bypassPermissions',
-      `--resume=${SID}`,
-      '--',
-      'p',
     ]);
     expect(
       parsePrintedId('Started a1b2c3d4 (a1b2c3d4-0000-4000-8000-000000000001)'),
@@ -191,7 +182,7 @@ describe('claude sessions — list, mutations', () => {
     expect(cli.calls[0]).toEqual([
       '--bg',
       '--name=Posts',
-      '--permission-mode=bypassPermissions',
+      '--permission-mode=auto',
       '--',
       'go',
     ]);
@@ -200,9 +191,6 @@ describe('claude sessions — list, mutations', () => {
     });
     expect(await startClaudeSession(cli, 'ok', '')).toEqual({
       error: 'invalid prompt',
-    });
-    expect(await startClaudeSession(cli, 'ok', 'go', 'not-a-uuid')).toEqual({
-      error: 'invalid session id',
     });
     expect(
       await startClaudeSession(fake('no id printed token=abc'), 'ok', 'go'),
@@ -275,15 +263,6 @@ describe('claude sessions — transcripts', () => {
     );
     expect(transcriptPath(projects, SID2)).toBeNull();
     fs.rmSync(outside, { recursive: true, force: true });
-    const t = readTranscript(projects, SID, 10)!;
-    expect(t.rows).toEqual([
-      { role: 'user', text: 'Plain string opening prompt' },
-      { role: 'tool', tool: 'Read', summary: 'x.md' },
-      { role: 'assistant', text: 'Approve the hero shot? token=[redacted]' },
-    ]);
-    expect(t.truncated).toBe(false);
-    expect(readTranscript(projects, SID, 1)!.rows).toHaveLength(1);
-    expect(JSON.stringify(t)).not.toContain('SUBAGENT');
   });
 
   it('readTail discards the partial first line and skips bad lines; waiting_on is memoized', () => {

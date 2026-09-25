@@ -50,12 +50,7 @@ import {
   type BuildRunner,
 } from './api/containers.js';
 import { createDockerRunner, type DockerRunner } from './api/docker.js';
-import {
-  clampLines,
-  containerLogs,
-  queryLogs,
-  redactSecrets,
-} from './api/logs.js';
+import { containerLogs, queryLogs, redactSecrets } from './api/logs.js';
 import { readSystem, type SystemView } from './api/system.js';
 import { readConfig, writeConfig } from './api/config.js';
 import {
@@ -122,14 +117,20 @@ import {
   createWaitingOnReader,
   listClaudeSessions,
   readLogs as readClaudeLogs,
-  readTranscript,
   spawnEnv,
+  transcriptPath,
   startClaudeSession,
   stopClaudeSession,
   validatePrompt,
   type ClaudeSession,
 } from './api/claude-sessions.js';
 import type { WebTurnDeps } from '../web-turn.js';
+import {
+  createLiveViews,
+  INPUT_MAX_BYTES,
+  resolveTmuxBin,
+  type LiveViews,
+} from './api/claude-live.js';
 import type { Channel } from '../types.js';
 import type { ControlStore } from './store.js';
 import {
@@ -208,6 +209,9 @@ export interface ControlServerOptions {
   logBatchMs?: number;
   hostCli?: HostCli;
   claudePollMs?: number;
+  /** Live views; `null` disables them (tests pass a fake or null). */
+  liveViews?: LiveViews | null;
+  liveSweepMs?: number;
   workflowDebounceMs?: number;
   workflowPollMs?: number;
   browserPollMs?: number;
@@ -240,7 +244,8 @@ const SYSTEM_POLL_MS = 30_000;
 const LOG_BATCH_MS = 500;
 const LOG_BATCH_MAX = 100;
 const CLAUDE_STARTS_PER_10MIN = 3;
-const CLAUDE_MESSAGES_PER_10MIN = 10;
+const LIVE_OPENS_PER_MIN = 20;
+const LIVE_SWEEP_MS = 20_000;
 const CLAUDE_READS_PER_MIN = 30;
 const CLAUDE_STOPS_PER_MIN = 6;
 const CLAUDE_LIVE_MAX = 3;
@@ -368,6 +373,21 @@ function readJsonBody(
   });
 }
 
+const LOOPBACK_NAMES = new Set(['localhost', '127.0.0.1']);
+export function hostAllowed(
+  host: string | undefined,
+  localPort: number | undefined,
+  publicPort: number | undefined,
+): boolean {
+  if (!host) return false;
+  const m = /^([a-z0-9.]+):(\d{1,5})$/i.exec(host.trim());
+  if (!m || !LOOPBACK_NAMES.has(m[1].toLowerCase())) return false;
+  const port = Number(m[2]);
+  return (
+    port === localPort || (publicPort !== undefined && port === publicPort)
+  );
+}
+
 // A missing Origin is accepted on purpose: a cross-site request that carries
 // the custom X-Deus-Session header is never a "simple" request, so the header
 // requirement is the CSRF control; this check only rejects a foreign Origin.
@@ -411,10 +431,7 @@ export function createControlServer(
     CLAUDE_STARTS_PER_10MIN,
     600_000,
   );
-  const claudeMessageLimiter = createRateLimiter(
-    CLAUDE_MESSAGES_PER_10MIN,
-    600_000,
-  );
+  const liveOpenLimiter = createRateLimiter(LIVE_OPENS_PER_MIN, 60_000);
   const claudeReadLimiter = createRateLimiter(CLAUDE_READS_PER_MIN, 60_000);
   const claudeStopLimiter = createRateLimiter(CLAUDE_STOPS_PER_MIN, 60_000);
   const workflowReadLimiter = createRateLimiter(WORKFLOW_READS_PER_MIN, 60_000);
@@ -445,6 +462,26 @@ export function createControlServer(
           env: spawnEnv(process.env),
         })
       : null);
+  // The same attach the operator's terminal uses, relayed to one browser.
+  const tmuxBin = resolveTmuxBin();
+  const liveViews: LiveViews | null =
+    opts.liveViews !== undefined
+      ? opts.liveViews
+      : deps.claudeBin && tmuxBin
+        ? createLiveViews({
+            tmuxBin,
+            // A second process on this host (a verification fixture) sets its
+            // own socket so it can never close the operator's open views.
+            socket: process.env.CONTROL_UI_TMUX_SOCKET || undefined,
+            claudeBin: deps.claudeBin,
+            cwd: deps.repoRoot,
+            env: spawnEnv(process.env),
+            audit: (event, fields) =>
+              logger.warn({ event, ...fields }, 'Control UI live view'),
+          })
+        : null;
+  // Leftovers from a previous process on the private socket.
+  if (liveViews && opts.liveViews === undefined) void liveViews.killLeftovers();
   const claudeLedger = deps.configDir
     ? createLedger(
         path.join(deps.configDir, 'control-ui', 'claude-started.json'),
@@ -500,6 +537,7 @@ export function createControlServer(
   const credentialState = () => {
     const state = credentials.current();
     if (state.rotated) {
+      liveViews?.closeAll('credential-rotated');
       sessions.clear();
       gmailAuth.dropAll();
       createCounts.clear();
@@ -598,6 +636,7 @@ export function createControlServer(
 
   router.add('POST', '/auth/logout', (ctx) => {
     if (ctx.session) {
+      liveViews?.closeOwner(ctx.session.id, 'logout');
       sessions.destroy(ctx.session.id);
       gmailAuth.dropSession(ctx.session.id);
     }
@@ -619,6 +658,7 @@ export function createControlServer(
       },
       'Control UI sessions revoked',
     );
+    liveViews?.closeAll('revoked');
     sessions.clear();
     gmailAuth.dropAll();
     createCounts.clear();
@@ -1474,31 +1514,26 @@ export function createControlServer(
         error: redactSecrets(r.error).slice(0, 200),
       });
     const started = new Set((claudeLedger?.read() ?? []).map((e) => e.id));
+    // "Last active" is the conversation file's mtime: the list itself only
+    // carries a start time.
+    const lastActive = (sessionId: string | null): number | null => {
+      if (!sessionId || !deps.claudeProjectsDir) return null;
+      const file = transcriptPath(deps.claudeProjectsDir, sessionId);
+      if (!file) return null;
+      try {
+        return fs.statSync(file).mtimeMs;
+      } catch {
+        return null;
+      }
+    };
     writeJson(ctx.res, 200, {
       sessions: r.sessions.map((s) => ({
         ...s,
         started_here: started.has(s.id),
+        last_active: lastActive(s.session_id),
       })),
+      live: Boolean(liveViews) && !deps.readOnly,
     });
-  });
-  router.add('GET', '/api/v1/claude/sessions/:id/transcript', async (ctx) => {
-    if (deps.readOnly)
-      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
-    if (!claudeRead(ctx)) return;
-    const row = await claudeRow(ctx);
-    if (!row) return;
-    if (!row.session_id || !deps.claudeProjectsDir)
-      return writeJson(ctx.res, 404, { error: 'no transcript' });
-    const limit = clampLines(ctx.url.searchParams.get('limit'), 200, 500);
-    const t = readTranscript(deps.claudeProjectsDir, row.session_id, limit);
-    if (!t) return writeJson(ctx.res, 404, { error: 'no transcript' });
-    auditRead(
-      ctx.session,
-      `claude:${row.id}`,
-      'control_ui_claude_read',
-      ctx.remoteAddr,
-    );
-    writeJson(ctx.res, 200, t);
   });
   router.add('GET', '/api/v1/claude/sessions/:id/logs', async (ctx) => {
     if (deps.readOnly)
@@ -1597,90 +1632,106 @@ export function createControlServer(
     hub.broadcast('csession', { action: 'started', id: r.id });
     writeJson(ctx.res, 200, { started: true, id: r.id });
   });
-  router.add('POST', '/api/v1/claude/sessions/:id/message', async (ctx) => {
-    if (header(ctx.req, 'x-confirm') !== ctx.params.id)
-      return writeJson(ctx.res, 428, { error: 'confirmation required' });
-    const body = (ctx.body ?? {}) as { prompt?: unknown };
-    const prompt = validatePrompt(body.prompt);
-    if (prompt === null)
-      return writeJson(ctx.res, 400, { error: 'prompt is required' });
-    if (
-      claudeMessageLimiter.isRateLimited(
-        ctx.session?.shortId ?? ctx.remoteAddr,
-        now(),
-      )
-    )
-      return writeJson(ctx.res, 429, { error: 'too many messages' });
-    const row = await claudeRow(ctx);
-    if (!row || !claudeCli) return;
-    if (!row.resumable || !row.session_id) {
-      claudeRefused(ctx, row.id, 'not_resumable');
-      return writeJson(ctx.res, 409, {
-        error: 'this session cannot take messages',
-      });
+  // ---- Live views -----------------------------------------------------------
+  // Read-only gets no live screen, matching the rule that it never gets the
+  // host log follow; every live route refuses it explicitly (the stream is a
+  // GET, so the dispatcher's mutation check alone would not).
+  const liveGate = (ctx: RequestContext): LiveViews | null => {
+    if (deps.readOnly) {
+      writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+      return null;
     }
-    const promptHash = crypto
-      .createHash('sha256')
-      .update(prompt)
-      .digest('hex')
-      .slice(0, 12);
-    // The resumed session keeps a display name derived from its own, reduced to
-    // the allowed charset so it can never be parsed as an option.
-    const resumeName =
-      row.name
-        .replace(/[^\p{L}\p{N} ._-]/gu, '')
-        .replace(/^[^\p{L}\p{N}]+/u, '')
-        .trim()
-        .slice(0, 60) || 'session';
-    const r = await startClaudeSession(
-      claudeCli,
-      resumeName,
-      prompt,
-      row.session_id,
-    );
-    if ('error' in r) return writeJson(ctx.res, 502, { error: r.error });
-    if ('unparsed' in r) {
-      logger.warn(
-        {
-          event: 'control_ui_claude_start_unparsed',
-          id: row.id,
-          promptHash,
-          stdout: r.stdout,
-          remoteAddr: ctx.remoteAddr,
-          actor: actor(ctx.session),
-        },
-        'Control UI messaged a Claude session but could not parse the resulting id',
-      );
-      return writeJson(ctx.res, 502, {
-        error: 'could not determine the session id',
-      });
+    if (!liveViews) {
+      writeJson(ctx.res, 503, { error: 'live view needs tmux on the server' });
+      return null;
     }
-    const continued = r.id === row.id;
-    await claudeList(true);
-    logger.warn(
-      {
-        event: 'control_ui_claude_message',
-        id: row.id,
-        promptHash,
-        outcome: continued ? 'continued' : 'copied',
-        new_id: r.id,
-        remoteAddr: ctx.remoteAddr,
-        actor: actor(ctx.session),
-      },
-      'Control UI messaged a Claude session',
-    );
-    hub.broadcast('csession', {
-      action: continued ? 'continued' : 'copied',
-      id: r.id,
-    });
-    writeJson(
-      ctx.res,
-      200,
-      continued
-        ? { continued: true, id: r.id }
-        : { copied: true, id: row.id, new_id: r.id },
-    );
+    return liveViews;
+  };
+  router.add(
+    'POST',
+    '/api/v1/claude/live',
+    async (ctx) => {
+      const lv = liveGate(ctx);
+      if (!lv || !ctx.session) return;
+      if (liveOpenLimiter.isRateLimited(ctx.session.shortId, now()))
+        return writeJson(ctx.res, 429, { error: 'too many live views opened' });
+      const body = (ctx.body ?? {}) as {
+        id?: unknown;
+        cols?: unknown;
+        rows?: unknown;
+      };
+      ctx.params.id = typeof body.id === 'string' ? body.id : '';
+      const row = await claudeRow(ctx);
+      if (!row) return;
+      if (row.kind !== 'background')
+        return writeJson(ctx.res, 409, {
+          error: 'only background sessions can be opened here',
+        });
+      const r = await lv.open(ctx.session.id, row.id, body.cols, body.rows);
+      if (!r.ok) return writeJson(ctx.res, r.status, { error: r.error });
+      writeJson(ctx.res, 200, { vid: r.vid });
+    },
+    { maxBody: 1024 },
+  );
+  router.add(
+    'GET',
+    '/api/v1/claude/live/:vid/stream',
+    (ctx) => {
+      const lv = liveGate(ctx);
+      if (!lv || !ctx.session) return;
+      if (!lv.attachStream(ctx.params.vid, ctx.session.id, ctx.res))
+        writeJson(ctx.res, 403, { error: 'not your view' });
+    },
+    { auth: 'ticket' },
+  );
+  router.add(
+    'POST',
+    '/api/v1/claude/live/:vid/input',
+    (ctx) => {
+      const lv = liveGate(ctx);
+      if (!lv || !ctx.session) return;
+      const data = (ctx.body as { data?: unknown } | undefined)?.data;
+      if (typeof data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(data))
+        return writeJson(ctx.res, 400, { error: 'invalid input' });
+      const bytes = Buffer.from(data, 'base64');
+      const r = lv.input(ctx.params.vid, ctx.session.id, bytes);
+      if (!r.ok) return writeJson(ctx.res, r.status, { error: r.error });
+      ctx.res.writeHead(204);
+      ctx.res.end();
+    },
+    { maxBody: Math.ceil((INPUT_MAX_BYTES * 4) / 3) + 256 },
+  );
+  router.add(
+    'POST',
+    '/api/v1/claude/live/:vid/resize',
+    (ctx) => {
+      const lv = liveGate(ctx);
+      if (!lv || !ctx.session) return;
+      const b = (ctx.body ?? {}) as { cols?: unknown; rows?: unknown };
+      const r = lv.resize(ctx.params.vid, ctx.session.id, b.cols, b.rows);
+      if (!r.ok) return writeJson(ctx.res, r.status, { error: r.error });
+      ctx.res.writeHead(204);
+      ctx.res.end();
+    },
+    { maxBody: 256 },
+  );
+  router.add('DELETE', '/api/v1/claude/live/:vid', (ctx) => {
+    const lv = liveGate(ctx);
+    if (!lv || !ctx.session) return;
+    if (!lv.closeOwned(ctx.params.vid, ctx.session.id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    ctx.res.writeHead(204);
+    ctx.res.end();
   });
+  // Ends views whose login is gone (expiry, revocation) or whose browser left.
+  // Checking rotation here means it does not wait for the next request.
+  const liveSweep = setInterval(() => {
+    if (!liveViews || liveViews.size() === 0) return;
+    credentialState();
+    liveViews.sweep((owner) => sessions.isLive(owner));
+  }, opts.liveSweepMs ?? LIVE_SWEEP_MS);
+  liveSweep.unref();
+
   router.add('POST', '/api/v1/claude/sessions/:id/stop', async (ctx) => {
     if (header(ctx.req, 'x-confirm') !== ctx.params.id)
       return writeJson(ctx.res, 428, { error: 'confirmation required' });
@@ -2542,6 +2593,11 @@ export function createControlServer(
     res: ServerResponse,
   ): Promise<void> {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
+    // DNS rebinding: a page on another name that resolves to 127.0.0.1 would
+    // still carry its own Host. Only loopback names on the port this socket
+    // accepted, or the tunnel's local port, are answered.
+    if (!hostAllowed(req.headers.host, req.socket.localPort, deps.publicPort))
+      return writeJson(res, 421, { error: 'misdirected request' });
     const url = new URL(req.url ?? '/', 'http://control');
     const method = req.method ?? 'GET';
     const remoteAddr = normalizeAddr(req.socket.remoteAddress);
@@ -2630,7 +2686,9 @@ export function createControlServer(
     clearInterval(systemPoll);
     clearInterval(claudePoll);
     claudeStartLimiter.dispose();
-    claudeMessageLimiter.dispose();
+    liveOpenLimiter.dispose();
+    clearInterval(liveSweep);
+    liveViews?.closeAll('shutdown');
     claudeReadLimiter.dispose();
     claudeStopLimiter.dispose();
     workflowReadLimiter.dispose();

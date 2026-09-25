@@ -208,6 +208,9 @@ function boot(
     ...overrides,
   };
   server = createControlServer(deps, {
+    // Never the real tmux socket from a test; a test that needs live views
+    // passes its own fake through `extra`.
+    liveViews: null,
     now: () => clock,
     staticHandler,
     queuePollMs,
@@ -2124,10 +2127,7 @@ describe('control-ui server — claude sessions', () => {
     });
     expect(r.status).toBe(200);
     expect(j(r)).toMatchObject({ unavailable: true, sessions: [] });
-    for (const p of [
-      '/api/v1/claude/sessions/a1b2c3d4/transcript',
-      '/api/v1/claude/sessions/a1b2c3d4/logs',
-    ])
+    for (const p of ['/api/v1/claude/sessions/a1b2c3d4/logs'])
       expect(
         (await request({ method: 'GET', path: p, headers: auth })).status,
       ).toBe(503);
@@ -2147,20 +2147,28 @@ describe('control-ui server — claude sessions', () => {
     ).toBe(true);
   });
 
-  it('transcript/logs resolve through the list; unknown/foreign ids refused', async () => {
+  it('logs resolve through the list; unknown/foreign ids refused; the old transcript route is gone', async () => {
     await bootC();
     const { auth } = await login();
-    const t = j(
+    const list = j(
       await request({
         method: 'GET',
-        path: '/api/v1/claude/sessions/a1b2c3d4/transcript?limit=5',
+        path: '/api/v1/claude/sessions',
         headers: auth,
       }),
     );
-    expect(t.rows).toEqual([
-      { role: 'user', text: 'Make the posts' },
-      { role: 'assistant', text: 'Approve the hero shot?' },
-    ]);
+    // "last active" comes from the conversation file's mtime.
+    expect(typeof list.sessions[0].last_active).toBe('number');
+    expect(list.sessions[2].last_active).toBeNull(); // no conversation file
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions/a1b2c3d4/transcript',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
     const l = j(
       await request({
         method: 'GET',
@@ -2173,7 +2181,7 @@ describe('control-ui server — claude sessions', () => {
       (
         await request({
           method: 'GET',
-          path: '/api/v1/claude/sessions/d4e5f6a7/transcript',
+          path: '/api/v1/claude/sessions/d4e5f6a7/logs',
           headers: auth,
         })
       ).status,
@@ -2182,7 +2190,7 @@ describe('control-ui server — claude sessions', () => {
       (
         await request({
           method: 'GET',
-          path: '/api/v1/claude/sessions/zz/transcript',
+          path: '/api/v1/claude/sessions/zz/logs',
           headers: auth,
         })
       ).status,
@@ -2236,7 +2244,7 @@ describe('control-ui server — claude sessions', () => {
     expect(spawn).toEqual([
       '--bg',
       '--name=Posts run',
-      '--permission-mode=bypassPermissions',
+      '--permission-mode=auto',
       '--',
       'do it --not-a-flag',
     ]);
@@ -2312,43 +2320,221 @@ describe('control-ui server — claude sessions', () => {
     expect(j(r)).toMatchObject({ live: 3 });
   });
 
-  it('message: continued vs copied by id equality; stop refuses interactive; read-only withholds', async () => {
-    const cli = await bootC();
-    const { auth } = await login();
-    const msg = (id: string, body = { prompt: 'reply' }) =>
+  // A stand-in for the live-view registry: the registry itself is tested
+  // against real tmux in claude-live.test.ts; here the question is what the
+  // routes hand it and what they refuse before it is ever reached.
+  function fakeLive() {
+    const calls: unknown[][] = [];
+    const owners = new Map<string, string>();
+    let n = 0;
+    const live = {
+      calls,
+      async open(owner: string, id: string, cols: unknown, rows: unknown) {
+        calls.push(['open', owner, id, cols, rows]);
+        const vid = (++n).toString(16).padStart(32, '0');
+        owners.set(vid, owner);
+        return { ok: true as const, vid };
+      },
+      attachStream(vid: string, owner: string, res: http.ServerResponse) {
+        calls.push(['stream', vid, owner]);
+        if (owners.get(vid) !== owner) return false;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end('event: o\ndata: aGk=\n\n');
+        return true;
+      },
+      input(vid: string, owner: string, bytes: Buffer) {
+        calls.push(['input', vid, owner, bytes.toString()]);
+        return owners.get(vid) === owner
+          ? { ok: true as const }
+          : { ok: false as const, status: 404, error: 'not found' };
+      },
+      resize(vid: string, owner: string, cols: unknown, rows: unknown) {
+        calls.push(['resize', vid, owner, cols, rows]);
+        return owners.get(vid) === owner
+          ? { ok: true as const }
+          : { ok: false as const, status: 404, error: 'not found' };
+      },
+      closeOwned(vid: string, owner: string) {
+        calls.push(['close', vid, owner]);
+        return owners.get(vid) === owner;
+      },
+      closeOwner(owner: string, reason: string) {
+        calls.push(['closeOwner', owner, reason]);
+      },
+      closeAll(reason: string) {
+        calls.push(['closeAll', reason]);
+      },
+      sweep() {},
+      async killLeftovers() {},
+      size: () => owners.size,
+      has: (vid: string) => owners.has(vid),
+    };
+    return live;
+  }
+
+  it('live: opens only listed background sessions, routes input by owner, refuses read-only', async () => {
+    const live = fakeLive();
+    const cli = await bootC({}, fakeCli(), { liveViews: live });
+    const a = await login();
+    const b = await login();
+    const post = (auth: Record<string, string>, p: string, body: unknown) =>
       request({
         method: 'POST',
-        path: `/api/v1/claude/sessions/${id}/message`,
-        headers: { ...auth, ...H, 'X-Confirm': id },
+        path: p,
+        headers: { ...auth, ...H },
         body: JSON.stringify(body),
       });
-    cli.state.startOut = 'Continuing a1b2c3d4';
-    const cont = await msg('a1b2c3d4');
-    expect(cont.status).toBe(200);
-    expect(j(cont)).toEqual({ continued: true, id: 'a1b2c3d4' });
-    expect(cli.calls.find((c) => c[0] === '--bg')).toEqual([
-      '--bg',
-      '--name=Posts fixture',
-      '--permission-mode=bypassPermissions',
-      `--resume=${SID}`,
-      '--',
-      'reply',
-    ]);
-    cli.state.startOut = 'Session busy; started a copy e5f6a7b8';
-    const cop = await msg('b2c3d4e5');
-    expect(j(cop)).toEqual({
-      copied: true,
-      id: 'b2c3d4e5',
-      new_id: 'e5f6a7b8',
+    const opened = await post(a.auth, '/api/v1/claude/live', {
+      id: 'a1b2c3d4',
+      cols: 100,
+      rows: 30,
     });
+    expect(opened.status).toBe(200);
+    const { vid } = j(opened);
+    const [, ownerA, id, cols, rows] = live.calls[0];
+    expect([id, cols, rows]).toEqual(['a1b2c3d4', 100, 30]);
+    // Only background sessions under this repo, by the same list as the rest.
     expect(
-      ev('control_ui_claude_message').map(
-        (c) => (c[0] as { outcome: string }).outcome,
-      ),
-    ).toEqual(['continued', 'copied']);
-    expect((await msg('c3d4e5f6')).status).toBe(409);
-    for (let i = 0; i < 8; i++) await msg('a1b2c3d4');
-    expect((await msg('a1b2c3d4')).status).toBe(429);
+      (
+        await post(a.auth, '/api/v1/claude/live', {
+          id: 'c3d4e5f6',
+          cols: 80,
+          rows: 24,
+        })
+      ).status,
+    ).toBe(409);
+    for (const bad of ['d4e5f6a7', 'zz', 42])
+      expect(
+        (
+          await post(a.auth, '/api/v1/claude/live', {
+            id: bad,
+            cols: 80,
+            rows: 24,
+          })
+        ).status,
+      ).toBe(404);
+    // No typed confirmation to type: the operator's decision.
+    const typed = await post(a.auth, `/api/v1/claude/live/${vid}/input`, {
+      data: Buffer.from('hi\r').toString('base64'),
+    });
+    expect(typed.status).toBe(204);
+    expect(live.calls.at(-1)).toEqual(['input', vid, ownerA, 'hi\r']);
+    expect(
+      (
+        await post(a.auth, `/api/v1/claude/live/${vid}/input`, {
+          data: '@@not base64',
+        })
+      ).status,
+    ).toBe(400);
+    // Another login is a different owner, so the registry refuses it.
+    expect(
+      (await post(b.auth, `/api/v1/claude/live/${vid}/input`, { data: 'aGk=' }))
+        .status,
+    ).toBe(404);
+    expect(live.calls.at(-1)?.[2]).not.toBe(ownerA);
+    // The stream is ticketed and owner-checked.
+    const ticket = async (auth: Record<string, string>) =>
+      j(
+        await request({
+          method: 'POST',
+          path: '/api/v1/events/ticket',
+          headers: auth,
+        }),
+      ).ticket as string;
+    const streamA = await request({
+      method: 'GET',
+      path: `/api/v1/claude/live/${vid}/stream?ticket=${await ticket(a.auth)}`,
+      headers: { Cookie: a.cookie },
+    });
+    expect(streamA.status).toBe(200);
+    expect(streamA.headers['content-type']).toContain('text/event-stream');
+    const streamB = await request({
+      method: 'GET',
+      path: `/api/v1/claude/live/${vid}/stream?ticket=${await ticket(b.auth)}`,
+      headers: { Cookie: b.cookie },
+    });
+    expect(streamB.status).toBe(403);
+    // Logout ends that login's views; revoke-all ends every view.
+    await request({
+      method: 'POST',
+      path: '/auth/logout',
+      headers: { ...b.auth, ...H },
+    });
+    expect(live.calls.at(-1)?.[0]).toBe('closeOwner');
+    await request({
+      method: 'POST',
+      path: '/auth/sessions/revoke-all',
+      headers: { ...a.auth, ...H, 'X-Confirm': 'all' },
+    });
+    expect(live.calls.at(-1)).toEqual(['closeAll', 'revoked']);
+    server.close();
+
+    // Read-only: no live view at all, including the GET stream.
+    const roLive = fakeLive();
+    await bootC({ readOnly: true }, cli, { liveViews: roLive });
+    const ro = await login();
+    expect(
+      (
+        await post(ro.auth, '/api/v1/claude/live', {
+          id: 'a1b2c3d4',
+          cols: 80,
+          rows: 24,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: `/api/v1/claude/live/${'0'.repeat(32)}/stream?ticket=${await ticket(ro.auth)}`,
+          headers: { Cookie: ro.cookie },
+        })
+      ).status,
+    ).toBe(403);
+    expect(roLive.calls).toEqual([]);
+    server.close();
+
+    // No tmux on the host: a clear 503, not a broken view.
+    await bootC({}, cli, { liveViews: null });
+    const nt = await login();
+    expect(
+      (
+        await post(nt.auth, '/api/v1/claude/live', {
+          id: 'a1b2c3d4',
+          cols: 80,
+          rows: 24,
+        })
+      ).status,
+    ).toBe(503);
+  });
+
+  it('answers only loopback names on its own port or the tunnel port', async () => {
+    await bootC({ publicPort: 4040 });
+    // Allowed hosts reach the route (401 without a login); others never do.
+    const hosts: [string, number][] = [
+      [`127.0.0.1:${port}`, 401],
+      [`localhost:${port}`, 401],
+      ['localhost:4040', 401],
+      [`evil.example:${port}`, 421],
+      ['127.0.0.1:1', 421],
+      ['127.0.0.1', 421],
+    ];
+    for (const [host, want] of hosts)
+      expect(
+        (
+          await request({
+            method: 'GET',
+            path: '/api/v1/me',
+            headers: { Host: host },
+          })
+        ).status,
+        host,
+      ).toBe(want);
+  });
+
+  it('stop refuses interactive, confirms by id, and is rate limited; read-only withholds', async () => {
+    const cli = await bootC();
+    const { auth } = await login();
     expect(
       (
         await request({
@@ -2391,15 +2577,6 @@ describe('control-ui server — claude sessions', () => {
       }),
     );
     expect(list.sessions[0]).toHaveProperty('waiting_on');
-    expect(
-      (
-        await request({
-          method: 'GET',
-          path: '/api/v1/claude/sessions/a1b2c3d4/transcript',
-          headers: ro.auth,
-        })
-      ).status,
-    ).toBe(403);
     expect(
       (
         await request({

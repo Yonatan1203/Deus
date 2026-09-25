@@ -75,6 +75,18 @@ describe('control-ui auth edge cases', () => {
     expect(store.size()).toBe(1);
   });
 
+  it('isLive answers without extending the idle window', () => {
+    let t = 0;
+    const store = createSessionStore(() => t);
+    const { id, secret } = store.create('ua');
+    t = 11 * 60 * 60_000;
+    expect(store.isLive(id)).toBe(true); // asking must not count as activity
+    t = 12 * 60 * 60_000 + 1;
+    expect(store.isLive(id)).toBe(false);
+    expect(store.validate(id, secret)).toBeNull();
+    expect(store.isLive('unknown')).toBe(false);
+  });
+
   it('a redeemed ticket counts as activity; an expired one does not', () => {
     let t = 0;
     const store = createSessionStore(() => t);

@@ -73,12 +73,13 @@ for (const [name, viewport] of viewports) {
       await page.waitForSelector('#view .gmail-panel .chips', { timeout: 10_000 });
       if (name === 'mobile') await page.locator('#view .gmail-panel').scrollIntoViewIfNeeded();
     } else if (tab === 'claude') {
-      // Open the first session so the transcript panel is part of the capture.
-      await page.waitForSelector('#view .claude-row, #view .empty', { timeout: 10_000 });
-      const first = page.locator('#view .claude-row');
+      // Open the first session so the live terminal is part of the capture.
+      await page.waitForSelector('#view .session-row, #view .empty', { timeout: 10_000 });
+      const first = page.locator('#view .session-row');
       if (await first.count()) {
         await first.first().click();
-        await page.waitForSelector('#view .claude-transcript .msg, #view .claude-transcript .empty, #view .claude-panel > p.muted', { timeout: 10_000 });
+        await page.waitForSelector('#view .term-host .xterm, #view .claude-empty, #view .claude-recent', { timeout: 15_000 });
+        await page.waitForTimeout(1500); // let the first screen paint
       }
     } else if (tab === 'workflows') {
       await page.waitForSelector('#view .wf-card, #view .empty', { timeout: 10_000 });

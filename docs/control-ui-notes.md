@@ -863,3 +863,49 @@ app's own tokens; the operator chose **A — Solid**. CSS only
 
 Captured against a throwaway fixture server on 127.0.0.1:3117 with a
 throwaway credential; the live dashboard and its credential were not used.
+
+## Claude tab v2 — live sessions (2026-09-25)
+
+Plan: `docs/superpowers/plans/2026-09-25-claude-tab-live.md` (plan-reviewer
+SHIP r2, threat-modeler SHIP r2). The tab attaches to a background session with
+`claude attach <id>` inside a private tmux (`-L deus-dash`, `-f /dev/null`),
+relays the screen over a per-view stream and forwards keystrokes through tmux
+control mode. Dashboard-started sessions now run in auto mode.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Parser vs real tmux 3.4 output | octal escapes decoded, UTF-8 intact | fixture test passes (`é ✓`, colours, `%exit`) | PASS |
+| Real tmux: type + read back | typed bytes appear on the relayed screen | passes | PASS |
+| Real tmux: 16 KB paste | arrives byte-for-byte | 16384 bytes, identical | PASS |
+| Owner isolation | another login cannot stream, type or close | registry refuses; route test: login B → 404 input, 403 stream | PASS |
+| Teardown | logout, revoke-all, rotation, expiry, abandoned stream, leaving the tab | closeOwner/closeAll wired and tested; leaving the tab left 0 `deus-dash` sessions (driven) | PASS |
+| Crash cleanup | killed control client removes its tmux session | `destroy-unattached` test passes | PASS |
+| Read-only | no live view | open 403, stream 403, registry never called | PASS |
+| Host header | loopback on own port or tunnel port only | `evil.example`/wrong port → 421; publicPort accepted | PASS |
+| Live parity, driven in a browser against a throwaway session with a second tmux client standing in for the operator's terminal | draft typed in the dashboard appears in the terminal before Enter; reply in both; terminal typing appears in the dashboard | all three observed; session stopped and removed afterwards (`claude-live-from-terminal-desktop.png`) | PASS |
+| Slash commands | Claude Code's own menu with the Deus commands | `/compress`, `/resume`, `/superpowers:brainstorming` shown (`claude-live-slash-desktop.png`) | PASS |
+| Auto mode | status line reads "auto mode on"; start argv `--permission-mode=auto` | both | PASS |
+| Phone | full-screen terminal, key bar, back to list, no sideways scroll | all four (`claude-live-mobile.png`) | PASS |
+| CSP | unchanged | unchanged; xterm core's four blocked inline styles have no visible effect (colours render) | PASS |
+
+Screenshots were taken against a throwaway fixture server with a throwaway
+credential; desktop captures are cropped to the terminal so no real session
+names are committed. On this headless server Claude Code's `⏵` glyph renders as
+a box because no symbol font is installed; the font stack names the Windows,
+macOS and Linux symbol fonts that carry it.
+
+- `Deviation:` the phone full-screen hook is a body class set by
+  `views/claude.js`, so `app.js` needed no change.
+- `Deviation:` `readTranscript`, the resume option of `startClaudeSession` and
+  the message limiter were removed as dead code with the routes that used them.
+- `Deviation:` tests run live views on their own tmux socket, and the server
+  tests default to no live views, so a test run on this host can never close
+  the operator's open views.
+- `Deviation:` after both gates passed, their non-blocking findings were
+  fixed and the browser drive re-run on a fresh throwaway session (same
+  results): a failed control-client spawn now removes its just-created tmux
+  session; the browser sizes the view before creating the terminal, so a
+  refused open leaves nothing to dispose; the open session's status follows
+  the list; and `CONTROL_UI_TMUX_SOCKET` lets a second process on this host (a
+  verification fixture) use its own socket, so it can never close the
+  operator's open views.

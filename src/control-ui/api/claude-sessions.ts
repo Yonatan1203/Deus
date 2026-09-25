@@ -11,7 +11,6 @@ export const CLAUDE_SESSION_ID_RE =
 export const CLAUDE_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,59}$/u;
 export const PROMPT_MAX = 8192;
 export const TAIL_WAITING_BYTES = 256 * 1024;
-export const TAIL_TRANSCRIPT_BYTES = 2 * 1024 * 1024;
 const SECRET_NAME_RE = new RegExp(SECRET_KEYS, 'i');
 const ENV_ALLOW = [
   'PATH',
@@ -222,59 +221,7 @@ export function transcriptPath(
   return null;
 }
 
-export type TranscriptRow =
-  | { role: 'user' | 'assistant'; text: string }
-  | { role: 'tool'; tool: string; summary: string };
-
-type Block = {
-  type?: string;
-  text?: string;
-  name?: string;
-  input?: Record<string, unknown>;
-};
-
-function rowsOf(entry: Record<string, unknown>): TranscriptRow[] {
-  const type = entry.type;
-  if ((type !== 'user' && type !== 'assistant') || entry.isSidechain === true)
-    return [];
-  const msg = entry.message as { content?: unknown } | undefined;
-  const content = msg?.content;
-  if (typeof content === 'string')
-    return content ? [{ role: type, text: redactSecrets(content) }] : [];
-  if (!Array.isArray(content)) return [];
-  const out: TranscriptRow[] = [];
-  for (const b of content as Block[]) {
-    if (b?.type === 'text' && typeof b.text === 'string' && b.text)
-      out.push({ role: type, text: redactSecrets(b.text) });
-    else if (b?.type === 'tool_use' && typeof b.name === 'string') {
-      const inp = b.input ?? {};
-      const hint = ['description', 'command', 'file_path', 'pattern', 'prompt']
-        .map((k) => inp[k])
-        .find((v) => typeof v === 'string') as string | undefined;
-      out.push({
-        role: 'tool',
-        tool: b.name.slice(0, 40),
-        summary: redactSecrets((hint ?? '').slice(0, 120)),
-      });
-    }
-  }
-  return out;
-}
-
-export function readTranscript(
-  projectsDir: string,
-  sessionId: string,
-  limit: number,
-): { rows: TranscriptRow[]; truncated: boolean } | null {
-  const file = transcriptPath(projectsDir, sessionId);
-  if (!file) return null;
-  const tail = readTail(file, TAIL_TRANSCRIPT_BYTES);
-  const rows = tail.rows.flatMap(rowsOf);
-  return {
-    rows: rows.slice(-limit),
-    truncated: tail.truncated || rows.length > limit,
-  };
-}
+type Block = { type?: string; text?: string };
 
 /** Last assistant text block, memoized on the file's mtime+size. */
 export function createWaitingOnReader(projectsDir: string) {
@@ -320,34 +267,21 @@ export function parsePrintedId(stdout: string): string | null {
   return ids.size === 1 ? [...ids][0] : null;
 }
 
-export function startArgv(
-  name: string,
-  prompt: string,
-  resume?: string,
-): string[] {
-  return [
-    '--bg',
-    `--name=${name}`,
-    '--permission-mode=bypassPermissions',
-    ...(resume ? [`--resume=${resume}`] : []),
-    '--',
-    prompt,
-  ];
+/** Auto mode, the same permission mode the operator's terminal sessions use. */
+export function startArgv(name: string, prompt: string): string[] {
+  return ['--bg', `--name=${name}`, '--permission-mode=auto', '--', prompt];
 }
 
 export async function startClaudeSession(
   cli: HostCli,
   name: string,
   prompt: string,
-  resume?: string,
 ): Promise<
   { id: string } | { unparsed: true; stdout: string } | { error: string }
 > {
   if (!CLAUDE_NAME_RE.test(name)) return { error: 'invalid name' };
   if (validatePrompt(prompt) === null) return { error: 'invalid prompt' };
-  if (resume && !CLAUDE_SESSION_ID_RE.test(resume))
-    return { error: 'invalid session id' };
-  const r = await cli.run(startArgv(name, prompt, resume));
+  const r = await cli.run(startArgv(name, prompt));
   if (!r.ok) return { error: r.error };
   const id = parsePrintedId(r.stdout);
   return id
