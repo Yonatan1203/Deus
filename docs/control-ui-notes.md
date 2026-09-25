@@ -842,3 +842,24 @@ Deviations logged during Phase E1:
   entries at all, which also blinded the sweeper — the one thing that could
   prune the directory back under the cap. It now returns them with
   `exact: false`, so the count still refuses while pruning can clear the wedge.
+
+## Visual pass — style A "Solid" (2026-09-25)
+
+Operator feedback: buttons did not look like buttons, and the screen was not
+used on a wide monitor. Three treatments were mocked up side by side with the
+app's own tokens; the operator chose **A — Solid**. CSS only
+(`web/control/app.css`, `web/control/sw.js`), no view changes.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Wide monitor use | content no longer capped at 1040 px | `.view` max-width 1600 px; card grids auto-fill more columns (`styleA-before/after-artifacts-wide.png`) | PASS |
+| Buttons read as buttons | every `button`, including the 15 former text-only `ghost` ones, filled + outlined | filled `--surface-3` with outline and hover; `ghost` renders identically; `.linkish` "more" stays a link (`styleA-*-agents-desktop.png`) | PASS |
+| Labels do not look clickable | badges lose the pill fill, chips are outline-only | dot + word badges, outlined chips (`styleA-*-browser-mobile.png`) | PASS |
+| Danger text contrast | ≥ 4.5:1 both themes | 6.57:1 dark, 5.22:1 light (worst backdrop), computed | PASS |
+| Editor line length | long-form editor capped | `.editor-area` max-width 110ch | PASS |
+| No sideways scroll at 390 px | 0 px on every tab | 0 px on all 18 tabs | PASS |
+| Tests | `npx vitest run src/control-ui` green | 28 files / 254 tests | PASS |
+| Clients pick up the new CSS | offline cache invalidated | service worker cache `v9` → `v10` | PASS |
+
+Captured against a throwaway fixture server on 127.0.0.1:3117 with a
+throwaway credential; the live dashboard and its credential were not used.

@@ -95,22 +95,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
 button {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   min-height: var(--tap); padding: 0 14px;
+  /* Style A "Solid" (operator's pick, 2026-09-25): every button is a visible
+     filled control with an outline, so nothing clickable reads as plain text. */
   border-radius: var(--radius-sm); border: 1px solid var(--line-strong);
-  background: transparent; cursor: pointer; font-weight: 500; font-size: 14px;
+  background: var(--surface-3); color: var(--text); cursor: pointer; font-weight: 500; font-size: 14px;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
   touch-action: manipulation;
 }
-button:hover { background: var(--surface-2); }
+button:hover { background: color-mix(in srgb, var(--surface-3) 70%, var(--text) 10%); border-color: color-mix(in srgb, var(--line-strong) 60%, var(--text) 25%); }
 button:active { transform: scale(0.98); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible {
   outline: 2px solid var(--info); outline-offset: 2px;
 }
 button.primary { background: var(--primary); color: var(--fg-inverse); border-color: transparent; font-weight: 600; }
 button.primary:hover { background: color-mix(in srgb, var(--primary) 88%, var(--bg)); }
-button.ghost { border-color: transparent; color: var(--muted); }
-button.ghost:hover { color: var(--text); }
-button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
-button.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+/* `ghost` used to render as bare text; under style A it is the same visible
+   secondary button, so the fifteen call sites change without touching views. */
+button.ghost { color: var(--text); }
+/* Text is red mixed toward the body colour: pure --bad on its own tint is
+   4.27:1 dark and 2.24:1 light; this mix is 6.57:1 and 5.22:1 (WCAG AA). */
+button.danger { background: color-mix(in srgb, var(--bad) 12%, transparent); color: color-mix(in srgb, var(--bad) 55%, var(--text)); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+button.danger:hover { background: color-mix(in srgb, var(--bad) 20%, transparent); border-color: var(--bad); }
 button.small { min-height: 34px; padding: 0 10px; font-size: 13px; }
 button.iconbtn { width: var(--tap); padding: 0; }
 button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
@@ -158,7 +163,9 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 .rail { display: none; }
 .view {
   padding: 20px var(--gutter) calc(var(--tabbar) + 24px + env(safe-area-inset-bottom));
-  max-width: 1040px; width: 100%; min-width: 0; margin: 0 auto; animation: view-in var(--dur) var(--ease);
+  /* Wide enough to use a large monitor; card grids auto-fill more columns and
+     reading surfaces (chat, forms, editors) keep their own caps below. */
+  max-width: 1600px; width: 100%; min-width: 0; margin: 0 auto; animation: view-in var(--dur) var(--ease);
 }
 @keyframes view-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 18px; flex-wrap: wrap; }
@@ -264,17 +271,21 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 
 /* Badges: dot + mono label; the label carries the meaning, the dot the colour */
 .badge {
-  display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 6px; border-radius: 999px;
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
-  background: var(--surface-2); white-space: nowrap;
+  /* Labels, not controls: no fill and no pill shape, so nothing that is not
+     clickable looks clickable. The word carries the meaning; the dot the colour. */
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 0;
+  font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+  background: transparent; white-space: nowrap;
 }
-.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+.badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
 .badge.ok { color: var(--text); } .badge.ok::before { background: var(--ok); }
 .badge.bad { color: var(--text); } .badge.bad::before { background: var(--bad); }
 .badge.warn { color: var(--text); } .badge.warn::before { background: var(--warn); }
 .badge.info { color: var(--text); } .badge.info::before { background: var(--info); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); background: var(--surface-2); }
+/* Tags are information, not controls: an outline, no fill, so they never
+   read like the filled buttons. */
+.chip { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); background: transparent; border: 1px solid var(--line); }
 
 /* Content primitives */
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
@@ -356,7 +367,7 @@ td code { color: var(--muted); font-size: 12.5px; }
 .editor { margin-top: 22px; display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 18px; }
 .editor-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .editor-head h2 { margin: 0; text-transform: none; letter-spacing: 0; font-family: var(--mono); font-size: 13px; color: var(--text); flex: 1; }
-.editor-area { width: 100%; min-height: 50vh; font-family: var(--mono); font-size: 13px; line-height: 1.6; padding: 14px; border-radius: var(--radius); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); }
+.editor-area { width: 100%; min-height: 50vh; font-family: var(--mono); font-size: 13px; line-height: 1.6; padding: 14px; border-radius: var(--radius); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); max-width: 110ch; }
 .editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Tasks */
@@ -384,9 +395,10 @@ td code { color: var(--muted); font-size: 12.5px; }
 .memory { display: grid; gap: 16px; }
 .memory-side { display: grid; gap: 8px; align-content: start; }
 .memory-list { display: grid; gap: 2px; max-height: 40vh; overflow-y: auto; }
-.memory-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; text-align: left; border-color: transparent; min-height: 40px; padding: 0 10px; font-weight: 400; font-size: 14px; }
+.memory-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; text-align: left; border-color: transparent; background: transparent; min-height: 40px; padding: 0 10px; font-weight: 400; font-size: 14px; }
 .memory-item .icon { color: var(--muted); }
 .memory-item .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12.5px; }
+.memory-item:hover { background: var(--surface-2); border-color: transparent; }
 .memory-item[aria-current="true"] { background: var(--surface-2); }
 .memory-content { white-space: pre-wrap; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--radius); padding: 16px; max-height: 60vh; overflow: auto; font-size: 13.5px; line-height: 1.6; font-family: var(--mono); }
 @media (min-width: 768px) {
