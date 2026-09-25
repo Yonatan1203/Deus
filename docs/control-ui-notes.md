@@ -359,6 +359,20 @@ Deviations logged during Phase 4:
 - `Deviation:` the disk bar is a styled `<progress>` element rather than a width set from script, so no inline style is ever written.
 - Residual, recorded: a host-side `./container/build.sh` running concurrently with a dashboard rebuild is not detected; `WHISPER_BIN`/`LLAMA_CPP_MODEL`/`DEUS_VAULT_PATH`-style host paths survive the secret denylist and are shown to the operator (never captured — the fixture `.env` is generic).
 
+### Choosing your own password
+
+`node scripts/control-ui-credential.mjs --choose` asks twice at a hidden prompt
+and never prints what was typed. It works only from an interactive terminal:
+there is deliberately no argument, environment variable or pipe that carries a
+password, since those land in shell history, `ps` output or a transcript. The
+floor is 10 characters and there are no composition rules — the operator chose
+convenience over the original "generated" wording, and the UI is loopback-only
+behind the tunnel with login backoff. Any unrecognised option exits 2 before
+anything is written, because the old script ignored its arguments and a typo
+like `--chose` silently rotated to a random password. The running server picks
+up the change on the next request and signs every session out; no restart.
+Forgotten? Run the script with no flag from a terminal for a fresh random one.
+
 ## Phase 5 — deployment record (generic)
 
 Deployed by merging `control-ui` into the instance's running branch, building,
