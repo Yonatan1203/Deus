@@ -1030,3 +1030,18 @@ limit of 120 a minute) and `GET /api/v1/claude/commands`. No new write route.
   and effort; restoring it was left to the operator.
 - Known limit: a message sent a few seconds after `/model` was lost once; not
   investigated further because each attempt changes the saved defaults.
+
+## Claude tab: running sessions stand out (2026-09-26)
+
+Operator request: make it clear which sessions are actively running. A
+working session gets an orange dot with a pulsing ring, a turning ✻ with
+"Working", and a tinted row; a "N sessions running" line (one persistent
+`role=status` region, updated in place) heads the list; the open session's
+header shows the same mark. Reduced motion keeps the marks, without movement.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Working row, desktop 1440 | orange dot + ring, ✻ Working, tinted row | dot `rgb(217, 119, 87)`, `spin` animation — `artifacts/claude-running-row-desktop.png` | PASS |
+| Summary line | count of working sessions, same node across list redraws | "2 sessions running"; node still connected after a status poll redraw — `artifacts/claude-running-summary-desktop.png` | PASS |
+| Open session header | ✻ Working | `artifacts/claude-running-header.png` | PASS |
+| Phone 390 px, reduced motion | marks shown, no animation, no sideways scroll | animation `none`, 0 px overflow — `artifacts/claude-running-row-mobile.png` | PASS |

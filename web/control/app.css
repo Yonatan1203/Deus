@@ -491,6 +491,18 @@ table.kv input { min-height: 36px; }
 .session-main { display: grid; gap: 2px; min-width: 0; }
 .session-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-sub { color: var(--muted); font-size: 13px; }
+.session-item.running .session-sub, .claude-title .status.running { color: var(--accent-text); }
+.session-item.running { background: color-mix(in srgb, var(--primary) 7%, transparent); }
+.session-item.running.selected { background: color-mix(in srgb, var(--primary) 12%, var(--surface-2)); }
+.session-item .dot.running { background: var(--primary); position: relative; }
+.session-item .dot.running::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--primary); opacity: 0; animation: ring 1.6s ease-out infinite; }
+.spin { display: inline-block; margin-right: 5px; color: var(--primary); animation: spin 2.4s linear infinite; }
+.claude-side { display: grid; align-content: start; min-width: 0; }
+.running-summary[hidden] { display: none; }
+.running-summary { display: flex; align-items: center; gap: 2px; margin: 0 12px 6px; font-size: 13px; color: var(--accent-text); }
+@keyframes ring { 0% { transform: scale(0.6); opacity: 0.8; } 100% { transform: scale(1.5); opacity: 0; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .session-item .dot.running::after, .spin { animation: none; } .session-item .dot.running::after { opacity: 0.5; transform: none; } }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.idle { background: var(--muted); }
 .claude-pane { display: grid; grid-template-rows: auto auto 1fr auto; gap: 10px; min-width: 0; min-height: 0; }
@@ -519,7 +531,7 @@ table.kv input { min-height: 36px; }
 /* Phone: an open session takes the whole screen, with a key bar for the keys
    a phone keyboard cannot send. */
 @media (max-width: 767px) {
-  body.claude-full .claude-sessions, body.claude-full .page-head, body.claude-full .new-session, body.claude-full .tabbar { display: none; }
+  body.claude-full .claude-side, body.claude-full .claude-sessions, body.claude-full .page-head, body.claude-full .new-session, body.claude-full .tabbar { display: none; }
   body.claude-full .view { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
   body.claude-full .claude-bar .back { display: inline-flex; }
   body.claude-full .term-host { padding: 6px; }

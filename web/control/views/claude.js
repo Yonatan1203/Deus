@@ -26,6 +26,13 @@ function stateOf(s) {
   return ['idle', 'idle'];
 }
 
+/** Claude's own "working" mark, turning; still under reduced motion. */
+const spinner = () => h('span', { class: 'spin', 'aria-hidden': 'true' }, '✻');
+function setStatus(el, label, kind) {
+  const running = label === 'working';
+  el.className = `status ${kind}${running ? ' running' : ''}`;
+  el.replaceChildren(...(running ? [spinner(), 'Working'] : [label]));
+}
 const MODE_KEY = 'claude.mode';
 const isShown = (el) => (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.offsetParent !== null);
 function readMode() {
@@ -218,7 +225,10 @@ export async function render(root, api, bus, me) {
   const readOnly = Boolean(me && me.read_only);
   const list = h('div', { class: 'claude-sessions', role: 'list' });
   const pane = h('section', { class: 'claude-pane' });
-  const wrap = h('div', { class: 'claude-layout' }, list, pane);
+  const runningText = h('span', {});
+  const summary = h('div', { class: 'running-summary', role: 'status', hidden: true }, spinner(), runningText);
+  const side = h('div', { class: 'claude-side' }, summary, list);
+  const wrap = h('div', { class: 'claude-layout' }, side, pane);
   let sessions = [];
   let liveAvailable = false;
   let current = null; // { id, view }
@@ -273,12 +283,15 @@ export async function render(root, api, bus, me) {
   function row(s) {
     const [label, kind] = stateOf(s);
     // Two sibling buttons, never one inside the other.
-    return h('div', { role: 'listitem', class: `session-item${current && current.id === s.id ? ' selected' : ''}${s.pinned ? ' pinned' : ''}`, 'data-id': s.id },
+    const running = label === 'working';
+    return h('div', { role: 'listitem', class: `session-item${current && current.id === s.id ? ' selected' : ''}${s.pinned ? ' pinned' : ''}${running ? ' running' : ''}`, 'data-id': s.id },
       h('button', { type: 'button', class: 'session-row', onclick: () => select(s) },
-        h('span', { class: `dot ${kind}`, 'aria-hidden': 'true' }),
+        h('span', { class: `dot ${kind}${running ? ' running' : ''}`, 'aria-hidden': 'true' }),
         h('span', { class: 'session-main' },
           h('span', { class: 'session-name' }, s.name),
-          h('span', { class: 'session-sub' }, [label, ago(s.last_active || s.started_at)].filter(Boolean).join(' · ')))),
+          h('span', { class: 'session-sub' },
+            running ? spinner() : null,
+            [running ? 'Working' : label, ago(s.last_active || s.started_at)].filter(Boolean).join(' · ')))),
       readOnly ? null : pinButton(s, false));
   }
   function draw() {
@@ -286,6 +299,11 @@ export async function render(root, api, bus, me) {
     if (sessions.length === 0) { list.append(h('div', { class: 'empty' }, 'No sessions yet. Start one with New session.')); return; }
     const order = { 'needs you': 0, working: 1, idle: 2, done: 3 };
     const sorted = [...sessions].sort((a, b) => (order[stateOf(a)[0]] - order[stateOf(b)[0]]) || ((b.last_active || 0) - (a.last_active || 0)));
+    // One live region kept across redraws, so screen readers hear changes only.
+    const busy = sessions.filter((s) => stateOf(s)[0] === 'working').length;
+    const text = busy ? `${busy} ${busy === 1 ? 'session' : 'sessions'} running` : '';
+    if (runningText.textContent !== text) runningText.textContent = text;
+    summary.hidden = !busy;
     const pinned = sorted.filter((s) => s.pinned);
     const rest = sorted.filter((s) => !s.pinned);
     if (pinned.length) list.append(h('div', { class: 'session-group', role: 'presentation' }, 'Pinned'), ...pinned.map(row));
@@ -299,8 +317,7 @@ export async function render(root, api, bus, me) {
     const open = current && sessions.find((x) => x.id === current.id);
     if (open && current.statusEl) {
       const [l, k] = stateOf(open);
-      current.statusEl.textContent = l;
-      current.statusEl.className = `status ${k}`;
+      setStatus(current.statusEl, l, k);
       if (current.conv) current.conv.setSession(open);
     }
   }
@@ -328,7 +345,8 @@ export async function render(root, api, bus, me) {
     draw();
     clear(pane);
     const [label, kind] = stateOf(s);
-    const statusEl = h('span', { class: `status ${kind}` }, label);
+    const statusEl = h('span', {});
+    setStatus(statusEl, label, kind);
     current.statusEl = statusEl;
     const pinSlot = h('span', { class: 'pin-slot' }, readOnly ? null : pinButton(s, true));
     current.pinSlot = pinSlot;
