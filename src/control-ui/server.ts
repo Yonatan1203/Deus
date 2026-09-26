@@ -3001,7 +3001,7 @@ export function createControlServer(
       if (method !== 'GET' && method !== 'HEAD') {
         return writeJson(res, 405, { error: 'method not allowed' });
       }
-      return staticHandler(deps.webRoot, url.pathname, res);
+      return staticHandler(deps.webRoot, url.pathname, res, req);
     }
 
     const match = router.match(method, url.pathname);

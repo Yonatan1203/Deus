@@ -1,6 +1,8 @@
+import crypto from 'crypto';
 import fs from 'fs';
-import type { ServerResponse } from 'http';
+import type { IncomingHttpHeaders, ServerResponse } from 'http';
 import path from 'path';
+import zlib from 'zlib';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -45,31 +47,88 @@ export function resolveStaticPath(
   return full;
 }
 
+// Text is worth compressing over an SSH tunnel to a phone; fonts and images
+// are already packed. Gzipped bytes and the ETag are memoized per file
+// version, so a request costs a stat, not a compression. Compressing is
+// synchronous on purpose: it happens once per file version for a few small
+// files, on a single-operator server.
+const COMPRESSIBLE = new Set([
+  '.html',
+  '.js',
+  '.css',
+  '.json',
+  '.webmanifest',
+  '.svg',
+]);
+const MEMO_MAX = 64;
+const memo = new Map<
+  string,
+  { key: string; raw: Buffer; gz: Buffer | null; etag: string }
+>();
+
 export function serveStatic(
   rootDir: string,
   urlPath: string,
   res: ServerResponse,
+  req?: { headers: IncomingHttpHeaders },
 ): void {
   const full = resolveStaticPath(rootDir, urlPath);
-  let data: Buffer;
+  let st: fs.Stats;
   try {
-    if (!full || !fs.statSync(full).isFile()) throw new Error('not a file');
-    data = fs.readFileSync(full);
+    if (!full) throw new Error('bad path');
+    st = fs.statSync(full);
+    if (!st.isFile()) throw new Error('not a file');
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('not found');
     return;
   }
   const ext = path.extname(full).toLowerCase();
+  const key = `${st.mtimeMs}:${st.size}`;
+  let entry = memo.get(full);
+  if (!entry || entry.key !== key) {
+    let raw: Buffer;
+    try {
+      raw = fs.readFileSync(full);
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('not found');
+      return;
+    }
+    entry = {
+      key,
+      raw,
+      gz: COMPRESSIBLE.has(ext) ? zlib.gzipSync(raw, { level: 6 }) : null,
+      etag: `"${crypto.createHash('sha1').update(raw).digest('hex')}"`,
+    };
+    memo.delete(full);
+    memo.set(full, entry);
+    if (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value as string); // non-empty: size > 0
+  }
   // The shell and the service worker must never be served stale; assets may be.
   const cache =
     ext === '.html' || path.basename(full) === 'sw.js'
       ? 'no-cache'
       : 'public, max-age=3600';
-  res.writeHead(200, {
+  const headers: Record<string, string | number> = {
     'Content-Type': TYPES[ext] ?? 'application/octet-stream',
-    'Content-Length': data.length,
     'Cache-Control': cache,
-  });
-  res.end(data);
+    ETag: entry.etag,
+    Vary: 'Accept-Encoding',
+  };
+  const ifNoneMatch = req?.headers['if-none-match'];
+  if (
+    ifNoneMatch &&
+    ifNoneMatch.split(',').some((t) => t.trim() === entry.etag)
+  ) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+  const accept = String(req?.headers['accept-encoding'] ?? '');
+  const body = entry.gz && /\bgzip\b/.test(accept) ? entry.gz : entry.raw;
+  if (body !== entry.raw) headers['Content-Encoding'] = 'gzip';
+  headers['Content-Length'] = body.length;
+  res.writeHead(200, headers);
+  res.end(body);
 }

@@ -4687,3 +4687,30 @@ describe('control-ui server — one agent', () => {
       ).toBe(404);
   });
 });
+
+describe('control-ui server — static compression', () => {
+  it('gzips app.css for a client that accepts it, and not otherwise', async () => {
+    fs.mkdirSync(path.join(root, 'web'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'web', 'app.css'),
+      '.a{color:red}\n'.repeat(300),
+    );
+    await boot();
+    const gz = await request({
+      method: 'GET',
+      path: '/app.css',
+      headers: { 'Accept-Encoding': 'gzip' },
+    });
+    expect(gz.status).toBe(200);
+    expect(gz.headers['content-encoding']).toBe('gzip');
+    expect(gz.headers['vary']).toBe('Accept-Encoding');
+    const plain = await request({ method: 'GET', path: '/app.css' });
+    expect(plain.headers['content-encoding']).toBeUndefined();
+    const again = await request({
+      method: 'GET',
+      path: '/app.css',
+      headers: { 'If-None-Match': String(plain.headers['etag']) },
+    });
+    expect(again.status).toBe(304);
+  });
+});

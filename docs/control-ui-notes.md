@@ -1151,3 +1151,20 @@ P2 5) and the copy-writer table from the same day.
 | Wording | no raw codes; one rate-limit sentence; mapped live-view endings | LIVE_END map, "Couldn't open the live view — try again in a moment.", `limitToast`, `serverError` fallback in the views this pass rewrites (claude, chat, artifacts, agents, workflows; browser.js only got the shared list wording) | PASS |
 | Re-reviews | no P0/P1, no critical/major | ux-reviewer ACCEPTABLE (one minor, fixed: typing row label); copy-writer ACCEPTABLE (two major, fixed: no toast on background polls, Workflows "protocol" wording; helper wired in) | PASS |
 | Suite | green | control-ui + scripts 370 (43 files); eslint clean; 0 px overflow on claude/chat/artifacts/agents at 3 viewports | PASS |
+
+## Quality pass 2 of 3: static compression and caching (2026-09-26)
+
+Plan Task 3. `static.ts` gzips text types when the client accepts it, sends an
+ETag and answers 304 to `If-None-Match`; gzipped bytes and the tag are memoized
+per file version. Measured with the new `scripts/control-ui-perf.mjs` on the
+live-session fixture.
+
+| Check | Before | After | Disposition |
+|-------|--------|-------|-------------|
+| Cold load, bytes | 315 KB over 36 requests | 172 KB over 36 requests | PASS |
+| `app.css` | 49.9 KB, identity | 11.1 KB, gzip | PASS |
+| `views/claude.js` | 29.6 KB, identity | 10.3 KB, gzip | PASS |
+| Fonts | identity | identity (never gzipped) | PASS |
+| First paint / Claude tab ready | 88 ms / 318 ms | 132 ms / 323 ms (same run-to-run spread as before) | PASS |
+| 304 | — | `If-None-Match` with the served ETag → 304, no body (unit + HTTP tests) | PASS |
+| Suite | — | static 6, server 73; tsc, eslint clean | PASS |
