@@ -88,9 +88,15 @@ async function login(password = PASSWORD) {
 function fakeRuntime(opts: { gate?: Promise<void> } = {}) {
   const closeStdin = vi.fn();
   const notifyIdle = vi.fn();
+  const contexts: Record<string, unknown>[] = [];
   const backend = {
     name: () => 'claude' as const,
-    runTurn: async (_c: unknown, _s: unknown, sink: RuntimeEventSink) => {
+    runTurn: async (
+      c: Record<string, unknown>,
+      _s: unknown,
+      sink: RuntimeEventSink,
+    ) => {
+      contexts.push(c);
       await sink({ type: 'output_text', text: 'hi' });
       await sink({ type: 'tool_call', name: 'Read', arguments: { path: 'x' } });
       if (opts.gate) await opts.gate;
@@ -132,7 +138,7 @@ function fakeRuntime(opts: { gate?: Promise<void> } = {}) {
       },
     }),
   } as unknown as WebTurnDeps;
-  return { runtime, closeStdin, notifyIdle, snapshotState };
+  return { runtime, closeStdin, notifyIdle, snapshotState, contexts };
 }
 
 function fakeStore(root: string): ControlStore {
@@ -556,26 +562,65 @@ describe('control-ui server — chat, sessions, groups', () => {
     ).toBe(503);
   });
 
-  it('streams a chat turn as SSE frames and rejects empty messages', async () => {
-    const { runtime } = fakeRuntime();
-    await boot({ runtime, store: fakeStore(root) });
-    const { auth } = await login();
-    expect(
+  const cfg = () => path.join(root, 'cfg');
+  const newChat = async (auth: Record<string, string>, body = '{}') =>
+    JSON.parse(
       (
         await request({
           method: 'POST',
-          path: '/api/v1/chat/turns',
+          path: '/api/v1/chats',
           headers: { ...auth, ...H },
-          body: '{"message":""}',
+          body,
         })
-      ).status,
+      ).text,
+    );
+  const getChat = async (auth: Record<string, string>, id: string) =>
+    JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: `/api/v1/chats/${id}`,
+          headers: auth,
+        })
+      ).text,
+    );
+
+  it("streams a turn of a saved chat, saves both sides, and uses the chat's model", async () => {
+    const { runtime, contexts } = fakeRuntime();
+    await boot({ runtime, store: fakeStore(root), configDir: cfg() });
+    const { auth } = await login();
+    const post = (body: string) =>
+      request({
+        method: 'POST',
+        path: '/api/v1/chat/turns',
+        headers: { ...auth, ...H },
+        body,
+      });
+    // The old browser-history body is gone: a chat is required.
+    expect((await post('{"message":"hi"}')).status).toBe(400);
+    const chat = await newChat(auth);
+    expect(
+      (await post(JSON.stringify({ chat_id: chat.id, message: '' }))).status,
     ).toBe(400);
+    expect(
+      (
+        await post(
+          JSON.stringify({ chat_id: 'ffffffffffffffff', message: 'hi' }),
+        )
+      ).status,
+    ).toBe(404);
+    await request({
+      method: 'PATCH',
+      path: `/api/v1/chats/${chat.id}`,
+      headers: { ...auth, ...H },
+      body: JSON.stringify({ model: 'claude-sonnet-5', effort: 'high' }),
+    });
     const r = await streamRequest(
       {
         method: 'POST',
         path: '/api/v1/chat/turns',
         headers: { ...auth, ...H },
-        body: '{"message":"hi","history":[{"role":"assistant","content":"earlier"}]}',
+        body: JSON.stringify({ chat_id: chat.id, message: 'What is ready?' }),
       },
       () => {},
     );
@@ -587,24 +632,83 @@ describe('control-ui server — chat, sessions, groups', () => {
       'tool_call',
       'turn_complete',
     ]);
-    expect(r.text).toContain('"name":"Read"');
+    expect(contexts.at(-1)).toMatchObject({
+      model: 'claude-sonnet-5',
+      effort: 'high',
+    });
+    const saved = await getChat(auth, chat.id);
+    expect(saved.title).toBe('What is ready?');
+    expect(saved.running_turn_id).toBeNull();
+    expect(
+      saved.messages.map((m: { role: string; text: string }) => [
+        m.role,
+        m.text,
+      ]),
+    ).toEqual([
+      ['user', 'What is ready?'],
+      ['assistant', 'hi'],
+    ]);
+    expect(saved.messages[1].activity).toEqual(['Used Read']);
   });
 
-  it('aborts a running turn via DELETE and refuses foreign or unknown ids', async () => {
+  it('keeps the reply when the browser leaves mid-turn, and shows the running turn meanwhile', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
+    const { runtime } = fakeRuntime({ gate });
+    await boot({ runtime, store: fakeStore(root), configDir: cfg() });
+    const { auth } = await login();
+    const chat = await newChat(auth);
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          method: 'POST',
+          path: '/api/v1/chat/turns',
+          headers: { ...auth, ...H },
+        },
+        (res) => {
+          res.once('data', () => {
+            req.destroy(); // the phone locks
+            resolve();
+          });
+        },
+      );
+      req.on('error', () => {});
+      req.on('close', resolve);
+      req.end(JSON.stringify({ chat_id: chat.id, message: 'hi' }));
+      setTimeout(() => reject(new Error('no stream')), 5000);
+    });
+    const during = await getChat(auth, chat.id);
+    expect(during.running_turn_id).toMatch(/^[0-9a-f]{16}$/);
+    release();
+    await new Promise((r) => setTimeout(r, 50));
+    const after = await getChat(auth, chat.id);
+    expect(after.running_turn_id).toBeNull();
+    expect(after.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      text: 'hi',
+    });
+  });
+
+  it('stops a running turn via DELETE, saves "Stopped", and refuses foreign or unknown ids', async () => {
     let release!: () => void;
     const gate = new Promise<void>((res) => {
       release = res;
     });
     const { runtime, closeStdin } = fakeRuntime({ gate });
-    await boot({ runtime, store: fakeStore(root) });
+    await boot({ runtime, store: fakeStore(root), configDir: cfg() });
     const { auth } = await login();
+    const chat = await newChat(auth);
     let deleted: Promise<Reply> | null = null;
     const r = await streamRequest(
       {
         method: 'POST',
         path: '/api/v1/chat/turns',
         headers: { ...auth, ...H },
-        body: '{"message":"hi"}',
+        body: JSON.stringify({ chat_id: chat.id, message: 'hi' }),
       },
       (text) => {
         const m = /event: turn_started\ndata: (\{.*\})/.exec(text);
@@ -623,6 +727,10 @@ describe('control-ui server — chat, sessions, groups', () => {
     expect(r.text).toContain('event: error');
     expect(r.text).toContain('turn stopped by user');
     release();
+    expect((await getChat(auth, chat.id)).messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      error: 'Stopped',
+    });
     expect(
       (
         await request({
@@ -654,9 +762,102 @@ describe('control-ui server — chat, sessions, groups', () => {
     foreign.abort();
   });
 
-  it('refuses chat and abort in read-only mode', async () => {
+  it('chat list, import, rename, settings and a confirmed delete', async () => {
+    await boot({ configDir: cfg() });
+    const { auth } = await login();
+    const imported = await newChat(
+      auth,
+      JSON.stringify({
+        title: 'Earlier chat',
+        messages: [
+          { role: 'user', text: 'old question', at: 1 },
+          { role: 'assistant', text: 'old answer', at: 2 },
+        ],
+      }),
+    );
+    expect(imported.imported).toBe(2);
+    const bad = await request({
+      method: 'POST',
+      path: '/api/v1/chats',
+      headers: { ...auth, ...H },
+      body: JSON.stringify({ messages: [{ role: 'system', text: 'x' }] }),
+    });
+    expect(bad.status).toBe(400);
+    const list = JSON.parse(
+      (await request({ method: 'GET', path: '/api/v1/chats', headers: auth }))
+        .text,
+    );
+    expect(list.chats.map((c: { title: string }) => c.title)).toEqual([
+      'Earlier chat',
+    ]);
+    const patch = (body: unknown) =>
+      request({
+        method: 'PATCH',
+        path: `/api/v1/chats/${imported.id}`,
+        headers: { ...auth, ...H },
+        body: JSON.stringify(body),
+      });
+    expect((await patch({ model: 'gpt-4' })).status).toBe(400);
+    expect((await patch({ effort: 'extreme' })).status).toBe(400);
+    expect(JSON.parse((await patch({ title: 'Renamed' })).text).title).toBe(
+      'Renamed',
+    );
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/chats/..%2F..%2Fetc',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    const del = (confirm?: string) =>
+      request({
+        method: 'DELETE',
+        path: `/api/v1/chats/${imported.id}`,
+        headers: { ...auth, ...(confirm ? { 'X-Confirm': confirm } : {}) },
+      });
+    expect((await del()).status).toBe(428);
+    expect((await del(imported.id)).status).toBe(204);
+    expect((await getChat(auth, imported.id)).error).toBe('not found');
+  });
+
+  it("lists Amos's commands and whether models can be picked", async () => {
+    fs.mkdirSync(path.join(root, 'container', 'skills', 'status'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(root, 'container', 'skills', 'status', 'SKILL.md'),
+      '---\nname: status\ndescription: Quick health check.\n---\n',
+    );
     const { runtime } = fakeRuntime();
-    await boot({ runtime, store: fakeStore(root), readOnly: true });
+    await boot({ runtime, store: fakeStore(root), configDir: cfg() });
+    const { auth } = await login();
+    const r = JSON.parse(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/chat/commands',
+          headers: auth,
+        })
+      ).text,
+    );
+    expect(r).toEqual({
+      commands: [
+        { name: 'status', description: 'Quick health check.', source: 'amos' },
+      ],
+      models: true,
+    });
+  });
+
+  it('refuses chat writes and abort in read-only mode, but lists chats', async () => {
+    const { runtime } = fakeRuntime();
+    await boot({
+      runtime,
+      store: fakeStore(root),
+      readOnly: true,
+      configDir: cfg(),
+    });
     const { auth } = await login();
     expect(
       (
@@ -668,6 +869,20 @@ describe('control-ui server — chat, sessions, groups', () => {
         })
       ).status,
     ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/chats',
+          headers: { ...auth, ...H },
+          body: '{}',
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (await request({ method: 'GET', path: '/api/v1/chats', headers: auth }))
+        .status,
+    ).toBe(200);
     expect(
       (
         await request({

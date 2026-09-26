@@ -264,4 +264,31 @@ describe('startWebTurn', () => {
     await tick();
     expect(onDone).toHaveBeenCalledTimes(1);
   });
+
+  it('puts a chosen model and effort into the run context', async () => {
+    const d = deps();
+    let ctx: Record<string, unknown> = {};
+    (d.registry as unknown as { resolve: () => unknown }).resolve = () => ({
+      name: () => 'claude' as const,
+      runTurn: async (
+        c: Record<string, unknown>,
+        _s: unknown,
+        sink: RuntimeEventSink,
+      ) => {
+        ctx = c;
+        await sink({ type: 'turn_complete' });
+        return { status: 'success', result: '' };
+      },
+    });
+    const r = startWebTurn(d, {
+      ...base,
+      model: 'claude-opus-5-5',
+      effort: 'high',
+      onEvent: vi.fn(),
+      onDone: vi.fn(),
+    });
+    expect(r.ok).toBe(true);
+    await tick();
+    expect(ctx).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' });
+  });
 });

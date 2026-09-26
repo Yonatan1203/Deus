@@ -10,7 +10,7 @@ import { redactSecrets } from './logs.js';
 export interface SlashCommand {
   name: string;
   description: string;
-  source: 'built-in' | 'project' | 'personal';
+  source: 'built-in' | 'project' | 'personal' | 'amos';
 }
 
 const NAME_RE = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
@@ -50,7 +50,8 @@ function readInside(root: string, file: string): string | null {
   }
 }
 
-function parse(
+/** Frontmatter `name`/`description` of a skill or command file; null when it is not one to offer. */
+export function parseSkillFile(
   body: string,
   fallbackName: string,
 ): { name: string; description: string } | null {
@@ -88,7 +89,7 @@ function scan(
   const add = (root: string, file: string, fallback: string) => {
     const body = readInside(root, file);
     if (body === null) return;
-    const c = parse(body, fallback);
+    const c = parseSkillFile(body, fallback);
     if (c && !out.has(c.name)) out.set(c.name, { ...c, source });
   };
   const skills = safeReal(path.join(base, '.claude', 'skills'));
@@ -145,4 +146,38 @@ export function readSlashCommands(
     .slice(0, LIST_MAX);
   cache = { key, at: now, list };
   return list;
+}
+
+const SKILL_DIR_MAX = 100;
+
+/**
+ * Skills directly under `dir` (`<dir>/<name>/SKILL.md` or `skill.md`), with
+ * the same guards as the Claude list. Used for Amos's own container skills.
+ */
+export function readSkillDir(
+  dir: string,
+  source: SlashCommand['source'],
+): SlashCommand[] {
+  const root = safeReal(dir);
+  if (!root) return [];
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+  const out = new Map<string, SlashCommand>();
+  for (const d of dirs.sort()) {
+    for (const f of ['SKILL.md', 'skill.md']) {
+      const file = path.join(root, d, f);
+      if (!fs.existsSync(file)) continue;
+      const body = readInside(root, file);
+      const c = body === null ? null : parseSkillFile(body, d);
+      if (c && !out.has(c.name)) out.set(c.name, { ...c, source });
+      break;
+    }
+  }
+  return [...out.values()]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, SKILL_DIR_MAX);
 }

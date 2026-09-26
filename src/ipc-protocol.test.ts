@@ -7,7 +7,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { ContainerOutputSchema, IpcMessageFileSchema } from './ipc-protocol.js';
+import {
+  ContainerInputSchema,
+  ContainerOutputSchema,
+  IpcMessageFileSchema,
+} from './ipc-protocol.js';
+import { AGENT_MODELS } from './types.js';
 
 // ── ContainerOutputSchema ───────────────────────────────────────────────────
 
@@ -113,5 +118,27 @@ describe('IpcMessageFileSchema', () => {
       text: 'Hello',
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('ContainerInputSchema model', () => {
+  const base = {
+    prompt: 'hi',
+    groupFolder: 'main',
+    chatJid: 'c@g.us',
+    isControlGroup: true,
+  };
+  it('accepts each allowed model, and no model', () => {
+    for (const model of AGENT_MODELS)
+      expect(ContainerInputSchema.safeParse({ ...base, model }).success).toBe(
+        true,
+      );
+    expect(ContainerInputSchema.safeParse(base).success).toBe(true);
+  });
+  it('refuses anything else', () => {
+    for (const model of ['opus', 'claude-opus-4-1', '', 'x; rm -rf /', 42])
+      expect(ContainerInputSchema.safeParse({ ...base, model }).success).toBe(
+        false,
+      );
   });
 });

@@ -111,6 +111,7 @@ export class ContainerRuntime implements AgentRuntime {
         isScheduledTask: runContext.isScheduledTask,
         assistantName: this.deps.assistantName,
         effort,
+        ...(runContext.model && { model: runContext.model }),
         ...(runContext.imageInputs?.length && {
           imageAttachments: runContext.imageInputs,
         }),

@@ -14,7 +14,7 @@ import { GroupQueue } from './group-queue.js';
 import { scanForInjection } from './guardrails/injection-scanner.js';
 import { logger } from './logger.js';
 import { getAvailableGroups } from './router-state.js';
-import { RegisteredGroup } from './types.js';
+import { AgentEffortLevel, AgentModel, RegisteredGroup } from './types.js';
 
 /**
  * One web-originated agent turn on the control group's jid, shared by the
@@ -41,6 +41,9 @@ export interface WebTurnOptions {
   remoteAddr: string;
   onEvent: (event: RuntimeEvent) => void;
   onDone: (error?: string) => void;
+  /** Per-turn model and effort (web chat); unset keeps the group's own. */
+  model?: AgentModel;
+  effort?: AgentEffortLevel;
   /** Runs after admission, before the turn is enqueued — write transport preambles here. */
   onAccepted?: (id: string) => void;
 }
@@ -197,6 +200,8 @@ export function startWebTurn(
     chatJid: mainJid,
     isControlGroup: true,
     ...(opts.stream && { stream: true }),
+    ...(opts.model && { model: opts.model }),
+    ...(opts.effort && { effort: opts.effort }),
   };
 
   let completed = false;

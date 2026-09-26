@@ -52,7 +52,8 @@ import {
 import { createDockerRunner, type DockerRunner } from './api/docker.js';
 import { containerLogs, queryLogs, redactSecrets } from './api/logs.js';
 import { createConversationReader } from './api/claude-conversation.js';
-import { readSlashCommands } from './api/claude-commands.js';
+import { readSkillDir, readSlashCommands } from './api/claude-commands.js';
+import { createChatStore } from './api/chat-store.js';
 import { readSystem, type SystemView } from './api/system.js';
 import { readConfig, writeConfig } from './api/config.js';
 import {
@@ -134,7 +135,12 @@ import {
   resolveTmuxBin,
   type LiveViews,
 } from './api/claude-live.js';
-import type { Channel } from '../types.js';
+import {
+  AGENT_MODELS,
+  VALID_EFFORT_LEVELS,
+  type AgentEffortLevel,
+  type Channel,
+} from '../types.js';
 import type { ControlStore } from './store.js';
 import {
   clearSessionCookie,
@@ -237,6 +243,8 @@ const CLAUDE_MD_BODY_CAP = Math.floor(CLAUDE_MD_MAX_BYTES * 1.5);
 const CLAUDE_MD_WRITES_PER_MIN = 6;
 const QUEUE_POLL_MS = 2000;
 const TASK_MUTATIONS_PER_MIN = 6;
+const CHAT_CHANGES_PER_MIN = 60;
+const CHAT_IMPORT_MAX_BYTES = 1024 * 1024;
 const TASK_CREATES_PER_SESSION = 50;
 const ACTIVE_TASK_CAP = 100;
 const SESSION_COUNTERS_MAX = 1000;
@@ -429,6 +437,7 @@ export function createControlServer(
   const loginLimiter = createRateLimiter(LOGIN_RATE_MAX, LOGIN_RATE_WINDOW_MS);
   const claudeMdLimiter = createRateLimiter(CLAUDE_MD_WRITES_PER_MIN, 60_000);
   const taskLimiter = createRateLimiter(TASK_MUTATIONS_PER_MIN, 60_000);
+  const chatLimiter = createRateLimiter(CHAT_CHANGES_PER_MIN, 60_000);
   const memoryLimiter = createRateLimiter(MEMORY_WRITES_PER_MIN, 60_000);
   const configLimiter = createRateLimiter(CONFIG_WRITES_PER_MIN, 60_000);
   const dockerReadLimiter = createRateLimiter(DOCKER_READS_PER_MIN, 60_000);
@@ -493,6 +502,12 @@ export function createControlServer(
         : null;
   // Leftovers from a previous process on the private socket.
   if (liveViews && opts.liveViews === undefined) void liveViews.killLeftovers();
+  // Chats with Amos, saved so every device sees the same list. A chat still
+  // marked running was cut off by a restart; it says so before anyone looks.
+  const chatStore = deps.configDir
+    ? createChatStore(path.join(deps.configDir, 'control-ui', 'chats'), now)
+    : null;
+  chatStore?.interruptStale();
   const claudePins = deps.configDir
     ? createPins(path.join(deps.configDir, 'control-ui', 'claude-pins.json'))
     : null;
@@ -772,16 +787,162 @@ export function createControlServer(
     }
   };
 
+  const chatGate = (ctx: RequestContext) => {
+    if (!chatStore) {
+      writeJson(ctx.res, 503, { error: 'chats unavailable' });
+      return null;
+    }
+    return chatStore;
+  };
+  const chatWrite = (ctx: RequestContext) => {
+    const cs = chatGate(ctx);
+    if (!cs) return null;
+    if (
+      chatLimiter.isRateLimited(ctx.session?.shortId ?? ctx.remoteAddr, now())
+    ) {
+      writeJson(ctx.res, 429, { error: 'too many changes — wait a minute' });
+      return null;
+    }
+    return cs;
+  };
+  const chatAudit = (ctx: RequestContext, event: string, chatId: string) =>
+    logger.info(
+      { event, chatId, remoteAddr: ctx.remoteAddr, actor: actor(ctx.session) },
+      'Control UI chat',
+    );
+  // Only the id and what happened: never message text.
+  const chatChanged = (id: string, action: string) =>
+    hub.broadcast('chat', { id, action });
+
+  router.add('GET', '/api/v1/chats', (ctx) => {
+    const cs = chatGate(ctx);
+    if (!cs) return;
+    writeJson(ctx.res, 200, { chats: cs.list() });
+  });
+  router.add(
+    'POST',
+    '/api/v1/chats',
+    (ctx) => {
+      const cs = chatWrite(ctx);
+      if (!cs) return;
+      const b = (ctx.body ?? {}) as { title?: unknown; messages?: unknown };
+      if (b.messages !== undefined && !Array.isArray(b.messages))
+        return writeJson(ctx.res, 400, { error: 'messages must be a list' });
+      const r = cs.create({
+        title: typeof b.title === 'string' ? b.title : undefined,
+        messages: b.messages as unknown[] | undefined,
+      });
+      if ('error' in r) return writeJson(ctx.res, 400, { error: r.error });
+      chatAudit(
+        ctx,
+        b.messages ? 'control_ui_chat_import' : 'control_ui_chat_create',
+        r.id,
+      );
+      chatChanged(r.id, 'created');
+      writeJson(ctx.res, 200, { ...r, imported: r.messages.length });
+    },
+    { maxBody: CHAT_IMPORT_MAX_BYTES },
+  );
+  router.add('GET', '/api/v1/chats/:id', (ctx) => {
+    const cs = chatGate(ctx);
+    if (!cs) return;
+    const c = cs.get(ctx.params.id);
+    if (!c) return writeJson(ctx.res, 404, { error: 'not found' });
+    writeJson(ctx.res, 200, c);
+  });
+  router.add(
+    'PATCH',
+    '/api/v1/chats/:id',
+    (ctx) => {
+      const cs = chatWrite(ctx);
+      if (!cs) return;
+      const b = (ctx.body ?? {}) as {
+        title?: unknown;
+        model?: unknown;
+        effort?: unknown;
+      };
+      const patch: Parameters<typeof cs.update>[1] = {};
+      if (typeof b.title === 'string') patch.title = b.title;
+      if (b.model !== undefined) {
+        if (
+          b.model !== null &&
+          !(AGENT_MODELS as readonly unknown[]).includes(b.model)
+        )
+          return writeJson(ctx.res, 400, { error: 'unknown model' });
+        patch.model = b.model as (typeof AGENT_MODELS)[number] | null;
+      }
+      if (b.effort !== undefined) {
+        if (
+          b.effort !== null &&
+          !(VALID_EFFORT_LEVELS as readonly unknown[]).includes(b.effort)
+        )
+          return writeJson(ctx.res, 400, { error: 'unknown effort' });
+        patch.effort = b.effort as AgentEffortLevel | null;
+      }
+      const c = cs.update(ctx.params.id, patch);
+      if (!c) return writeJson(ctx.res, 404, { error: 'not found' });
+      chatChanged(c.id, 'updated');
+      writeJson(ctx.res, 200, c);
+    },
+    { maxBody: 1024 },
+  );
+  router.add('DELETE', '/api/v1/chats/:id', (ctx) => {
+    const cs = chatWrite(ctx);
+    if (!cs) return;
+    const id = ctx.params.id;
+    if (header(ctx.req, 'x-confirm') !== id)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    if (!cs.remove(id)) return writeJson(ctx.res, 404, { error: 'not found' });
+    logger.warn(
+      {
+        event: 'control_ui_chat_delete',
+        chatId: id,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI deleted a chat',
+    );
+    chatChanged(id, 'deleted');
+    ctx.res.writeHead(204);
+    ctx.res.end();
+  });
+  router.add('GET', '/api/v1/chat/commands', (ctx) => {
+    const l = deps.runtime;
+    const control = l
+      ? Object.values(l.registeredGroups()).find((g) => g.isControlGroup)
+      : undefined;
+    const models =
+      Boolean(l && control) &&
+      l!.registry.resolve(control!).name() === 'claude';
+    writeJson(ctx.res, 200, {
+      commands: readSkillDir(
+        path.join(deps.repoRoot, 'container', 'skills'),
+        'amos',
+      ),
+      models,
+    });
+  });
+
   router.add('POST', '/api/v1/chat/turns', (ctx) => {
     const l = live(ctx.res);
     if (!l) return;
-    const started = startChatTurn(l.runtime, ctx.body, ctx.remoteAddr, ctx.res);
+    const cs = chatGate(ctx);
+    if (!cs) return;
+    const started = startChatTurn(
+      l.runtime,
+      cs,
+      ctx.body,
+      ctx.remoteAddr,
+      ctx.res,
+      chatChanged,
+    );
     if ('status' in started)
       return writeJson(ctx.res, started.status, { error: started.error });
     logger.info(
       {
         event: 'control_ui_chat_turn',
         turnId: started.id,
+        chatId: started.chatId,
         promptHash: started.promptHash,
         remoteAddr: ctx.remoteAddr,
         actor: actor(ctx.session),
@@ -2786,6 +2947,7 @@ export function createControlServer(
     liveViews?.closeAll('shutdown');
     claudeReadLimiter.dispose();
     claudeConvLimiter.dispose();
+    chatLimiter.dispose();
     claudeStopLimiter.dispose();
     workflowReadLimiter.dispose();
     workflowArchiveLimiter.dispose();

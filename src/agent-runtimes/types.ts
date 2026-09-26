@@ -1,4 +1,4 @@
-import type { AgentEffortLevel } from '../types.js';
+import type { AgentEffortLevel, AgentModel } from '../types.js';
 
 export type AgentRuntimeId = 'claude' | 'openai' | 'llama-cpp';
 
@@ -36,6 +36,8 @@ export interface RunContext {
   isControlGroup: boolean;
   isScheduledTask?: boolean;
   effort?: AgentEffortLevel;
+  /** Claude backend only; others ignore it. One of AGENT_MODELS. */
+  model?: AgentModel;
   backendConfig?: Record<string, unknown>;
   imageInputs?: Array<{ relativePath: string; mediaType: string }>;
   worktreePath?: string;

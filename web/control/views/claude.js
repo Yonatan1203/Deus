@@ -4,6 +4,7 @@ import { header } from '../app.js';
 import { confirmTyped, fmtTime, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
 import { renderConversation } from '../conversation.js';
+import { createComposer } from '../composer.js';
 
 // The Claude tab: your sessions, and each one live — the same `claude attach`
 // your terminal uses, so typing here is typing there, and Claude Code's own
@@ -51,34 +52,6 @@ function modelLabel(id) {
   const [name = '', ...ver] = id.replace(/^claude-/, '').split('-').filter((p) => !/^\d{8}$/.test(p));
   return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${ver.join('.')}`.trim();
 }
-/** Control characters could end the paste early or send keys; only text, newlines and tabs go in. */
-const cleanInput = (t) => t.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').replace(/\s+$/, '');
-
-/** A small pop-up picker: a pill button and its menu. */
-function pillMenu(initial, options, onPick, note) {
-  const btn = h('button', { type: 'button', class: 'pill-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, `${initial} ▾`);
-  const list = h('div', { class: 'pill-menu', role: 'menu', hidden: true });
-  const close = () => { list.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
-  if (note) list.append(h('div', { class: 'pill-note' }, note));
-  list.append(...options.map(([v, label]) => h('button', { type: 'button', role: 'menuitem', onclick: () => { close(); onPick(v); } }, label)));
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const open = list.hidden;
-    for (const m of document.querySelectorAll('.pill-menu')) m.hidden = true;
-    list.hidden = !open;
-    btn.setAttribute('aria-expanded', String(open));
-  });
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
-  document.addEventListener('click', close);
-  document.addEventListener('keydown', onKey);
-  return {
-    wrap: h('div', { class: 'pill-wrap' }, btn, list),
-    set(text) { btn.textContent = `${text} ▾`; },
-    disable(d, title) { btn.disabled = d; btn.title = title; if (d) close(); },
-    dispose() { document.removeEventListener('click', close); document.removeEventListener('keydown', onKey); },
-  };
-}
-
 // ---- xterm, loaded on first use from same-origin vendor files -------------
 let xtermReady = null;
 function loadXterm() {
@@ -433,9 +406,6 @@ export async function render(root, api, bus, me) {
     const truncNote = h('div', { class: 'conv-note', hidden: true }, 'Earlier messages are in the Terminal view.');
     const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl));
 
-    const input = h('textarea', { class: 'conv-input', rows: '1', placeholder: 'Message Claude — type / for commands', 'aria-label': 'Message Claude' });
-    const token = h('div', { class: 'conv-token', hidden: true });
-    const slash = h('div', { class: 'conv-slash', role: 'listbox', 'aria-label': 'Commands', hidden: true });
     const banner = h('div', { class: 'conv-banner', hidden: true },
       h('span', {}, 'Claude is waiting for you in the terminal.'),
       h('button', { type: 'button', class: 'small', onclick: openTerminal }, 'Open terminal'));
@@ -443,17 +413,25 @@ export async function render(root, api, bus, me) {
     // Claude Code saves either choice as the default for new sessions, exactly
     // as /model and /effort do in the terminal; the menus say so.
     const DEFAULT_NOTE = 'Also becomes the default for new sessions.';
-    const modelMenu = pillMenu('Model', MODELS, (v) => sendLine(`/model ${v}`), DEFAULT_NOTE);
-    const effortMenu = pillMenu('Effort', EFFORTS, (v) => sendLine(`/effort ${v}`), DEFAULT_NOTE);
-    const sendBtn = h('button', { type: 'button', class: 'conv-send', 'aria-label': 'Send' }, icon('send', { size: 16 }));
-    const box = h('div', { class: 'conv-box' }, slash, token, input,
-      h('div', { class: 'conv-foot' }, modeEl, h('span', { class: 'sp' }), modelMenu.wrap, effortMenu.wrap, sendBtn));
-    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, banner, box));
+    const composer = createComposer({
+      placeholder: 'Message Claude — type / for commands',
+      label: 'Message Claude',
+      commands: () => commands,
+      // Before anything is typed, your own commands and the built-ins lead.
+      rank: { personal: 0, 'built-in': 1, project: 2 },
+      onSubmit: (text) => { if (!sendText(text)) return false; pollSoon(); return true; },
+      onStop: () => stop(),
+      stopLabel: 'Stop Claude',
+      lead: modeEl,
+      pickers: [
+        { id: 'model', initial: 'Model', options: MODELS, onPick: (v) => sendLine(`/model ${v}`), note: DEFAULT_NOTE },
+        { id: 'effort', initial: 'Effort', options: EFFORTS, onPick: (v) => sendLine(`/effort ${v}`), note: DEFAULT_NOTE },
+      ],
+    });
+    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, banner, composer.el));
 
     const view = () => mine.view;
-    let busy = false;
-    function sendText(text) {
-      const t = cleanInput(text);
+    function sendText(t) {
       if (!t) return false;
       if (!view()) { toast('The live view is not open', 'error'); return false; }
       // Text goes in as a paste, so a fast burst is never read as keystrokes
@@ -482,85 +460,10 @@ export async function render(root, api, bus, me) {
         v.send('\x1b', { focus: false });
         await later(200);
         v.send('\x1b', { focus: false });
-        if (!input.value) {
-          input.value = unanswered && unanswered.startsWith(restored.slice(0, 40)) ? unanswered : restored;
-          autosize();
-        }
+        composer.restore(unanswered && unanswered.startsWith(restored.slice(0, 40)) ? unanswered : restored);
       }
       pollSoon();
     }
-    function submit() {
-      if (!sendText(input.value)) return;
-      input.value = '';
-      autosize();
-      updateSlash();
-      pollSoon();
-    }
-    sendBtn.addEventListener('click', () => {
-      if (busy) stop();
-      else submit();
-      input.focus();
-    });
-
-    // `/` menu and the command token.
-    let items = [];
-    let sel = 0;
-    function drawSlash() {
-      slash.replaceChildren(...items.map((c, i) => {
-        const b = h('button', { type: 'button', role: 'option', 'aria-selected': String(i === sel), class: i === sel ? 'on' : '' },
-          h('code', {}, `/${c.name}`), h('span', {}, c.description));
-        b.addEventListener('mousedown', (e) => e.preventDefault());
-        b.addEventListener('click', () => pick(c));
-        return b;
-      }));
-      slash.hidden = items.length === 0;
-    }
-    function pick(c) {
-      input.value = `/${c.name} `;
-      items = [];
-      drawSlash();
-      updateToken();
-      input.focus();
-    }
-    function updateToken() {
-      const t = /^\/(\S+)(\s|$)/.exec(input.value);
-      const cmd = t && (commands || []).find((c) => c.name === t[1]);
-      token.hidden = !cmd;
-      if (cmd) token.replaceChildren(h('code', {}, `/${cmd.name}`), h('span', {}, cmd.description));
-    }
-    function updateSlash() {
-      const m = /^\/(\S*)$/.exec(input.value);
-      if (!m || !commands || !commands.length) items = [];
-      else {
-        const q = m[1].toLowerCase();
-        // Before anything is typed, your own commands and the built-ins lead.
-        const rank = { personal: 0, 'built-in': 1, project: 2 };
-        const pool = q ? commands : [...commands].sort((a, b) => rank[a.source] - rank[b.source]);
-        items = [...pool.filter((c) => c.name.startsWith(q)), ...pool.filter((c) => !c.name.startsWith(q) && c.name.includes(q))].slice(0, 8);
-      }
-      sel = 0;
-      drawSlash();
-      updateToken();
-    }
-    function autosize() {
-      input.style.height = 'auto';
-      input.style.height = `${Math.min(input.scrollHeight, 8 * 22 + 16)}px`;
-    }
-    input.addEventListener('input', () => { autosize(); updateSlash(); });
-    input.addEventListener('keydown', (e) => {
-      if (!slash.hidden && items.length) {
-        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-          e.preventDefault();
-          sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-          drawSlash();
-          return;
-        }
-        if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') { e.preventDefault(); pick(items[sel]); return; }
-        if (e.key === 'Escape') { e.preventDefault(); items = []; drawSlash(); return; }
-      }
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
-    });
-
     // Polling, only while this view shows and the page is visible.
     let version = '';
     let first = true;
@@ -578,9 +481,9 @@ export async function render(root, api, bus, me) {
         if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded });
         else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below.'));
         truncNote.hidden = !r.truncated;
-        modelMenu.set(modelLabel(r.model));
+        composer.picker('model').set(modelLabel(r.model));
         const eff = EFFORTS.find(([v]) => v === r.effort);
-        effortMenu.set(eff ? eff[1] : 'Effort');
+        composer.picker('effort').set(eff ? eff[1] : 'Effort');
         modeEl.textContent = MODE_LABEL[r.mode] || '';
         if (first || near) scroller.scrollTop = scroller.scrollHeight;
         first = false;
@@ -600,27 +503,24 @@ export async function render(root, api, bus, me) {
 
     function setSession(row) {
       const [label] = stateOf(row);
-      busy = label === 'working';
+      const busy = label === 'working';
       banner.hidden = label !== 'needs you';
-      sendBtn.replaceChildren(icon(busy ? 'stop' : 'send', { size: 16 }));
-      sendBtn.setAttribute('aria-label', busy ? 'Stop Claude' : 'Send');
-      sendBtn.classList.toggle('busy', busy);
+      composer.setBusy(busy);
       const why = busy ? 'Wait until Claude finishes' : '';
-      modelMenu.disable(busy, why);
-      effortMenu.disable(busy, why);
+      composer.picker('model').disable(busy, why);
+      composer.picker('effort').disable(busy, why);
     }
     setSession(s);
     return {
       el,
       setSession,
-      shown() { poll(); if (!window.matchMedia('(hover: none)').matches) input.focus(); },
+      shown() { poll(); if (!window.matchMedia('(hover: none)').matches) composer.focus(); },
       dispose() {
         disposed = true;
         clearInterval(timer);
         clearTimeout(soon);
         document.removeEventListener('visibilitychange', onVisible);
-        modelMenu.dispose();
-        effortMenu.dispose();
+        composer.dispose();
       },
     };
   }

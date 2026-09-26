@@ -15,6 +15,7 @@
 import { z } from 'zod';
 
 import { logger } from './logger.js';
+import { AGENT_MODELS } from './types.js';
 
 // ── IPC marker constants ────────────────────────────────────────────────────
 // Previously defined in container-runner.ts with a SYNC-REQUIRED comment.
@@ -112,6 +113,10 @@ export const ContainerInputSchema = z.object({
     .optional(),
   projectHint: z.string().optional(),
   effort: z.enum(['low', 'medium', 'high', 'max']).optional(),
+  // Claude backend only (web chat turns). Type-level only — this schema is not
+  // parsed at runtime; the gates are the chat PATCH route and the runner's
+  // RUNNER_MODELS check.
+  model: z.enum(AGENT_MODELS).optional(),
   // Streaming consumers (Odysseus Web UI) set this so the Claude backend enables
   // SDK partial messages and emits `partial`/`activity` markers. Off for WhatsApp/
   // scheduler → byte-for-byte unchanged behavior.

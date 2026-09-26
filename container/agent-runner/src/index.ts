@@ -60,6 +60,13 @@ interface RuntimeSession {
   metadata_json?: string;
 }
 
+// SYNC-REQUIRED with AGENT_MODELS in src/types.ts (host).
+const RUNNER_MODELS = [
+  'claude-opus-5-5',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
+];
+
 interface ContainerInput {
   prompt: string;
   backend?: AgentRuntimeId;
@@ -74,6 +81,8 @@ interface ContainerInput {
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   projectHint?: string;
   effort?: 'low' | 'medium' | 'high' | 'max';
+  // Web chat turns only; must be on AGENT_MODELS (host ipc-protocol.ts).
+  model?: string;
   // Streaming consumer flag (Odysseus Web UI). Claude-only: enables SDK partial
   // messages so answer text + tool activity stream incrementally. See host
   // ContainerInputSchema in src/ipc-protocol.ts.
@@ -736,6 +745,14 @@ async function runQuery(
   log(
     `Effort level: ${effort ?? 'SDK default'}${containerInput.effort ? ' (per-group)' : ''}`,
   );
+  // Checked again here: the host validates too, but this is the last door.
+  const model =
+    containerInput.model && RUNNER_MODELS.includes(containerInput.model)
+      ? containerInput.model
+      : undefined;
+  if (containerInput.model && !model)
+    log(`Model ${containerInput.model} is not allowed — using the SDK default`);
+  else if (model) log(`Model: ${model}`);
 
   // Detect external project mount: if /workspace/project exists and has content,
   // use it as the primary cwd. The agent works in the user's project directory
@@ -963,6 +980,7 @@ async function runQuery(
       resume: sessionId,
       resumeSessionAt: resumeAt,
       effort,
+      ...(model && { model }),
       systemPrompt: fullSystemAppend
         ? {
             type: 'preset' as const,

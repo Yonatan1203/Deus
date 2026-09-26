@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { readSlashCommands } from './claude-commands.js';
+import { readSkillDir, readSlashCommands } from './claude-commands.js';
 
 function tree(files: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cmds-'));
@@ -83,5 +83,24 @@ describe('readSlashCommands', () => {
     }).find((c) => c.name === 'k');
     expect(k?.description).not.toContain(key);
     expect(k?.description.length).toBeLessThanOrEqual(160);
+  });
+});
+
+describe('readSkillDir', () => {
+  it('reads skills directly under a folder, with the same guards, and no built-ins', () => {
+    const outside = tree({ 'x/SKILL.md': skill('escape', 'outside') });
+    const dir = tree({
+      'status/SKILL.md': skill('status', 'Quick health check. More text.'),
+      'compress/skill.md': skill('compress', 'Save the session'),
+      'hidden/SKILL.md': skill('hidden', 'no', 'user-invocable: false\n'),
+      'big/SKILL.md': skill('big', 'too big') + 'x'.repeat(70 * 1024),
+      'notes.md': 'not a skill folder',
+    });
+    fs.symlinkSync(path.join(outside, 'x'), path.join(dir, 'escape'));
+    expect(readSkillDir(dir, 'amos')).toEqual([
+      { name: 'compress', description: 'Save the session', source: 'amos' },
+      { name: 'status', description: 'Quick health check.', source: 'amos' },
+    ]);
+    expect(readSkillDir('/nonexistent-dir', 'amos')).toEqual([]);
   });
 });

@@ -1045,3 +1045,40 @@ header shows the same mark. Reduced motion keeps the marks, without movement.
 | Summary line | count of working sessions, same node across list redraws | "2 sessions running"; node still connected after a status poll redraw — `artifacts/claude-running-summary-desktop.png` | PASS |
 | Open session header | ✻ Working | `artifacts/claude-running-header.png` | PASS |
 | Phone 390 px, reduced motion | marks shown, no animation, no sideways scroll | animation `none`, 0 px overflow — `artifacts/claude-running-row-mobile.png` | PASS |
+
+## Chat page: saved chats with Amos (2026-09-26)
+
+Plan: `docs/superpowers/plans/2026-09-26-chat-page.md` (plan-reviewer SHIP
+round 4, threat-modeler SHIP round 3). Mockup: `artifacts/chat-mockup.png`.
+Chats are saved on the server (`<configDir>/control-ui/chats/`, 0600 files in
+a 0700 folder), so phone and PC see the same list; the prompt is built on the
+host from saved text only; the reply is saved even when the browser leaves;
+model and effort are per chat and reach the container through a new
+allow-listed `model` field next to `effort`. The Claude tab and Chat now share
+one message box (`web/control/composer.js`).
+
+Driven on a fixture: the real control server with a fake Amos that streams a
+markdown reply (`serve-chat.mjs`, port 3121).
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Old browser chat moves over once | "Earlier chat" created, local copy cleared only when all moved, never imported twice | 3/3 imported, local key cleared, flag set; reload creates no second chat | PASS |
+| `/` menu | Amos's container skills | agent-browser, capabilities, compress, preserve, resume, status | PASS |
+| Streaming | typing row with the current step, Send becomes Stop, text streams | "Using Read…", Stop shown — `artifacts/chat-streaming.png` | PASS |
+| Saved turn | both sides saved, steps folded, markdown, title from first message | user + reply saved, "Worked through 2 steps", 3 bold spans, title set — `artifacts/chat-desktop.png` | PASS |
+| Model / effort | per chat, reach the turn | fake Amos saw `claude-sonnet-5` / `high` on the next turns | PASS |
+| Second device | same list, live updates, told when a chat is deleted elsewhere | same rows at 390 px; deleted chat closed on the phone | PASS |
+| Stop | turn stops, "Stopped" saved | "Stopped" | PASS |
+| Browser leaves mid-reply | reply still saved; reopened page shows it running and can stop it | typing row + Stop on reopen, reply saved | PASS |
+| Rename / delete | rename; delete needs typed `delete` | "Friday plan"; deleted after typing | PASS |
+| Phone 390 px | list screen, then chat full screen with back, no sideways scroll | 0 px both — `artifacts/chat-mobile-list.png`, `artifacts/chat-mobile-open.png` | PASS |
+| Claude tab after the shared-box move | send, `/` menu + token, Stop unchanged | all as before on a throwaway session | PASS |
+| Suite | green | 163 files / 2 540 tests; tsc, eslint clean | PASS |
+
+- `Deviation:` a long reply (over the 32 KiB message cap) or one arriving in a
+  nearly full chat would have been refused and lost. Replies may be up to
+  256 KiB (longer ones are cut with a visible note) and may use the headroom
+  up to the 5 MiB read cap, so an answer to a message already sent is always
+  saved. Tested.
+- Pending at deploy: container rebuild for the `model` field and one real turn
+  per model, confirmed from `model_usage` in the service log.

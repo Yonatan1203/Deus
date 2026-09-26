@@ -60,10 +60,12 @@ for (const [name, viewport] of viewports) {
     }
     await page.goto(`${url}/#/${tab}`);
     if (tab === 'chat') {
-      // Exercise the live path: send one message and wait for the reply to land.
-      await page.fill('.composer-input', 'hello');
-      await page.click('.composer-actions .primary');
-      await page.waitForSelector('.msg.assistant:not(.live)', { timeout: 20_000 });
+      // Open the newest chat (or a new one) so a conversation is in the capture.
+      await page.waitForSelector('#view .chat-row, #view .new-chat, #view .chat-side .empty', { timeout: 10_000 });
+      const row = page.locator('#view .chat-row');
+      if (await row.count()) await row.first().click();
+      else if (await page.locator('#view .new-chat').count()) await page.click('#view .new-chat');
+      await page.waitForSelector('#view .chat-list[data-loaded], #view .claude-empty', { timeout: 10_000 });
     } else if (tab === 'memory') {
       // Open the first file so the viewer is part of the capture.
       await page.waitForSelector('#view .memory-item', { timeout: 10_000 });

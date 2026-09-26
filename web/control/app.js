@@ -170,7 +170,7 @@ async function connectEvents() {
     $('live-dot').className = 'dot warn';
     if (!pollTimer) pollTimer = setInterval(() => bus.dispatchEvent(new CustomEvent('refresh')), 10_000);
   };
-  for (const type of ['warden', 'session', 'group', 'queue', 'task', 'memory', 'container', 'build', 'system', 'alert', 'log', 'csession', 'workflow', 'artifact', 'browser']) {
+  for (const type of ['warden', 'session', 'group', 'queue', 'task', 'memory', 'container', 'build', 'system', 'alert', 'log', 'csession', 'workflow', 'artifact', 'browser', 'chat']) {
     source.addEventListener(type, (e) =>
       bus.dispatchEvent(new CustomEvent(type, { detail: JSON.parse(e.data) })));
   }

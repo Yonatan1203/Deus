@@ -37,6 +37,14 @@ export const VALID_EFFORT_LEVELS: readonly AgentEffortLevel[] = [
   'max',
 ];
 
+/** Models a web chat turn may ask the Claude backend for; anything else is refused. */
+export const AGENT_MODELS = [
+  'claude-opus-5-5',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
+] as const;
+export type AgentModel = (typeof AGENT_MODELS)[number];
+
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000ms (5 minutes). Configurable via /settings timeout=N (seconds).

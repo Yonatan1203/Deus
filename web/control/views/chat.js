@@ -1,114 +1,326 @@
 import { h, clear } from '../dom.js';
-import { toast } from '../ui.js';
+import { confirmTyped, toast } from '../ui.js';
 import { icon } from '../icons.js';
 import { header } from '../app.js';
+import { parseMarkdown, renderBlocks } from '../markdown.js';
+import { createComposer } from '../composer.js';
 
-const KEY = 'deus_ctl_chat';
-const MAX_ENTRIES = 100;
+// Chat with Amos, WhatsApp-style: a list of saved chats and the open one.
+// Chats live on the server, so every device sees the same ones, and a reply
+// that finishes while this page is closed is there when it opens again.
+// Every string is drawn as text or through the markdown renderer — never HTML.
 
-function load() {
+const LEGACY_KEY = 'deus_ctl_chat';
+const LEGACY_DONE = 'deus_ctl_chat_imported';
+const IMPORT_MAX_BYTES = 1000 * 1024; // under the server's 1 MiB body limit
+// Values mirror AGENT_MODELS in src/types.ts; the server refuses anything else.
+const MODELS = [['', 'Default'], ['claude-opus-5-5', 'Opus 5.5'], ['claude-sonnet-5', 'Sonnet 5'], ['claude-haiku-4-5-20251001', 'Haiku 4.5']];
+const EFFORTS = [['', 'Default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['max', 'Max']];
+const labelOf = (list, v, fallback) => (list.find(([k]) => k === (v || '')) || [null, fallback])[1];
+
+const time = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const dayKey = (ms) => new Date(ms).toDateString();
+function dayLabel(ms) {
+  const d = new Date(ms);
+  const today = new Date();
+  const yest = new Date(Date.now() - 86_400_000);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yest.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+function shortWhen(ms) {
+  return dayKey(ms) === dayKey(Date.now()) ? time(ms) : new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+/** Local history kept by the old Chat page, if any and not imported yet. */
+function readLegacy() {
   try {
-    const v = JSON.parse(localStorage.getItem(KEY) || '[]');
-    return Array.isArray(v) ? v.filter((m) => m && typeof m.content === 'string' && (m.role === 'user' || m.role === 'assistant')) : [];
-  } catch {
-    return [];
-  }
-}
-function save(history) {
-  try { localStorage.setItem(KEY, JSON.stringify(history.slice(-MAX_ENTRIES))); } catch { /* ignore */ }
+    if (localStorage.getItem(LEGACY_DONE)) return null;
+    const v = JSON.parse(localStorage.getItem(LEGACY_KEY) || '[]');
+    const msgs = Array.isArray(v) ? v.filter((m) => m && typeof m.content === 'string' && (m.role === 'user' || m.role === 'assistant')) : [];
+    return msgs.length ? msgs : null;
+  } catch { return null; }
 }
 
-// A turn is a document block: mono author line, then the body. The `msg`
-// class is kept so the capture script's selectors still match.
-function turn(role, who, text, live) {
-  return h('div', { class: `msg ${role}${live ? ' live' : ''}` },
-    h('div', { class: 'eyebrow' }, live ? h('span', { class: 'dot live', 'aria-hidden': 'true' }) : null, who),
-    h('div', { class: 'body' }, text));
+/** A list preview without markdown marks. */
+const plain = (t) => (t || '').replace(/[*_`#>]+/g, '').replace(/(^|\s)[-+] /g, '$1').replace(/\s+/g, ' ').trim();
+
+const avatar = () => h('span', { class: 'amos-av', 'aria-hidden': 'true' }, 'A');
+const typing = (text) => h('div', { class: 'chat-typing' },
+  h('span', { class: 'dots', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
+  h('span', {}, text || 'Amos is working…'));
+
+function messageNode(m) {
+  if (m.role === 'user')
+    return h('div', { class: 'chat-user' }, h('div', { class: 'chat-text' }, m.text), h('span', { class: 'chat-time' }, time(m.at)));
+  const body = h('div', { class: 'chat-body' });
+  if (m.activity && m.activity.length) {
+    const list = h('ul', { class: 'conv-calls', hidden: true }, ...m.activity.map((a) => h('li', {}, a)));
+    const fold = h('button', { type: 'button', class: 'conv-fold', 'aria-expanded': 'false' },
+      `Worked through ${m.activity.length} ${m.activity.length === 1 ? 'step' : 'steps'}`, h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
+    fold.addEventListener('click', () => { list.hidden = !list.hidden; fold.setAttribute('aria-expanded', String(!list.hidden)); });
+    body.append(fold, list);
+  }
+  if (m.text) body.append(h('div', { class: 'conv-assistant' }, ...renderBlocks(parseMarkdown(m.text), h)));
+  if (m.error) body.append(h('div', { class: 'chat-error' }, m.error));
+  body.append(h('span', { class: 'chat-time' }, time(m.at)));
+  return h('div', { class: 'chat-amos' }, avatar(), body);
 }
 
 export async function render(root, api, bus, me) {
   clear(root);
   const readOnly = Boolean(me && me.read_only);
-  const who = (me && me.assistant) || 'Assistant';
-  // Invariant: only final assistant text and user messages are stored and
-  // replayed. Tool arguments and activity lines are LLM-authored and never
-  // re-enter a later prompt.
-  let history = load();
-  let turnId = null;
-  let controller = null;
+  const who = (me && me.assistant) || 'Amos';
+  let chats = [];
+  let current = null; // the open chat, as the server last sent it
+  let commands = [];
+  let modelsOk = false;
+  let ownTurn = null; // { id, controller } while this page streams a reply
 
-  const transcript = h('div', { class: 'transcript', 'aria-live': 'polite' });
-  const input = h('textarea', { class: 'composer-input', rows: '2', placeholder: readOnly ? 'Read-only mode — chat is disabled' : 'Message the assistant…', disabled: readOnly });
-  const send = h('button', { type: 'button', class: 'primary', disabled: readOnly, 'aria-label': 'Send' }, icon('send'));
-  const stop = h('button', { type: 'button', class: 'danger', hidden: true, 'aria-label': 'Stop' }, icon('stop'));
-  const fresh = h('button', { type: 'button', class: 'ghost small', onclick: () => { history = []; save(history); draw(); } }, icon('plus', { size: 16 }), 'New chat');
+  const side = h('div', { class: 'chat-side' });
+  const pane = h('section', { class: 'chat-pane' });
+  const layout = h('div', { class: 'chat-layout' }, side, pane);
 
-  const scroll = () => { transcript.scrollTop = transcript.scrollHeight; };
-  const draw = () => {
-    clear(transcript);
-    if (history.length === 0) transcript.append(h('div', { class: 'empty' }, 'Start a conversation.'));
-    for (const m of history) transcript.append(turn(m.role, m.role === 'user' ? 'You' : who, m.content, false));
-    scroll();
-  };
+  api.get('/api/v1/chat/commands').then((r) => { commands = r.commands || []; modelsOk = Boolean(r.models); syncState(); }).catch(() => {});
 
-  async function submit() {
-    const message = input.value.trim();
-    if (!message || turnId !== null) return;
-    input.value = '';
-    history.push({ role: 'user', content: message });
-    save(history);
-    draw();
-    const live = turn('assistant', who, '', true);
-    const body = live.querySelector('.body');
-    transcript.append(live);
-    let text = '';
-    turnId = 'pending';
-    send.disabled = true;
-    stop.hidden = false;
-    controller = new AbortController();
+  // ---- list ----
+  async function newChat() {
     try {
-      await api.stream('/api/v1/chat/turns', { message, history: history.slice(0, -1) }, (type, data) => {
-        if (type === 'turn_started') turnId = data.id;
-        else if (type === 'output_text') { text += data.text; body.textContent = text; scroll(); }
-        else if (type === 'activity') { live.append(h('div', { class: 'activity' }, data.text)); scroll(); }
-        else if (type === 'tool_call') {
-          live.append(h('details', { class: 'tool' },
-            h('summary', {}, `tool · ${data.name}`),
-            h('pre', {}, JSON.stringify(data.arguments, null, 2))));
-          scroll();
-        } else if (type === 'error') { live.append(h('div', { class: 'error' }, data.error)); toast(data.error, 'error'); }
-      }, controller.signal);
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        const msg = err.status === 429 ? 'A turn is already in progress' : err.status === 403 ? 'Read-only mode' : err.message;
-        live.append(h('div', { class: 'error' }, msg));
-        toast(msg, 'error');
-      }
-    } finally {
-      if (text) { history.push({ role: 'assistant', content: text }); save(history); }
-      live.classList.remove('live');
-      const d = live.querySelector('.dot');
-      if (d) d.remove();
-      turnId = null;
-      controller = null;
-      send.disabled = readOnly;
-      stop.hidden = true;
-      input.focus();
+      const c = await api.post('/api/v1/chats', {});
+      await loadList();
+      openChat(c.id);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+  function drawList() {
+    clear(side);
+    if (!readOnly) side.append(h('button', { type: 'button', class: 'primary new-chat', onclick: newChat }, icon('plus', { size: 16 }), 'New chat'));
+    if (!chats.length) { side.append(h('div', { class: 'empty' }, readOnly ? 'No chats yet.' : 'No chats yet — start one.')); return; }
+    let group = '';
+    for (const c of chats) {
+      const g = dayKey(c.updated) === dayKey(Date.now()) ? 'Today' : 'Earlier';
+      if (g !== group) { side.append(h('div', { class: 'session-group', role: 'presentation' }, g)); group = g; }
+      side.append(h('button', {
+        type: 'button', class: `chat-row${current && current.id === c.id ? ' selected' : ''}${c.running ? ' running' : ''}`,
+        onclick: () => openChat(c.id),
+      },
+      h('span', { class: 'chat-row-top' }, h('span', { class: 'chat-row-title' }, c.title), h('span', { class: 'chat-row-when' }, shortWhen(c.updated))),
+      h('span', { class: 'chat-row-sub' }, c.running ? h('span', { class: 'spin', 'aria-hidden': 'true' }, '✻') : null, c.running ? `${who} is replying…` : plain(c.preview))));
     }
   }
+  async function loadList() {
+    try { chats = (await api.get('/api/v1/chats')).chats; drawList(); }
+    catch (err) { clear(side); side.append(h('div', { class: 'empty' }, err.message)); }
+  }
 
-  send.addEventListener('click', submit);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
-  stop.addEventListener('click', async () => {
-    if (!turnId || turnId === 'pending') return;
-    try { await api.del(`/api/v1/chat/turns/${encodeURIComponent(turnId)}`); toast('Stopping…'); }
+  // ---- open chat ----
+  let view = null; // { listEl, scroller, composer, statusEl, titleEl, live }
+  function closeView() {
+    if (view) view.composer.dispose();
+    view = null;
+  }
+  function placeholder() {
+    closeView();
+    clear(pane);
+    pane.append(h('div', { class: 'claude-empty' },
+      h('p', { class: 'lead' }, `Chat with ${who}`),
+      h('p', { class: 'muted' }, 'Your chats are saved, so they are the same on your phone and computer. Pick one, or start a new chat.')));
+  }
+
+  async function openChat(id, opts = {}) {
+    let chat;
+    try { chat = await api.get(`/api/v1/chats/${id}`); }
+    catch (err) { toast(err.status === 404 ? 'That chat is gone' : err.message, 'error'); current = null; drawList(); placeholder(); return; }
+    const sameChat = current && current.id === chat.id && view;
+    current = chat;
+    drawList();
+    if (!sameChat) {
+      buildView();
+      if (window.matchMedia('(max-width: 899px)').matches) document.body.classList.add('chat-open');
+    }
+    drawMessages(sameChat && opts.keepScroll);
+    syncState();
+  }
+
+  function buildView() {
+    closeView();
+    clear(pane);
+    const statusEl = h('small', { class: 'chat-status' });
+    const titleEl = h('span', { class: 'session-name' }, current.title);
+    const actions = readOnly ? null : h('div', { class: 'claude-actions' },
+      h('button', { type: 'button', class: 'small', onclick: rename }, 'Rename'),
+      h('button', { type: 'button', class: 'small danger', onclick: remove }, 'Delete'));
+    const bar = h('div', { class: 'claude-bar chat-bar' },
+      h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to chats', onclick: () => { document.body.classList.remove('chat-open'); current = null; drawList(); placeholder(); } }, '←'),
+      avatar(),
+      h('div', { class: 'claude-title' }, titleEl, statusEl),
+      actions);
+    const listEl = h('div', { class: 'conv-list chat-list', role: 'log', 'aria-label': `Chat with ${who}` });
+    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, listEl));
+    const composer = createComposer({
+      placeholder: readOnly ? 'Read-only mode — chat is off' : `Message ${who} — type / for commands`,
+      label: `Message ${who}`,
+      commands: () => commands,
+      onSubmit: (text) => { send(text); return true; },
+      onStop: stopTurn,
+      stopLabel: `Stop ${who}`,
+      lead: h('span', { class: 'conv-mode' }, who),
+      pickers: [
+        { id: 'model', initial: 'Model', options: MODELS, onPick: (v) => setting({ model: v || null }), note: 'Only for this chat.' },
+        { id: 'effort', initial: 'Effort', options: EFFORTS, onPick: (v) => setting({ effort: v || null }), note: `Only for this chat. Default is ${who}'s own.` },
+      ],
+    });
+    if (readOnly) composer.input.disabled = true;
+    pane.append(bar, h('div', { class: 'chat-stage' }, scroller, h('div', { class: 'conv-composer' }, composer.el)));
+    view = { listEl, scroller, composer, statusEl, titleEl, live: null };
+  }
+
+  function drawMessages(keepScroll) {
+    if (!view) return;
+    const { listEl, scroller } = view;
+    const near = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
+    const nodes = [];
+    let day = '';
+    for (const m of current.messages) {
+      if (dayKey(m.at) !== day) { day = dayKey(m.at); nodes.push(h('div', { class: 'chat-day' }, dayLabel(m.at))); }
+      nodes.push(messageNode(m));
+    }
+    if (!current.messages.length) nodes.push(h('div', { class: 'conv-note' }, `Say hello to ${who}. Type / to see what ${who} can do.`));
+    if (current.running_turn_id && !ownTurn) nodes.push(h('div', { class: 'chat-amos' }, avatar(), typing(`${who} is replying…`)));
+    listEl.replaceChildren(...nodes);
+    if (view.live) listEl.append(view.live.el);
+    if (!keepScroll || near) scroller.scrollTop = scroller.scrollHeight;
+    listEl.dataset.loaded = 'true';
+  }
+
+  function syncState() {
+    if (!view || !current) return;
+    const running = Boolean(current.running_turn_id || ownTurn);
+    view.statusEl.textContent = running ? 'replying…' : 'online';
+    view.statusEl.className = `chat-status${running ? ' running' : ''}`;
+    view.titleEl.textContent = current.title;
+    view.composer.setBusy(running);
+    const why = running ? `Wait until ${who} finishes` : '';
+    const mp = view.composer.picker('model');
+    const ep = view.composer.picker('effort');
+    mp.hide(!modelsOk);
+    mp.set(labelOf(MODELS, current.model, 'Default'));
+    ep.set(labelOf(EFFORTS, current.effort, 'Default'));
+    mp.disable(running || readOnly, why);
+    ep.disable(running || readOnly, why);
+  }
+
+  async function setting(patch) {
+    try { current = await api.patch(`/api/v1/chats/${current.id}`, patch); syncState(); }
     catch (err) { toast(err.message, 'error'); }
-  });
+  }
+  async function rename() {
+    const title = window.prompt('Name this chat', current.title);
+    if (!title || !title.trim()) return;
+    try { current = await api.patch(`/api/v1/chats/${current.id}`, { title }); syncState(); loadList(); }
+    catch (err) { toast(err.message, 'error'); }
+  }
+  async function remove() {
+    const ok = await confirmTyped('delete', `Delete "${current.title}"? Its messages are removed from every device. Type delete to confirm.`);
+    if (!ok) return;
+    try {
+      await api.del(`/api/v1/chats/${current.id}`, { 'X-Confirm': current.id });
+      toast('Chat deleted', 'ok');
+      current = null;
+      document.body.classList.remove('chat-open');
+      placeholder();
+      loadList();
+    } catch (err) { toast(err.message, 'error'); }
+  }
 
-  root.append(
-    h('div', { class: 'chat' },
-      header('Chat', { eyebrow: 'Operate', actions: [fresh] }),
-      transcript,
-      h('div', { class: 'composer' }, input, h('div', { class: 'composer-actions' }, stop, send))));
-  draw();
+  // ---- a turn ----
+  async function send(text) {
+    if (ownTurn || !current) return;
+    const chatId = current.id;
+    current.messages.push({ role: 'user', text, at: Date.now() });
+    const body = h('div', {});
+    const status = typing();
+    const live = { el: h('div', { class: 'chat-amos live' }, avatar(), h('div', { class: 'chat-body' }, status, body)), text: '' };
+    view.live = live;
+    ownTurn = { id: null, controller: new AbortController() };
+    drawMessages(false);
+    syncState();
+    let frame = null;
+    const paint = () => {
+      frame = null;
+      body.replaceChildren(h('div', { class: 'conv-assistant' }, ...renderBlocks(parseMarkdown(live.text), h)));
+      const s = view && view.scroller;
+      if (s && s.scrollHeight - s.scrollTop - s.clientHeight < 160) s.scrollTop = s.scrollHeight;
+    };
+    try {
+      await api.stream('/api/v1/chat/turns', { chat_id: chatId, message: text }, (type, data) => {
+        if (type === 'turn_started') ownTurn.id = data.id;
+        else if (type === 'output_text') { live.text += data.text; if (!frame) frame = requestAnimationFrame(paint); }
+        else if (type === 'activity') status.lastChild.textContent = data.text;
+        else if (type === 'tool_call') status.lastChild.textContent = `Using ${data.name}…`;
+      }, ownTurn.controller.signal);
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        toast(err.status === 429 ? `${who} is busy with another reply — try again in a moment` : err.message, 'error');
+        if (view) view.composer.restore(text);
+      }
+    } finally {
+      ownTurn = null;
+      if (view) view.live = null;
+      // The server saved both sides; show exactly what it kept.
+      if (current && current.id === chatId) await openChat(chatId, { keepScroll: true });
+      loadList();
+    }
+  }
+  async function stopTurn() {
+    const id = (ownTurn && ownTurn.id) || (current && current.running_turn_id);
+    if (!id) return;
+    try { await api.del(`/api/v1/chat/turns/${encodeURIComponent(id)}`); }
+    catch (err) { if (err.status !== 404) toast(err.message, 'error'); }
+  }
+
+  // ---- the old browser-only chat, moved over once ----
+  async function importLegacy() {
+    const local = readLegacy();
+    if (!local || readOnly) return;
+    const localTotal = local.length;
+    const msgs = [];
+    let bytes = 0;
+    for (let i = local.length - 1; i >= 0; i--) {
+      const m = { role: local[i].role, text: local[i].content, at: Date.now() - (local.length - i) * 1000 };
+      bytes += new Blob([m.text]).size + 64;
+      if (bytes > IMPORT_MAX_BYTES) break;
+      msgs.unshift(m);
+    }
+    let r = null;
+    try { r = await api.post('/api/v1/chats', { title: 'Earlier chat', messages: msgs }); } catch { r = null; }
+    if (!r || !r.id) return; // nothing saved: kept in this browser, tried again next time
+    const imported = r.imported || 0;
+    try {
+      localStorage.setItem(LEGACY_DONE, r.id);
+      if (imported === localTotal) localStorage.removeItem(LEGACY_KEY);
+    } catch { /* storage unavailable: nothing to clear */ }
+    if (imported < localTotal) toast(`Imported the newest ${imported} of ${localTotal} messages — the older ones are still kept in this browser.`);
+  }
+
+  root.append(h('div', { class: 'chat-page' }, header('Chat', { eyebrow: 'Operate' }), layout));
+  await importLegacy();
+  await loadList();
+  placeholder();
+
+  const onChat = (e) => {
+    loadList();
+    if (current && e.detail && e.detail.id === current.id) {
+      if (e.detail.action === 'deleted') { toast('This chat was deleted on another device'); current = null; document.body.classList.remove('chat-open'); placeholder(); return; }
+      if (!ownTurn) openChat(current.id, { keepScroll: true });
+    }
+  };
+  const onRefresh = () => { loadList(); if (current && !ownTurn) openChat(current.id, { keepScroll: true }); };
+  bus.addEventListener('chat', onChat);
+  bus.addEventListener('refresh', onRefresh);
+  bus.addEventListener('view-unmount', () => {
+    bus.removeEventListener('chat', onChat);
+    bus.removeEventListener('refresh', onRefresh);
+    document.body.classList.remove('chat-open');
+    closeView();
+  }, { once: true });
 }

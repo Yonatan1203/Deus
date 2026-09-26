@@ -106,4 +106,19 @@ describe('ContainerRuntime onOutput → eventSink mapping', () => {
         .map((e) => (e as { text: string }).text),
     ).toEqual(['Hello']);
   });
+
+  it('passes a chosen model into the container input, and nothing when unset', async () => {
+    runContainerAgentMock.mockResolvedValue({ status: 'success', result: '' });
+    const sink: RuntimeEventSink = () => {};
+    await makeRuntime().runTurn(
+      { ...baseCtx, model: 'claude-sonnet-5' },
+      defaultSession('', 'claude'),
+      sink,
+    );
+    expect(runContainerAgentMock.mock.calls[0][1]).toMatchObject({
+      model: 'claude-sonnet-5',
+    });
+    await makeRuntime().runTurn(baseCtx, defaultSession('', 'claude'), sink);
+    expect(runContainerAgentMock.mock.calls[1][1]).not.toHaveProperty('model');
+  });
 });
