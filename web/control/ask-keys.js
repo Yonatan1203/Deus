@@ -1,0 +1,44 @@
+// The keys Claude Code's question screen expects, one helper per action
+// (verified 2026-09-26 against Claude Code 2.1.283; the table is in
+// docs/superpowers/plans/2026-09-26-claude-tab-answer-questions.md).
+// A number selects an option: on a single-choice question that also
+// advances, on a multi-select it toggles and → advances. The last advance
+// opens "Review your answers", where Enter submits and ← goes back. A lone
+// single-choice question submits on the number alone. "Type something" is
+// the last option: its number, the text as a paste, then Enter.
+
+export const PASTE_START = '\x1b[200~';
+export const PASTE_END = '\x1b[201~';
+const RIGHT = '\x1b[C';
+const LEFT = '\x1b[D';
+const ENTER = '\r';
+export const TEXT_MAX = 2000;
+
+/** One line, no control characters, bounded. */
+export const cleanText = (t) => String(t)
+  .replace(/[\r\n]+/g, ' ')
+  .replace(/[\x00-\x1f\x7f]/g, '')
+  .trim()
+  .slice(0, TEXT_MAX);
+
+const number = (n) => {
+  if (!Number.isInteger(n) || n < 1 || n > 9) throw new Error('bad pick');
+  return String(n);
+};
+
+export const pickKeys = (n) => [number(n)];
+export const nextKeys = () => [RIGHT];
+export const backKeys = () => [LEFT];
+export const submitKeys = () => [ENTER];
+
+/**
+ * Free text into "Type something" (option `other`). With `selected`, the
+ * cursor is already on it and its number is not sent — it would be typed.
+ */
+export function textKeys(other, text, { selected = false } = {}) {
+  const n = number(other);
+  const t = cleanText(text);
+  if (!t) throw new Error('incomplete');
+  const keys = [`${PASTE_START}${t}${PASTE_END}`, ENTER];
+  return selected ? keys : [n, ...keys];
+}

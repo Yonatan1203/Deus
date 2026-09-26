@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import {
   buildConversation,
+  parseAskAnswer,
   createConversationReader,
 } from './claude-conversation.js';
 
@@ -143,33 +144,65 @@ describe('buildConversation', () => {
     expect(c.items[1]).not.toHaveProperty('url');
   });
 
-  it('shows questions and knows when they were answered', () => {
+  it('shows every question, its kind, and the answer once given', () => {
     const ask = (id: string) =>
       assistant([
         toolUse(id, 'AskUserQuestion', {
           questions: [
             {
               question: 'Post now or Friday?',
+              header: 'When',
+              multiSelect: false,
               options: [{ label: 'Post now' }, { label: 'Keep for Friday' }],
+            },
+            {
+              question: 'Which?',
+              header: 'Sizes',
+              multiSelect: true,
+              options: [{ label: 'S' }, { label: 'M' }],
             },
           ],
         }),
       ]);
-    const c = buildConversation([ask('q1'), toolResult('q1', 'ok'), ask('q2')]);
-    expect(c.items).toEqual([
-      {
-        k: 'ask',
-        question: 'Post now or Friday?',
-        options: ['Post now', 'Keep for Friday'],
-        answered: true,
-      },
-      {
-        k: 'ask',
-        question: 'Post now or Friday?',
-        options: ['Post now', 'Keep for Friday'],
-        answered: false,
-      },
+    const c = buildConversation([
+      ask('q1'),
+      toolResult(
+        'q1',
+        'Your questions have been answered: "Post now or Friday?"="Post now", "Which?"="S, M". You can now continue.',
+      ),
+      ask('q2'),
     ]);
+    expect(c.items[0]).toEqual({
+      k: 'ask',
+      id: 'q1',
+      questions: [
+        {
+          question: 'Post now or Friday?',
+          header: 'When',
+          options: ['Post now', 'Keep for Friday'],
+          multi: false,
+        },
+        {
+          question: 'Which?',
+          header: 'Sizes',
+          options: ['S', 'M'],
+          multi: true,
+        },
+      ],
+      answered: true,
+      answer: 'Post now · S, M',
+    });
+    expect(c.items[1]).toMatchObject({ k: 'ask', id: 'q2', answered: false });
+    expect(c.items[1]).not.toHaveProperty('answer');
+  });
+
+  it('parses the answers out of the result text', () => {
+    expect(
+      parseAskAnswer(
+        'The user answered: "Which colour?"="Purple". Read the answers carefully.',
+      ),
+    ).toBe('Purple');
+    expect(parseAskAnswer('no pairs here')).toBe('');
   });
 
   it('reports the last model, redacts secrets and caps items', () => {

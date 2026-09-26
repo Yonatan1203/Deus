@@ -40,7 +40,13 @@ export type ConvItem =
       removed?: number;
       url?: string;
     }
-  | { k: 'ask'; question: string; options: string[]; answered: boolean }
+  | {
+      k: 'ask';
+      id: string;
+      questions: AskQuestion[];
+      answered: boolean;
+      answer?: string;
+    }
   | { k: 'command'; name: string; args: string; output?: string }
   | { k: 'note'; text: string };
 
@@ -121,21 +127,55 @@ function toolItem(b: Block): ConvItem {
   return item;
 }
 
+/** One question of an AskUserQuestion call, as the card shows it. */
+export interface AskQuestion {
+  question: string;
+  header: string;
+  options: string[];
+  multi: boolean;
+}
+
+const ASK_QUESTIONS_MAX = 4;
+const ASK_OPTIONS_MAX = 6;
+const ASK_RESULT_SCAN = 4096;
+
+// `id` is the tool_use id: the card keys the operator's picks by it, so
+// nothing depends on the item's position in the list.
 function askItem(b: Block): ConvItem | null {
-  const qs = (b.input ?? {}).questions;
-  const q = Array.isArray(qs) ? (qs[0] as Record<string, unknown>) : null;
-  if (!q || typeof q.question !== 'string') return null;
-  const opts = Array.isArray(q.options) ? (q.options as unknown[]) : [];
+  const raw = (b.input ?? {}).questions;
+  const list = Array.isArray(raw) ? (raw as Record<string, unknown>[]) : [];
+  const questions: AskQuestion[] = [];
+  for (const q of list.slice(0, ASK_QUESTIONS_MAX)) {
+    if (!q || typeof q.question !== 'string') continue;
+    const opts = Array.isArray(q.options) ? (q.options as unknown[]) : [];
+    questions.push({
+      question: clip(q.question, 500),
+      header: typeof q.header === 'string' ? clip(q.header, 30) : '',
+      options: opts
+        .slice(0, ASK_OPTIONS_MAX)
+        .map((o) =>
+          clip(String((o as { label?: unknown })?.label ?? o ?? ''), 80),
+        ),
+      multi: q.multiSelect === true,
+    });
+  }
+  if (!questions.length) return null;
   return {
     k: 'ask',
-    question: clip(q.question, 500),
-    options: opts
-      .slice(0, 6)
-      .map((o) =>
-        clip(String((o as { label?: unknown })?.label ?? o ?? ''), 80),
-      ),
+    id: clip(typeof b.id === 'string' ? b.id : '', 64),
+    questions,
     answered: false,
   };
+}
+
+/** The answers out of Claude Code's result text: `"question"="answer"` pairs, joined. */
+export function parseAskAnswer(text: string): string {
+  const found: string[] = [];
+  for (const m of text
+    .slice(0, ASK_RESULT_SCAN)
+    .matchAll(/"((?:[^"\\]|\\.)*)"="((?:[^"\\]|\\.)*)"/g))
+    found.push(m[2]);
+  return clip(found.join(' · '), 400);
 }
 
 export function buildConversation(
@@ -204,8 +244,11 @@ export function buildConversation(
       for (const b of content as Block[]) {
         if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
           const it = pending.get(b.tool_use_id);
-          if (it?.k === 'ask') it.answered = true;
-          else if (it?.k === 'tool' && it.tool === 'Artifact') {
+          if (it?.k === 'ask') {
+            it.answered = true;
+            const answer = parseAskAnswer(resultText(b.content));
+            if (answer) it.answer = answer;
+          } else if (it?.k === 'tool' && it.tool === 'Artifact') {
             const url = ARTIFACT_URL_RE.exec(resultText(b.content))?.[0];
             if (url) it.url = url;
           }

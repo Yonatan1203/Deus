@@ -658,6 +658,19 @@ table.kv input { min-height: 36px; }
 .conv-ask.answered { border-color: var(--line); background: var(--surface); color: var(--muted); }
 .conv-opts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .conv-opt { padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 13px; }
+/* The live question (read from the terminal screen): the options are
+   buttons, a pick is highlighted, and the card dims while its keys are
+   being sent. */
+.conv-ask.live .conv-opt { cursor: pointer; background: var(--surface); color: var(--text); min-height: 36px; padding: 6px 14px; font: inherit; font-size: 14px; }
+.conv-ask.live .conv-opt:hover { border-color: var(--primary); }
+.conv-ask.live .conv-opt.on { background: color-mix(in srgb, var(--primary) 18%, var(--surface)); border-color: var(--primary); color: var(--accent-text); }
+.conv-ask.live[data-sending] .conv-opt, .conv-ask.live[data-sending] .ask-send, .conv-ask.live[data-sending] .ask-submit, .conv-ask.live[data-sending] .ask-back, .conv-ask.live[data-sending] .ask-next, .conv-ask.live[data-sending] .ask-term { opacity: 0.6; pointer-events: none; }
+.ask-tabs .chip[data-done="true"] { color: var(--accent-text); border-color: var(--primary); }
+.ask-q { display: grid; gap: 8px; }
+.ask-q .chip { justify-self: start; }
+.ask-text { width: 100%; font-size: 16px; }
+.ask-answer { color: var(--text); font-weight: 500; }
+.ask-foot { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .conv-composer { padding: 10px 16px 0; display: grid; gap: 8px; max-width: 812px; width: 100%; margin: 0 auto; }
 .conv-banner { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 12px; font-size: 14px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); border-radius: 10px; }
 .conv-box { position: relative; display: grid; gap: 6px; padding: 10px 12px 8px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 16px; }

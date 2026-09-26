@@ -3,6 +3,8 @@ import { icon } from '../icons.js';
 import { header } from '../app.js';
 import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
+import { parseAskScreen } from '../ask-screen.js';
+import { backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
 import { renderConversation } from '../conversation.js';
 import { autosizeTextarea, createComposer } from '../composer.js';
 
@@ -230,6 +232,14 @@ async function openLive(api, host, session, onEnd) {
     vid,
     send: (s, { focus = true } = {}) => { sendBytes(enc.encode(s)); if (focus) term.focus(); },
     focus: () => term.focus(),
+    /** The last rows of the screen, top to bottom, trailing blanks dropped. */
+    screenLines(max = 60) {
+      const b = term.buffer.active;
+      const out = [];
+      for (let y = Math.max(0, b.length - max); y < b.length; y++) out.push(b.getLine(y)?.translateToString(true) ?? '');
+      while (out.length && !out[out.length - 1].trim()) out.pop();
+      return out;
+    },
     /** Text in Claude Code's own input line (the bottom `❯` line), or '' when empty. */
     inputLine() {
       const b = term.buffer.active;
@@ -459,7 +469,9 @@ export async function render(root, api, bus, me) {
     const listEl = h('div', { class: 'conv-list', role: 'log', 'aria-label': 'Conversation' },
       h('div', { class: 'conv-note' }, 'Loading the conversation…'));
     const truncNote = h('div', { class: 'conv-note', hidden: true }, 'Earlier messages are in the Terminal view.');
-    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl));
+    // The open question, built from the terminal screen (see readScreen).
+    const askEl = h('div', { class: 'conv-ask live', hidden: true, 'aria-live': 'polite' });
+    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl, askEl));
 
     const banner = h('div', { class: 'conv-banner', hidden: true },
       h('span', {}, 'Claude is waiting for you in the terminal.'),
@@ -525,9 +537,99 @@ export async function render(root, api, bus, me) {
     let first = true;
     let disposed = false;
     const expanded = new Set();
+    // The open question lives on the terminal screen, not in the transcript
+    // (Claude Code records the call only once it is answered), so every poll
+    // tick reads the screen first and draws the live card from it. A click
+    // sends its keys at once — each key its own send, spaced so the screen
+    // redraws between them — and the card is read back from the screen.
+    let askState = null;     // the last parsed screen, so an unchanged card is not redrawn
+    let askText = null;      // { value } while "Other…" is open; survives redraws
+    let askSending = false;
+    let lockedByAsk = false;
+    async function sendKeys(keys) {
+      if (disposed || askSending || !view()) return;
+      askSending = true; askEl.dataset.sending = 'true';
+      try { for (const k of keys) { if (!view()) break; view().send(k, { focus: false }); await later(150); } }
+      finally { askSending = false; delete askEl.dataset.sending; }
+      await later(250);
+      readScreen();
+    }
+    function readScreen() {
+      if (disposed || askSending) return;
+      const v = view();
+      const st = v ? parseAskScreen(v.screenLines()) : null;
+      const key = JSON.stringify(st);
+      if (key === askState) return;
+      askState = key;
+      if (!st) {
+        askText = null; askEl.hidden = true; askEl.replaceChildren();
+        if (lockedByAsk) { composer.unlock(); lockedByAsk = false; }
+        setSession(row);
+        return;
+      }
+      drawAsk(st);
+      askEl.hidden = false;
+      if (!lockedByAsk) { composer.lock('Answer the question above first'); lockedByAsk = true; }
+      setSession(row);
+      if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 200) scroller.scrollTop = scroller.scrollHeight;
+    }
+    function drawAsk(st) {
+      askEl.dataset.kind = st.kind;
+      const term = h('button', { type: 'button', class: 'small ask-term', onclick: openTerminal }, 'Answer in terminal');
+      if (st.kind === 'review') {
+        askEl.replaceChildren(
+          h('div', {}, h('strong', {}, 'Review your answers')),
+          ...st.answers.map((a) => h('div', { class: 'ask-q', dir: 'auto' },
+            a.question ? h('div', { class: 'muted' }, a.question) : null, h('div', {}, a.answer))),
+          h('div', { class: 'ask-foot' },
+            h('div', { class: 'conv-opts' },
+              h('button', { type: 'button', class: 'small primary ask-submit', onclick: () => sendKeys(submitKeys()) }, 'Submit answers'),
+              h('button', { type: 'button', class: 'small ask-back', onclick: () => sendKeys(backKeys()) }, 'Back')),
+            term));
+        return;
+      }
+      const typing = st.other > 0 && st.cursor === st.other; // "Type something" is selected
+      if (typing && !askText) askText = { value: '' };
+      if (!typing) askText = null;
+      const tabs = st.tabs.length > 1 ? h('div', { class: 'ask-tabs conv-opts' },
+        ...st.tabs.map((t) => h('span', { class: 'chip', 'data-done': String(t.done), dir: 'auto' }, t.done ? '✓ ' : '', t.label))) : null;
+      const opts = st.options.map((o) => h('button', {
+        type: 'button', class: `conv-opt${o.on ? ' on' : ''}`, 'data-n': String(o.n), 'aria-pressed': st.multi ? String(o.on) : null, dir: 'auto',
+        onclick: () => sendKeys(pickKeys(o.n)),
+      }, o.label));
+      const other = st.other ? h('button', { type: 'button', class: `conv-opt ask-other${typing ? ' on' : ''}`,
+        onclick: () => { if (!typing) sendKeys(pickKeys(st.other)); } }, 'Other…') : null;
+      // The box only exists while the cursor is on "Type something", so the
+      // number is never re-sent: it would be typed into the answer.
+      const submitText = () => { const t = askText ? askText.value : ''; if (!t.trim()) return; askText = null; sendKeys(textKeys(st.other, t, { selected: true })); };
+      const sendBtn = h('button', { type: 'button', class: 'small primary ask-send', disabled: !(askText && askText.value.trim()), onclick: submitText }, 'Send answer');
+      const input = typing ? h('input', {
+        class: 'ask-text', type: 'text', maxlength: '2000', placeholder: 'Type your answer', 'aria-label': 'Your answer', dir: 'auto', value: askText.value,
+        oninput: (e) => { askText.value = e.target.value; sendBtn.disabled = !e.target.value.trim(); },
+        onkeydown: (e) => { if (e.key === 'Enter' && askText.value.trim()) { e.preventDefault(); submitText(); } },
+      }) : null;
+      // "Next" only while another question follows; otherwise → opens the
+      // review screen, and the button says so.
+      const more = st.tabs.filter((t) => !t.done).length > 1;
+      const action = typing ? sendBtn
+        : st.multi ? h('div', { class: 'conv-opts' },
+          h('span', { class: 'muted' }, 'Pick any that apply.'),
+          h('button', { type: 'button', class: 'small primary ask-next', onclick: () => sendKeys(nextKeys()) }, more ? 'Next' : 'Review answers'))
+          : h('span', { class: 'muted' }, st.other ? 'Pick one, or write your own.' : 'Pick one.');
+      askEl.replaceChildren(
+        h('div', {}, h('strong', {}, 'Claude is asking')),
+        tabs,
+        h('div', { class: 'ask-q' }, h('div', { dir: 'auto' }, st.question), h('div', { class: 'conv-opts' }, ...opts, other), input),
+        h('div', { class: 'ask-foot' }, action, term));
+      if (input) input.focus();
+    }
     const visible = () => !document.hidden && isShown(el);
     async function poll() {
-      if (disposed || !view() || !visible()) return;
+      if (disposed || !visible()) return;
+      // No network: the terminal buffer is local. Runs before the view check
+      // so a card is cleared, and the composer unlocked, once the view ends.
+      readScreen();
+      if (!view()) return;
       try {
         const r = await api.get(`/api/v1/claude/live/${view().vid}/conversation?v=${encodeURIComponent(version)}`);
         if (disposed || r.unchanged) return;
@@ -557,10 +659,14 @@ export async function render(root, api, bus, me) {
     const onVisible = () => { if (!document.hidden) poll(); };
     document.addEventListener('visibilitychange', onVisible);
 
-    function setSession(row) {
+    let row = s;
+    // An open question is answered on its card, so the terminal banner is
+    // for the other "needs you" cases (a permission prompt and the like).
+    function setSession(next) {
+      row = next;
       const [label] = stateOf(row);
       const busy = label === 'working';
-      banner.hidden = label !== 'needs you';
+      banner.hidden = label !== 'needs you' || !askEl.hidden;
       composer.setBusy(busy);
       const why = busy ? 'Wait until Claude finishes' : '';
       composer.picker('model').disable(busy, why);

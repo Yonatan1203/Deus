@@ -109,7 +109,9 @@ export function createComposer(o) {
     updateToken();
     input.focus();
   }
+  let locked = false;
   function submit() {
+    if (locked) return;
     const text = cleanInput(input.value);
     if (!text || !o.onSubmit(text)) return;
     input.value = '';
@@ -140,6 +142,9 @@ export function createComposer(o) {
   return {
     el,
     input,
+    /** A locked box takes no input and cannot submit; `why` shows in its place. */
+    lock(why) { locked = true; input.disabled = true; input.placeholder = why; sendBtn.disabled = true; },
+    unlock() { locked = false; input.disabled = false; input.placeholder = o.placeholder; sendBtn.disabled = false; },
     /** Send ↔ Stop. */
     setBusy(b) {
       busy = b;

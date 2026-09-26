@@ -1220,6 +1220,75 @@ file, `agents --json` reads it).
 - Found while testing: the Channels tab replaced itself with an error when the
   channel list could not be loaded (runtime starting). It now keeps its header
   and catalogue and shows a plain note instead.
+
+## Claude tab: answer a question from the conversation view (2026-09-26)
+
+Plan: `docs/superpowers/plans/2026-09-26-claude-tab-answer-questions.md`
+(plan-reviewer SHIP at round 5; rounds 1–4 caught a service-worker path, a
+positional-index risk, and — after the redesign below — a composer that was
+not really locked, a stray digit in free-text answers, and a screen read
+placed behind the transcript's "unchanged" early return). When Claude asks
+(`AskUserQuestion`), the conversation view shows the question as a card with
+option buttons: a single choice answers on the click; a multi-select toggles
+("Pick any that apply.") and **Next** advances — **Review answers** when no
+question follows; a set of questions ends on a review card with **Submit
+answers** / **Back**; **Other…** opens a text box. The composer is
+locked while a question is open ("Answer the question above first"), the
+terminal banner stays for the other "needs you" cases, and once submitted the
+transcript card reads "Claude asked … You answered: …".
+
+Two findings shaped the design:
+
+- **Claude Code writes the question to the transcript only once it is
+  answered.** Session d9ab238e had the dialog on screen and no assistant row
+  in its JSONL; revision 1 of the plan (transcript-driven card) therefore
+  never showed an open question. The open card is read from the live
+  terminal screen instead (`view().screenLines()` → `ask-screen.js`), the
+  transcript only feeds the answered card.
+- **The screen wraps on phones.** At 42 columns the footer spans two rows and
+  the closing rule carries the session name; the parser accepts that, and
+  the parser's fixtures are the real rows (blank rows and closing rule
+  included), not tidied captures.
+
+Keystroke contract (spike against Claude Code 2.1.283, four throwaway
+sessions, answers confirmed in each `tool_result`): a number selects — on a
+single-choice question it also advances, on the only question it submits; on
+a multi-select it toggles and `→` advances; the last advance opens "Review
+your answers", where Enter submits and `←` goes back; "Type something" is
+option N+1: its number, the text as a paste, Enter — and once its cursor is
+on it, the number must not be sent again (it would be typed).
+
+Driven on the real-Claude fixture (3117), three throwaway sessions started
+from the dashboard, exact-match assertions (a stray keystroke fails them):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| A: two questions, single + multi | tabs Colour/Fruit; options; composer locked; banner hidden | "Colour\|Fruit", "Red\|Green\|Blue", `.conv-input` disabled with the placeholder, banner hidden — `artifacts/claude-ask-open.png` | PASS |
+| A: click Green → Apple, Cherry → Next | second question, toggles, review card | "Which fruits?", `aria-pressed`, "Apple\|Cherry" on, review "Which colour? Green \| Which fruits? Apple, Cherry" — `artifacts/claude-ask-review.png` | PASS |
+| A: Submit answers | card gone, composer unlocked, answered card, transcript | "You answered: Green · Apple, Cherry"; transcript `"Which colour?"="Green", "Which fruits?"="Apple, Cherry"`; Claude replied with both — `artifacts/claude-ask-answered.png` | PASS |
+| B: one question, Other… → Purple, Enter | exact text, no stray digit | "You answered: Purple"; transcript `"Which colour?"="Purple"`; reply "You chose Purple." | PASS |
+| C: free text inside a set (the row the spike had not covered) | Other… → Purple → Send answer → Banana → Next → Submit | "You answered: Purple · Banana"; transcript `"Which colour?"="Purple", "Which fruits?"="Banana"` | PASS |
+| Phone 390 px | card fits, no sideways scroll, same question | 0 px, "Which colour?" — `artifacts/claude-ask-mobile.png` | PASS |
+| Suite | green | control-ui + scripts 388 (47 files: parser 11, screen parser 7, keys 5); tsc, eslint clean | PASS |
+
+Screenshots are cropped to the conversation pane: the fixture lists the
+operator's real sessions beside the throwaway ones.
+
+- Found while testing: the session-start limiter (3 per 10 min) refused the
+  drive's fourth start — expected behaviour, the drive was split. Also: a
+  fixture started without `CONTROL_UI_TMUX_SOCKET` runs its start-up
+  `tmux kill-server` on the live dashboard's socket and drops its open views
+  (sessions untouched); the fixture now sets its own socket.
+- Review round: code-reviewer SHIP; copy-writer and ux-reviewer (advisory)
+  led to: "Back" instead of "Change answers" (it steps one question back),
+  "Review answers" instead of "Done"/"Next" when no question follows, a hint
+  for multi-select, "Pick one." when there is no free-text option, `dir=auto`
+  on option and tab labels, an ellipsis on a clipped label, `aria-live` on the
+  card, the card cleared and the composer unlocked when the live view ends,
+  and `disposed` guards on the key sender. Deferred, noted for a follow-up:
+  jumping to any question from the review card (needs its own keystroke
+  check) and a "someone else is answering" notice for two browsers on one
+  session (the raw terminal has the same race).
 - From review: the dedup counts a setup as running until its session is
   confirmed done (a just-started one may not be listed yet); the MCPs tab keeps
   its header and catalogue when the inventory cannot load; and the ten

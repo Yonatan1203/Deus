@@ -83,6 +83,25 @@ function toolsItem(g, h, key, expanded) {
 }
 
 /**
+ * A question from Claude, as the transcript records it — which is only once
+ * it has been answered (Claude Code writes the call and the answer
+ * together). The open question is the live card the Claude tab builds from
+ * the terminal screen, not this.
+ */
+function askCard(it, h, handlers) {
+  const answered = it.answered;
+  return h('div', { class: `conv-ask${answered ? ' answered' : ''}` },
+    h('div', {}, h('strong', {}, answered ? 'Claude asked' : 'Claude is asking')),
+    ...it.questions.map((q) => h('div', { class: 'ask-q' },
+      q.header ? h('span', { class: 'chip' }, q.header) : null,
+      h('div', { dir: 'auto' }, q.question),
+      h('div', { class: 'conv-opts' }, ...q.options.map((o) => h('span', { class: 'conv-opt', dir: 'auto' }, o))))),
+    answered && it.answer ? h('div', { class: 'ask-answer', dir: 'auto' }, 'You answered: ', it.answer) : null,
+    !answered && handlers.openTerminal
+      ? h('button', { type: 'button', class: 'small', onclick: () => handlers.openTerminal() }, 'Answer in terminal') : null);
+}
+
+/**
  * Draws items into `el`. `handlers.openTerminal()` is called by the
  * "Answer in terminal" button on an open question; `handlers.expanded`, a
  * Set, keeps opened folds open across redraws.
@@ -97,11 +116,7 @@ export function renderConversation(el, items, h, handlers = {}) {
         h('code', {}, [it.name, it.args].filter(Boolean).join(' ')),
         it.output ? h('span', { class: 'muted' }, it.output) : null);
       case 'note': return h('div', { class: 'conv-note' }, it.text);
-      case 'ask': return h('div', { class: `conv-ask${it.answered ? ' answered' : ''}` },
-        h('div', {}, h('strong', {}, it.answered ? 'Claude asked: ' : 'Claude is asking: '), it.question),
-        h('div', { class: 'conv-opts' }, ...it.options.map((o) => h('span', { class: 'conv-opt' }, o)),
-          it.answered || !handlers.openTerminal ? null
-            : h('button', { type: 'button', class: 'small', onclick: () => handlers.openTerminal() }, 'Answer in terminal')));
+      case 'ask': return askCard(it, h, handlers);
       default: return null;
     }
   });
