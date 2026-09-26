@@ -2780,6 +2780,131 @@ describe('control-ui server — claude sessions', () => {
     ).toBe(403);
   });
 
+  it('integrations: lists the catalogue and sets one up through a guided session, one at a time', async () => {
+    fs.mkdirSync(path.join(root, '.claude', 'skills', 'add-telegram'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(root, '.claude', 'skills', 'add-telegram', 'SKILL.md'),
+      '---\nname: add-telegram\ndescription: Add Telegram as a channel.\n---\n',
+    );
+    fs.mkdirSync(path.join(root, '.claude', 'skills', 'add-old'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(root, '.claude', 'skills', 'add-old', 'SKILL.md'),
+      '---\nname: add-old\ndescription: "[DEPRECATED] gone"\n---\n',
+    );
+    const cli = await bootC({
+      envHas: (k: string) => k === 'TELEGRAM_BOT_TOKEN',
+    });
+    const { auth } = await login();
+    const list = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/integrations',
+        headers: auth,
+      }),
+    );
+    expect(list.integrations).toEqual([
+      expect.objectContaining({
+        name: 'add-telegram',
+        title: 'Telegram',
+        kind: 'channel',
+        needs: ['TELEGRAM_BOT_TOKEN'],
+        configured: true,
+      }),
+    ]);
+    const setup = (name: string, confirm = 'setup') =>
+      request({
+        method: 'POST',
+        path: `/api/v1/integrations/${name}/setup`,
+        headers: {
+          ...auth,
+          ...H,
+          ...(confirm ? { 'X-Confirm': confirm } : {}),
+        },
+        body: '{}',
+      });
+    expect((await setup('add-telegram', '')).status).toBe(428);
+    expect((await setup('add-nope')).status).toBe(404);
+    expect((await setup('..%2Fx')).status).toBe(404);
+    expect((await setup('add-old')).status).toBe(404);
+    cli.state.rows = [
+      {
+        id: 'e5f6a7b8',
+        sessionId: SID,
+        name: 'Add Telegram',
+        kind: 'background',
+        state: 'working',
+        status: 'busy',
+        cwd: root,
+        startedAt: 9,
+      },
+    ];
+    const r = await setup('add-telegram');
+    expect(r.status).toBe(200);
+    expect(j(r)).toEqual({ id: 'e5f6a7b8' });
+    // Even before the CLI lists the new session, a second setup is refused.
+    cli.state.rows = [];
+    expect((await setup('add-telegram')).status).toBe(409);
+    cli.state.rows = [
+      {
+        id: 'e5f6a7b8',
+        sessionId: SID,
+        name: 'Add Telegram',
+        kind: 'background',
+        state: 'working',
+        status: 'busy',
+        cwd: root,
+        startedAt: 9,
+      },
+    ];
+    const spawn = cli.calls.find((c) => c[0] === '--bg')!;
+    expect(spawn[1]).toBe('--name=Add Telegram');
+    expect(spawn[4].startsWith('/add-telegram\n')).toBe(true);
+    expect(spawn[4]).toContain("dashboard's Channels tab");
+    // While that session works, nothing else can be set up — not even a different integration.
+    fs.mkdirSync(path.join(root, '.claude', 'skills', 'add-slack'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(root, '.claude', 'skills', 'add-slack', 'SKILL.md'),
+      '---\nname: add-slack\ndescription: Add Slack.\n---\n',
+    );
+    const again = await setup('add-slack');
+    expect(again.status).toBe(409);
+    expect(j(again)).toMatchObject({ id: 'e5f6a7b8', name: 'add-telegram' });
+    server.close();
+    // Read-only: catalogue without key names, and no setup.
+    await bootC({
+      readOnly: true,
+      envHas: (k: string) => k === 'TELEGRAM_BOT_TOKEN',
+    });
+    const ro = await login();
+    const roList = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/integrations',
+        headers: ro.auth,
+      }),
+    );
+    expect(roList.integrations[0]).toMatchObject({
+      needs: [],
+      configured: null,
+    });
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/integrations/add-telegram/setup',
+          headers: { ...ro.auth, ...H, 'X-Confirm': 'setup' },
+          body: '{}',
+        })
+      ).status,
+    ).toBe(403);
+  });
+
   it('live: opens only listed background sessions, routes input by owner, refuses read-only', async () => {
     const live = fakeLive();
     const cli = await bootC({}, fakeCli(), { liveViews: live });

@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add Linear
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 This skill adds Linear project management tools to host-side Claude Code sessions via the `@tacticlaunch/mcp-linear` MCP server. Once installed, you can create/update issues, manage projects and cycles, search your backlog, and track workflow states from conversation.
 
 ## Phase 1: Pre-flight
@@ -31,9 +41,9 @@ Tell the user:
 >
 > 1. Open Linear → Settings → API → Personal API keys
 > 2. Click "Create key", give it a label like "Deus"
-> 3. Copy the token (format: `lin_api_...`) and paste it here
+> 3. Copy the token (format: `lin_api_...`) and paste it here (dashboard-started session: follow "Started from the dashboard?" above instead)
 
-Once the user provides the token:
+Once the user provides the token (dashboard-started session: follow "Started from the dashboard?" above instead):
 
 Add to `~/deus/.env`:
 ```bash

@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add Microsoft Teams Channel
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 > **Status:** Available in-repo as `packages/mcp-teams/` (`@deus-ai/teams-mcp`). The published npm package is not out yet, so the channel factory falls back to the in-repo build at `packages/mcp-teams/dist/index.js` — you build it locally (below).
 
 Microsoft Teams is the chat-channel analog of Slack: a bot identity receives

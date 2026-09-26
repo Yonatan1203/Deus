@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add Telegram Channel
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 This skill adds Telegram support to Deus, then walks through interactive setup.
 
 **IMPORTANT:** Do NOT add git remotes, fetch from external repos, or install npm packages from the public registry during this skill. All channel code is already in the repo under `packages/` and `src/channels/`.
@@ -22,7 +32,7 @@ Use `AskUserQuestion` to collect configuration:
 
 AskUserQuestion: Do you have a Telegram bot token, or do you need to create one?
 
-If they have one, collect it now. If not, we'll create one in Phase 3.
+If they have one, collect it now (dashboard-started session: follow "Started from the dashboard?" above instead). If not, we'll create one in Phase 3.
 
 ## Phase 2: Build Local Packages
 
@@ -55,7 +65,7 @@ If the user doesn't have a bot token, tell them:
 >    - Bot username: Must end with "bot" (e.g., "andy_ai_bot")
 > 3. Copy the bot token (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
 
-Wait for the user to provide the token.
+Wait for the user to provide the token (dashboard-started session: follow "Started from the dashboard?" above instead).
 
 ### Configure environment
 

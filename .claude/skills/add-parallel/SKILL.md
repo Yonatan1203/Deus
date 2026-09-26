@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add Parallel AI Integration
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 Adds Parallel AI MCP integration to Deus for advanced web research capabilities.
 
 ## What This Adds
@@ -30,7 +40,7 @@ Run all steps automatically. Only pause for user input when explicitly needed.
 Use `AskUserQuestion: Do you have a Parallel AI API key, or should I help you get one?`
 
 **If they have one:**
-Collect it now.
+Collect it now (dashboard-started session: follow "Started from the dashboard?" above instead).
 
 **If they need one:**
 Tell them:
@@ -38,7 +48,7 @@ Tell them:
 > 2. Sign up or log in
 > 3. Navigate to API Keys section
 > 4. Create a new API key
-> 5. Copy the key and paste it here
+> 5. Copy the key and paste it here (dashboard-started session: follow "Started from the dashboard?" above instead)
 
 Wait for the API key.
 

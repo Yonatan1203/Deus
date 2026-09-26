@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add Asana
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 This skill adds Asana project management tools to host-side Claude Code sessions via the `@roychri/mcp-server-asana` MCP server. Once installed, you can create/update tasks, manage projects and sections, search your workspace, add comments, and track task fields from conversation.
 
 This mirrors the `/add-linear` pattern: a local **stdio** server launched with `npx`, authenticated by an Asana **Personal Access Token (PAT)** sourced from `~/deus/.env`. The token never enters containers and is never copied into Claude Code's config.
@@ -37,11 +47,11 @@ Tell the user:
 > 1. Open Asana → click your profile photo (top right) → **My Settings**
 > 2. Go to the **Apps** tab → **Manage Developer Apps**
 > 3. Under **Personal Access Tokens**, click **Create new token**, give it a label like "Deus"
-> 4. Copy the token and paste it here
+> 4. Copy the token and paste it here (dashboard-started session: follow "Started from the dashboard?" above instead)
 >
 > (Direct link: https://app.asana.com/0/my-apps)
 
-Once the user provides the token:
+Once the user provides the token (dashboard-started session: follow "Started from the dashboard?" above instead):
 
 Add to `~/deus/.env`:
 ```bash

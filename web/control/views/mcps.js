@@ -1,5 +1,7 @@
 import { h, clear, badge } from '../dom.js';
 import { header } from '../app.js';
+import { addButton, catalogue } from '../integrations.js';
+import { serverError } from '../ui.js';
 
 function table(headers, rows) {
   return h('div', { class: 'table-wrap' },
@@ -8,11 +10,21 @@ function table(headers, rows) {
       h('tbody', {}, ...(rows.length ? rows : [h('tr', {}, h('td', { colspan: String(headers.length), class: 'muted' }, 'none'))]))));
 }
 
-export async function render(root, api) {
-  const inv = await api.get('/api/v1/mcps');
+export async function render(root, api, bus, me) {
+  const readOnly = Boolean(me && me.read_only);
+  const cat = catalogue(api, { kinds: ['mcp', 'tool', 'backend'], title: 'Add an MCP, tool or backend', readOnly });
+  let inv;
+  try { inv = await api.get('/api/v1/mcps'); }
+  catch (err) {
+    clear(root);
+    root.append(header('MCPs', { eyebrow: 'Configure', actions: readOnly ? [] : [addButton('Add MCP or tool', cat)] }), cat.el,
+      h('div', { class: 'empty' }, serverError(err, 'Could not load the MCP list — try again in a moment.')));
+    return;
+  }
   clear(root);
   root.append(
-    header('MCPs', { eyebrow: 'Configure' }),
+    header('MCPs', { eyebrow: 'Configure', actions: readOnly ? [] : [addButton('Add MCP or tool', cat)] }),
+    cat.el,
     h('h2', {}, 'Container MCP servers'),
     table(['Name', 'Source', 'Status'], inv.container.map((c) => h('tr', {},
       h('td', {}, c.name),

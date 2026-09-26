@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add Discord Channel
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 > **Status:** Coming soon — this channel will be available as `@deus-ai/discord-mcp`. The MCP package is not yet available.
 
 This skill will add Discord support to Deus once the MCP package is released. In the meantime, the setup/config/registration phases below describe what the integration will look like.
@@ -30,7 +40,7 @@ If the user doesn't have a bot token, tell them:
 >    - Bot Permissions: select `Send Messages`, `Read Message History`, `View Channels`
 >    - Copy the generated URL and open it in your browser to invite the bot to your server
 
-Wait for the user to provide the token.
+Wait for the user to provide the token (dashboard-started session: follow "Started from the dashboard?" above instead).
 
 ### Configure environment
 

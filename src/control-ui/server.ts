@@ -54,6 +54,16 @@ import { containerLogs, queryLogs, redactSecrets } from './api/logs.js';
 import { createConversationReader } from './api/claude-conversation.js';
 import { readSkillDir, readSlashCommands } from './api/claude-commands.js';
 import { createChatStore } from './api/chat-store.js';
+import {
+  INTEGRATION_NAME_RE,
+  listIntegrations,
+  setupPrompt,
+} from './api/integrations.js';
+import {
+  SETUPS_FILE,
+  createSetups,
+  shadowedBy,
+} from './api/integration-setups.js';
 import { readSystem, type SystemView } from './api/system.js';
 import { readConfig, writeConfig } from './api/config.js';
 import {
@@ -1987,6 +1997,84 @@ export function createControlServer(
       commands: readSlashCommands(deps.repoRoot, homeDir),
     });
   });
+  // Integrations: the repo's own add-* skills, set up by a session the
+  // dashboard starts with a fixed prompt. One at a time: the skills edit the
+  // same files and may restart the service. Secrets never pass through here.
+  const setups = deps.configDir
+    ? createSetups(path.join(deps.configDir, 'control-ui', SETUPS_FILE))
+    : null;
+  router.add('GET', '/api/v1/integrations', (ctx) => {
+    const list = listIntegrations(deps.repoRoot, deps.envHas);
+    // Read-only viewers see the catalogue, not which keys are set.
+    writeJson(ctx.res, 200, {
+      integrations: deps.readOnly
+        ? list.map((i) => ({ ...i, needs: [], configured: null }))
+        : list,
+    });
+  });
+  router.add(
+    'POST',
+    '/api/v1/integrations/:name/setup',
+    async (ctx) => {
+      if (deps.readOnly)
+        return writeJson(ctx.res, 403, {
+          error: 'read-only from the dashboard',
+        });
+      if (header(ctx.req, 'x-confirm') !== 'setup')
+        return writeJson(ctx.res, 428, { error: 'confirmation required' });
+      const name = ctx.params.name;
+      const item = INTEGRATION_NAME_RE.test(name)
+        ? listIntegrations(deps.repoRoot, deps.envHas).find(
+            (i) => i.name === name,
+          )
+        : undefined;
+      if (!item) return writeJson(ctx.res, 404, { error: 'not found' });
+      if (shadowedBy(homeDir, name))
+        return writeJson(ctx.res, 409, {
+          error: 'a personal skill shadows this one',
+        });
+      if (!setups)
+        return writeJson(ctx.res, 503, { error: 'setups unavailable' });
+      const listed = await claudeList(true);
+      if (!('sessions' in listed)) return claudeUnavailable(ctx.res);
+      // Running = not confirmed done. A setup started seconds ago may not be
+      // listed yet; prune keeps it for the grace period, and it counts.
+      const done = new Set(
+        listed.sessions.filter((s) => s.state === 'done').map((s) => s.id),
+      );
+      const running = setups
+        .prune({
+          listedIds: new Set(listed.sessions.map((s) => s.id)),
+          now: now(),
+        })
+        .find((s) => !done.has(s.id));
+      if (running)
+        return writeJson(ctx.res, 409, {
+          error: 'another setup is running',
+          id: running.id,
+          name: running.name,
+        });
+      const r = await startDashboardSession(
+        ctx,
+        `Add ${item.title}`,
+        setupPrompt(name, item.kind),
+      );
+      if (!r) return;
+      setups.add({ id: r.id, name, started_at: now() });
+      logger.warn(
+        {
+          event: 'control_ui_integration_setup',
+          name,
+          id: r.id,
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI started an integration setup',
+      );
+      writeJson(ctx.res, 200, { id: r.id });
+    },
+    { maxBody: 256 },
+  );
   // Ends views whose login is gone (expiry, revocation) or whose browser left.
   // Checking rotation here means it does not wait for the next request.
   const liveSweep = setInterval(() => {

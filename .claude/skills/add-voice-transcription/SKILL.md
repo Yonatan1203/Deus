@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add Voice Transcription
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 This skill enables automatic voice message transcription for Deus's WhatsApp channel using OpenAI's transcription API. When a voice note (or an `audio/*` attachment) arrives in a registered chat, the channel downloads it, the host transcribes it, and the agent receives `[Voice: <transcript>]` (or `[Audio "<file>": <transcript>]`).
 
 ## Phase 1: Pre-flight
@@ -20,7 +30,7 @@ Use `AskUserQuestion` to collect information:
 
 AskUserQuestion: Do you have an OpenAI API key for Whisper transcription?
 
-If yes, collect it now. If no, direct them to create one at https://platform.openai.com/api-keys.
+If yes, collect it now (dashboard-started session: follow "Started from the dashboard?" above instead). If no, direct them to create one at https://platform.openai.com/api-keys.
 
 ## Phase 2: Apply Code Changes
 

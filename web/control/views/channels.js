@@ -1,7 +1,8 @@
 import { h, clear, badge } from '../dom.js';
-import { confirmTyped, toast } from '../ui.js';
+import { confirmTyped, serverError, toast } from '../ui.js';
 import { icon } from '../icons.js';
 import { header } from '../app.js';
+import { addButton, catalogue } from '../integrations.js';
 
 export async function render(root, api, bus, me) {
   const readOnly = Boolean(me && me.read_only);
@@ -9,11 +10,18 @@ export async function render(root, api, bus, me) {
   // A served QR survives redraws: queue/refresh events rebuild the grid while
   // the user is still scanning.
   const served = new Map();
+  const cat = catalogue(api, { kinds: ['channel'], title: 'Add a channel', readOnly });
   clear(root);
-  root.append(header('Channels', { eyebrow: 'Configure' }), grid);
+  root.append(header('Channels', { eyebrow: 'Configure', actions: readOnly ? [] : [addButton('Add channel', cat)] }), cat.el, grid);
 
   async function draw() {
-    const channels = await api.get('/api/v1/channels');
+    let channels;
+    try { channels = await api.get('/api/v1/channels'); }
+    catch (err) {
+      clear(grid);
+      grid.append(h('div', { class: 'empty' }, err.status === 503 ? 'The channel list is unavailable while the assistant is starting — try again in a moment.' : serverError(err, 'Could not load the channels.')));
+      return;
+    }
     clear(grid);
     for (const c of channels) {
       const card = h('article', { class: 'card' },

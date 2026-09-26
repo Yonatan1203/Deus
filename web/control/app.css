@@ -432,6 +432,30 @@ td code { color: var(--muted); font-size: 12.5px; }
 @media (max-width: 480px) { .chat-settings { display: none; } }
 @media (max-width: 767px) { body.chat-open .tabbar { display: none; } body.chat-open .view[data-view="chat"] { height: 100dvh; } }
 
+/* Integrations catalogue (Channels, MCPs): one row per add-* skill. */
+.integ-panel { margin-bottom: 16px; display: grid; gap: 10px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.integ-panel[hidden] { display: none; }
+.integ-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.integ-head b { font-size: 15px; flex: 1; }
+.integ-head input { width: min(100%, 240px); }
+.integ-panel .hint { margin: 0; color: var(--muted); font-size: 13px; }
+.integ-list { display: grid; }
+.integ-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 4px; border-top: 1px solid var(--line); }
+.integ-row:first-child { border-top: 0; }
+.integ-mark { width: 34px; height: 34px; border-radius: 8px; background: var(--surface-2); display: grid; place-items: center; font: 600 12px var(--mono); color: var(--accent-text); }
+.integ-main { min-width: 0; display: grid; gap: 2px; }
+.integ-title { display: flex; align-items: center; gap: 8px; }
+.integ-desc { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.integ-desc .chip { margin-left: 4px; }
+.chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+@media (max-width: 480px) {
+  .integ-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .integ-mark { display: none; }
+  .integ-head { flex-direction: column; align-items: stretch; gap: 8px; }
+  .integ-head input { width: 100%; }
+}
+
 /* Editor (groups CLAUDE.md, memory file) */
 .editor { margin-top: 22px; display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 18px; }
 .editor-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

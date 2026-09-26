@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add OpenAI/Codex Backend
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 This skill configures OpenAI/Codex as a backend for Deus. Two independent modes:
 
 - **Service backend** (`DEUS_AGENT_BACKEND=openai`) — container agents use the OpenAI Responses API for background message handling

@@ -1190,3 +1190,40 @@ left alone.
 | First attempt | — | with a collapsed tool output the screen had nothing to scroll (wheel did nothing either); re-tested on a session with a 150-line reply | noted |
 
 - `Deviation:` the plan said "scroll the viewport only" (`term.scrollLines`). Found while building: on Claude Code's alternate screen xterm has no history, so that scrolls nothing — the wheel fix from earlier today works only because xterm turns a wheel into mouse reports the app scrolls from. A finger drag therefore becomes the same wheel events on the alternate screen (nothing typed: only wheel reports, exactly what a mouse wheel sends), and stays a viewport scroll on the normal screen. `touch-action: none` on the terminal (touch devices) keeps the browser from scrolling the page or the viewport on its own, so the two never race.
+
+## Integrations from the GUI: Add channel, Add MCP or tool (2026-09-26)
+
+Plan: `docs/superpowers/plans/2026-09-26-integrations-from-gui.md`
+(plan-reviewer SHIP, threat-modeler SHIP round 2; the operator picked the row
+layout from a two-variant mockup). The Channels and MCPs tabs get a catalogue
+of the repo's own `add-*` skills; **Set up** starts a session through the
+shared `startDashboardSession` with `/add-<name>` and a fixed note, then opens
+it on the Claude tab. One setup at a time (`integration-setups.json`); a
+personal or plugin skill of the same name is refused; the prompt tells the
+session never to ask for a token value in the conversation. Key names may be
+shown; values never; read-only viewers see neither.
+
+Driven on the fake-claude fixture (stand-in `claude`: `--bg` writes to a state
+file, `agents --json` reads it).
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Channels catalogue | six channel skills, filter, needs chips | Discord, Microsoft Teams, Slack, Telegram, Telegram agent swarm, WhatsApp; "tele" → 2 rows; "needs TELEGRAM_BOT_TOKEN" — `artifacts/integrations-channels.png` | PASS |
+| Set up Telegram | session "Add Telegram" started with `/add-telegram` + note; Claude tab opens it | fake state shows "Add Telegram"; selected on the Claude tab; route test pins `--name=Add Telegram` and the prompt's first line and "Channels tab" | PASS |
+| Second setup while one runs | refused, named | "Another setup is running (Telegram) — finish it first." and the running session opened | PASS |
+| MCPs catalogue | 15 rows grouped mcp → tool → backend | 15 rows — `artifacts/integrations-mcps.png` | PASS |
+| Read-only | catalogue without key names; setup 403 | route test | PASS |
+| Deprecated / shadowed | `[DEPRECATED]` absent; personal or plugin `add-<name>` → 409 | unit + route tests | PASS |
+| Phone 390 px | rows fit, no sideways scroll | 0 px — `artifacts/integrations-mobile.png` | PASS |
+| Suite | green | control-ui + scripts 375 (45 files); tsc, eslint clean; overflow mcps 0 px (the Channels screenshot step needs the live runtime's Gmail panel, which the fixture lacks) | PASS |
+
+- Found while testing: the Channels tab replaced itself with an error when the
+  channel list could not be loaded (runtime starting). It now keeps its header
+  and catalogue and shows a plain note instead.
+- From review: the dedup counts a setup as running until its session is
+  confirmed done (a just-started one may not be listed yet); the MCPs tab keeps
+  its header and catalogue when the inventory cannot load; and the ten
+  credential-needing `add-*` skills carry a "Started from the dashboard?"
+  section, so the no-token-in-conversation rule does not rest on the note alone.
+  Not driven against a real installer (it would change the live checkout); the
+  first real setup is the operator's, on the Claude tab.

@@ -6,6 +6,16 @@ disable-model-invocation: true
 
 # Add Agent Swarm to Telegram
 
+## Started from the dashboard?
+
+If the first message says the operator started this from the dashboard
+(Channels or MCPs tab), never ask for a token or key value in this
+conversation — it would land in the session transcript. Instead: name the
+variable and say it goes in `.env` in this repo, ask the operator to add it
+themselves, confirm it is set with `grep -c '^VAR_NAME=' .env` (never print the
+value), and continue from there. Everything else in this skill applies as
+written.
+
 This skill adds Agent Teams (Swarm) support to an existing Telegram channel. Each subagent in a team gets its own bot identity in the Telegram group, so users can visually distinguish which agent is speaking.
 
 **Prerequisite**: Telegram must already be set up via the `/add-telegram` skill. If `src/telegram.ts` does not exist or `TELEGRAM_BOT_TOKEN` is not configured, tell the user to run `/add-telegram` first.

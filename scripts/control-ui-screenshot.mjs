@@ -72,8 +72,9 @@ for (const [name, viewport] of viewports) {
       await page.click('#view .memory-item');
       await page.waitForSelector('#view .memory-content', { timeout: 10_000 });
     } else if (tab === 'channels') {
-      // Drive the pairing path so the rendered QR is in the capture.
-      await page.waitForSelector('#view .card', { timeout: 10_000 });
+      // Drive the pairing path so the rendered QR is in the capture (a fixture
+      // without the runtime shows the unavailable note instead).
+      await page.waitForSelector('#view .card, #view .empty', { timeout: 10_000 });
       const qrButton = page.locator('#view button', { hasText: 'Show pairing QR' });
       if (await qrButton.count()) {
         await qrButton.first().click();
