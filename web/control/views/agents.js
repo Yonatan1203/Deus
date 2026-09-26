@@ -1,7 +1,7 @@
 import { h, clear, badge } from '../dom.js';
 import { header } from '../app.js';
 import { icon } from '../icons.js';
-import { toast } from '../ui.js';
+import { serverError, toast } from '../ui.js';
 import { parseMarkdown, renderBlocks } from '../markdown.js';
 
 // Agents: the Claude Code subagents in this repo's .claude/agents. Each card
@@ -53,7 +53,7 @@ export async function render(root, api, bus, me) {
     const shown = list.filter((a) => !needle || a.name.includes(needle)
       || (a.description || '').toLowerCase().includes(needle)
       || (a.tools || []).some((t) => t.toLowerCase().includes(needle)));
-    if (shown.length === 0) grid.append(h('div', { class: 'empty' }, 'No agents match.'));
+    if (shown.length === 0) grid.append(h('div', { class: 'empty' }, 'No agents match your filter.'));
     else grid.append(...shown.map((a) => card(a, open)));
     for (const el of grid.querySelectorAll('.agent-card')) el.classList.toggle('selected', el.dataset.name === openName);
   };
@@ -71,7 +71,7 @@ export async function render(root, api, bus, me) {
   async function open(name) {
     let a;
     try { a = await api.get(`/api/v1/agents/${encodeURIComponent(name)}`); }
-    catch (err) { toast(err.status === 404 ? 'That agent is gone' : err.message, 'error'); close(); return; }
+    catch (err) { toast(err.status === 404 ? 'That agent is gone' : serverError(err, 'Something went wrong — try again.'), 'error'); close(); return; }
     openName = a.name;
     setHash(a.name);
     const desc = cleanDesc(a.description);

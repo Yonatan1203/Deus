@@ -1,5 +1,5 @@
 import { h, clear } from '../dom.js';
-import { confirmTyped, toast } from '../ui.js';
+import { confirmTyped, serverError, toast } from '../ui.js';
 import { icon } from '../icons.js';
 import { header } from '../app.js';
 import { parseMarkdown, renderBlocks } from '../markdown.js';
@@ -48,11 +48,11 @@ const plain = (t) => (t || '').replace(/[*_`#>]+/g, '').replace(/(^|\s)[-+] /g, 
 const avatar = () => h('span', { class: 'amos-av', 'aria-hidden': 'true' }, 'A');
 const typing = (text) => h('div', { class: 'chat-typing' },
   h('span', { class: 'dots', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
-  h('span', {}, text || 'Amos is working…'));
+  h('span', {}, text));
 
 function messageNode(m) {
   if (m.role === 'user')
-    return h('div', { class: 'chat-user' }, h('div', { class: 'chat-text' }, m.text), h('span', { class: 'chat-time' }, time(m.at)));
+    return h('div', { class: 'chat-user' }, h('div', { class: 'chat-text', dir: 'auto' }, m.text), h('span', { class: 'chat-time' }, time(m.at)));
   const body = h('div', { class: 'chat-body' });
   if (m.activity && m.activity.length) {
     const list = h('ul', { class: 'conv-calls', hidden: true }, ...m.activity.map((a) => h('li', {}, a)));
@@ -61,7 +61,7 @@ function messageNode(m) {
     fold.addEventListener('click', () => { list.hidden = !list.hidden; fold.setAttribute('aria-expanded', String(!list.hidden)); });
     body.append(fold, list);
   }
-  if (m.text) body.append(h('div', { class: 'conv-assistant' }, ...renderBlocks(parseMarkdown(m.text), h)));
+  if (m.text) body.append(h('div', { class: 'conv-assistant', dir: 'auto' }, ...renderBlocks(parseMarkdown(m.text), h)));
   if (m.error) body.append(h('div', { class: 'chat-error' }, m.error));
   body.append(h('span', { class: 'chat-time' }, time(m.at)));
   return h('div', { class: 'chat-amos' }, avatar(), body);
@@ -89,7 +89,7 @@ export async function render(root, api, bus, me) {
       const c = await api.post('/api/v1/chats', {});
       await loadList();
       openChat(c.id);
-    } catch (err) { toast(err.message, 'error'); }
+    } catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
   }
   function drawList() {
     clear(side);
@@ -104,12 +104,12 @@ export async function render(root, api, bus, me) {
         onclick: () => openChat(c.id),
       },
       h('span', { class: 'chat-row-top' }, h('span', { class: 'chat-row-title' }, c.title), h('span', { class: 'chat-row-when' }, shortWhen(c.updated))),
-      h('span', { class: 'chat-row-sub' }, c.running ? h('span', { class: 'spin', 'aria-hidden': 'true' }, '✻') : null, c.running ? `${who} is replying…` : plain(c.preview))));
+      h('span', { class: 'chat-row-sub', dir: 'auto' }, c.running ? h('span', { class: 'spin', 'aria-hidden': 'true' }, '✻') : null, c.running ? `${who} is replying…` : plain(c.preview))));
     }
   }
   async function loadList() {
     try { chats = (await api.get('/api/v1/chats')).chats; drawList(); }
-    catch (err) { clear(side); side.append(h('div', { class: 'empty' }, err.message)); }
+    catch (err) { clear(side); side.append(h('div', { class: 'empty' }, serverError(err, 'Something went wrong — try again.'))); }
   }
 
   // ---- open chat ----
@@ -129,7 +129,7 @@ export async function render(root, api, bus, me) {
   async function openChat(id, opts = {}) {
     let chat;
     try { chat = await api.get(`/api/v1/chats/${id}`); }
-    catch (err) { toast(err.status === 404 ? 'That chat is gone' : err.message, 'error'); current = null; drawList(); placeholder(); return; }
+    catch (err) { toast(err.status === 404 ? 'That chat is gone' : serverError(err, 'Something went wrong — try again.'), 'error'); current = null; drawList(); placeholder(); return; }
     const sameChat = current && current.id === chat.id && view;
     current = chat;
     drawList();
@@ -163,12 +163,13 @@ export async function render(root, api, bus, me) {
       onSubmit: (text) => { send(text); return true; },
       onStop: stopTurn,
       stopLabel: `Stop ${who}`,
-      lead: h('span', { class: 'conv-mode' }, who),
+      lead: h('span', { class: 'conv-mode chat-settings' }),
       pickers: [
-        { id: 'model', initial: 'Model', options: MODELS, onPick: (v) => setting({ model: v || null }), note: 'Only for this chat.' },
-        { id: 'effort', initial: 'Effort', options: EFFORTS, onPick: (v) => setting({ effort: v || null }), note: `Only for this chat. Default is ${who}'s own.` },
+        { id: 'model', initial: 'Model', options: MODELS, onPick: (v) => setting({ model: v || null }), note: `Only for this chat. Leave it on Default to use ${who}'s usual model.` },
+        { id: 'effort', initial: 'Effort', options: EFFORTS, onPick: (v) => setting({ effort: v || null }), note: `Only for this chat. Leave it on Default to use ${who}'s usual effort.` },
       ],
     });
+    composer.input.setAttribute('dir', 'auto');
     if (readOnly) composer.input.disabled = true;
     pane.append(bar, h('div', { class: 'chat-stage' }, scroller, h('div', { class: 'conv-composer' }, composer.el)));
     view = { listEl, scroller, composer, statusEl, titleEl, live: null };
@@ -207,17 +208,22 @@ export async function render(root, api, bus, me) {
     ep.set(labelOf(EFFORTS, current.effort, 'Default'));
     mp.disable(running || readOnly, why);
     ep.disable(running || readOnly, why);
+    // What this chat runs with, as text — the pickers hold the controls.
+    const lead = view.composer.el.querySelector('.chat-settings');
+    if (lead) lead.textContent = current.model || current.effort
+      ? [current.model ? labelOf(MODELS, current.model, '') : `${who}'s model`, current.effort ? labelOf(EFFORTS, current.effort, '') : `${who}'s effort`].join(' · ')
+      : `${who}'s defaults`;
   }
 
   async function setting(patch) {
     try { current = await api.patch(`/api/v1/chats/${current.id}`, patch); syncState(); }
-    catch (err) { toast(err.message, 'error'); }
+    catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
   }
   async function rename() {
     const title = window.prompt('Name this chat', current.title);
     if (!title || !title.trim()) return;
     try { current = await api.patch(`/api/v1/chats/${current.id}`, { title }); syncState(); loadList(); }
-    catch (err) { toast(err.message, 'error'); }
+    catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
   }
   async function remove() {
     const ok = await confirmTyped('delete', `Delete "${current.title}"? Its messages are removed from every device. Type delete to confirm.`);
@@ -229,7 +235,7 @@ export async function render(root, api, bus, me) {
       document.body.classList.remove('chat-open');
       placeholder();
       loadList();
-    } catch (err) { toast(err.message, 'error'); }
+    } catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
   }
 
   // ---- a turn ----
@@ -238,7 +244,7 @@ export async function render(root, api, bus, me) {
     const chatId = current.id;
     current.messages.push({ role: 'user', text, at: Date.now() });
     const body = h('div', {});
-    const status = typing();
+    const status = typing(`${who} is replying…`);
     const live = { el: h('div', { class: 'chat-amos live' }, avatar(), h('div', { class: 'chat-body' }, status, body)), text: '' };
     view.live = live;
     ownTurn = { id: null, controller: new AbortController() };
@@ -260,7 +266,7 @@ export async function render(root, api, bus, me) {
       }, ownTurn.controller.signal);
     } catch (err) {
       if (err.name !== 'AbortError') {
-        toast(err.status === 429 ? `${who} is busy with another reply — try again in a moment` : err.message, 'error');
+        toast(err.status === 429 ? `${who} is busy — try again in a minute.` : serverError(err, 'Something went wrong — try again.'), 'error');
         if (view) view.composer.restore(text);
       }
     } finally {
@@ -275,7 +281,7 @@ export async function render(root, api, bus, me) {
     const id = (ownTurn && ownTurn.id) || (current && current.running_turn_id);
     if (!id) return;
     try { await api.del(`/api/v1/chat/turns/${encodeURIComponent(id)}`); }
-    catch (err) { if (err.status !== 404) toast(err.message, 'error'); }
+    catch (err) { if (err.status !== 404) toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
   }
 
   // ---- the old browser-only chat, moved over once ----
@@ -299,7 +305,9 @@ export async function render(root, api, bus, me) {
       localStorage.setItem(LEGACY_DONE, r.id);
       if (imported === localTotal) localStorage.removeItem(LEGACY_KEY);
     } catch { /* storage unavailable: nothing to clear */ }
-    if (imported < localTotal) toast(`Imported the newest ${imported} of ${localTotal} messages — the older ones are still kept in this browser.`);
+    toast(imported < localTotal
+      ? `Moved the newest ${imported} of ${localTotal} messages here — the older ones are still kept in this browser.`
+      : 'Moved your earlier chat here.');
   }
 
   root.append(h('div', { class: 'chat-page' }, header('Chat', { eyebrow: 'Operate' }), layout));

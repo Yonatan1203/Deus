@@ -44,3 +44,11 @@ export function fmtTime(iso) {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
+
+/** One wording for every rate limit: "Too many <what> — wait <wait>." */
+export const limitToast = (what, wait = 'a minute') => toast(`Too many ${what} — wait ${wait}.`, 'error');
+
+// Server errors the page may show as they are; anything else gets the fallback,
+// so a code path never leaks a fragment like "invalid size" to the operator.
+const SAFE_ERRORS = new Set(['confirmation required', 'not found', 'read-only from the dashboard', 'chat not found', 'too many session starts']);
+export const serverError = (err, fallback) => (err && SAFE_ERRORS.has(err.message) ? err.message : fallback);

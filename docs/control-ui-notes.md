@@ -1134,3 +1134,20 @@ so no real session or artifact was created.
   creation never vanishes from the tab.
 - Pending: one real run from the live dashboard is the operator's (I hold no
   password); the record above covers the dashboard side end to end.
+
+## Quality pass 1 of 3: wording and UX (2026-09-26)
+
+Plan: `docs/superpowers/plans/2026-09-26-quality-pass.md` (plan-reviewer SHIP
+round 2), Tasks 1–2. Inputs: the ux-reviewer punch list (P0 1, P1 2–4,
+P2 5) and the copy-writer table from the same day.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Add agent → Claude tab (P0) | the prefilled box shows whole, caret at the end | not clipped, scrollTop 0, height 135, caret at end — `artifacts/quality-add-agent-handoff.png` | PASS |
+| Agent card hover (P1) | themed surface, no gray flash | `rgb(48, 48, 46)` = `--surface-2` | PASS |
+| Chat composer lead (P1) | the chat's settings as text, hidden under 480 px | "Amos's defaults" → "Sonnet 5 · Amos's effort" after a pick; hidden at 390 px | PASS |
+| Hebrew (P1) | bubbles right-to-left | `dir=auto`, computed `direction: rtl` — `artifacts/quality-chat-hebrew.png` | PASS |
+| Picker lag (P2) | poll right after a pick | `pollSoon()` + a 1.2 s follow-up | PASS |
+| Wording | no raw codes; one rate-limit sentence; mapped live-view endings | LIVE_END map, "Couldn't open the live view — try again in a moment.", `limitToast`, `serverError` fallback in the views this pass rewrites (claude, chat, artifacts, agents, workflows; browser.js only got the shared list wording) | PASS |
+| Re-reviews | no P0/P1, no critical/major | ux-reviewer ACCEPTABLE (one minor, fixed: typing row label); copy-writer ACCEPTABLE (two major, fixed: no toast on background polls, Workflows "protocol" wording; helper wired in) | PASS |
+| Suite | green | control-ui + scripts 370 (43 files); eslint clean; 0 px overflow on claude/chat/artifacts/agents at 3 viewports | PASS |

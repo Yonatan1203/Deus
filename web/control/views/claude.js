@@ -1,10 +1,10 @@
 import { h, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { header } from '../app.js';
-import { confirmTyped, fmtTime, toast } from '../ui.js';
+import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
 import { renderConversation } from '../conversation.js';
-import { createComposer } from '../composer.js';
+import { autosizeTextarea, createComposer } from '../composer.js';
 
 // The Claude tab: your sessions, and each one live — the same `claude attach`
 // your terminal uses, so typing here is typing there, and Claude Code's own
@@ -32,8 +32,11 @@ const spinner = () => h('span', { class: 'spin', 'aria-hidden': 'true' }, '✻')
 function setStatus(el, label, kind) {
   const running = label === 'working';
   el.className = `status ${kind}${running ? ' running' : ''}`;
-  el.replaceChildren(...(running ? [spinner(), 'Working'] : [label]));
+  el.replaceChildren(...(running ? [spinner(), 'working'] : [label]));
 }
+// Why a live view ended, as a sentence; the server sends a short code.
+const LIVE_END = { exited: 'the session finished', error: 'something went wrong on the server', closed: 'it was closed', 'login-ended': 'you were signed out', abandoned: 'it was idle too long', 'signed-out': 'you were signed out', 'view-gone': 'it was opened somewhere else' };
+const KIND_LABEL = { background: 'Runs in the background', interactive: 'Runs in a terminal window' };
 const MODE_KEY = 'claude.mode';
 const isShown = (el) => (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.offsetParent !== null);
 function readMode() {
@@ -135,10 +138,10 @@ async function openLive(api, host, session, onEnd) {
   const connect = async () => {
     if (closed) return;
     let ticket;
-    try { ({ ticket } = await api.post('/api/v1/events/ticket')); } catch { ended('signed out'); return; }
+    try { ({ ticket } = await api.post('/api/v1/events/ticket')); } catch { ended('signed-out'); return; }
     es = new EventSource(`/api/v1/claude/live/${vid}/stream?ticket=${encodeURIComponent(ticket)}`);
     es.addEventListener('o', (e) => term.write(fromB64(e.data)));
-    es.addEventListener('x', (e) => { es.close(); ended(e.data === 'exited' ? 'the session view ended' : `closed (${e.data})`); });
+    es.addEventListener('x', (e) => { es.close(); ended(e.data); });
     // Tickets are single-use, so a dropped stream reconnects with a new one.
     es.onerror = () => { if (closed) return; es.close(); setTimeout(connect, 1000); };
   };
@@ -148,7 +151,7 @@ async function openLive(api, host, session, onEnd) {
   // it is tested without a browser.
   const queue = createInputQueue({
     post: (chunk) => api.post(`/api/v1/claude/live/${vid}/input`, { data: toB64(chunk) }),
-    onEnded: () => ended('this view is no longer open'),
+    onEnded: () => ended('view-gone'),
     onWarn: (msg) => toast(msg, 'error'),
   });
   const sendBytes = (u8) => queue.push(u8);
@@ -211,6 +214,7 @@ export async function render(root, api, bus, me) {
   const form = h('form', { class: 'card new-session', hidden: true });
   const nameInput = h('input', { type: 'text', placeholder: 'e.g. Posts Automation', 'aria-label': 'Session name', maxlength: '60', required: true });
   const promptInput = h('textarea', { rows: '3', placeholder: 'What should it do first?', 'aria-label': 'First message', required: true });
+  promptInput.addEventListener('input', () => autosizeTextarea(promptInput, 12));
   const startBtn = h('button', { type: 'submit', class: 'primary' }, 'Start');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -226,7 +230,7 @@ export async function render(root, api, bus, me) {
       await load();
       const s = sessions.find((x) => x.id === r.id);
       if (s) select(s);
-    } catch (err) { toast(err.status === 429 ? 'Too many starts — wait a few minutes' : err.message, 'error'); }
+    } catch (err) { if (err.status === 429) limitToast('starts', 'a few minutes'); else toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
     finally { startBtn.disabled = false; }
   });
   form.append(
@@ -243,7 +247,7 @@ export async function render(root, api, bus, me) {
       await api.put(`/api/v1/claude/sessions/${s.id}/pin`, { pinned });
       s.pinned = pinned;
       draw();
-    } catch (err) { toast(err.status === 429 ? 'Too many changes — wait a minute' : err.message, 'error'); }
+    } catch (err) { if (err.status === 429) limitToast('changes'); else toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
   }
   function pinButton(s, withLabel) {
     return h('button', {
@@ -264,7 +268,7 @@ export async function render(root, api, bus, me) {
           h('span', { class: 'session-name' }, s.name),
           h('span', { class: 'session-sub' },
             running ? spinner() : null,
-            [running ? 'Working' : label, ago(s.last_active || s.started_at)].filter(Boolean).join(' · ')))),
+            [label, ago(s.last_active || s.started_at)].filter(Boolean).join(' · ')))),
       readOnly ? null : pinButton(s, false));
   }
   function draw() {
@@ -304,7 +308,7 @@ export async function render(root, api, bus, me) {
         ? 'Live view is off in read-only mode.'
         : liveAvailable
           ? 'It is the same session as your terminal: what you type here appears there, and slash commands work as usual.'
-          : 'Live view needs tmux on the server; only recent output is available.')));
+          : "Live view isn't set up on this server yet — you'll see recent output instead.")));
   }
   function closeCurrent() {
     if (current && current.conv) current.conv.dispose();
@@ -324,10 +328,10 @@ export async function render(root, api, bus, me) {
     const pinSlot = h('span', { class: 'pin-slot' }, readOnly ? null : pinButton(s, true));
     current.pinSlot = pinSlot;
     const details = h('dl', { class: 'claude-details', hidden: true },
-      h('dt', {}, 'Id'), h('dd', { class: 'mono' }, s.id),
+      h('dt', {}, 'ID'), h('dd', { class: 'mono' }, s.id),
       h('dt', {}, 'Started'), h('dd', {}, s.started_at ? fmtTime(s.started_at) : '—'),
       h('dt', {}, 'Folder'), h('dd', { class: 'mono' }, s.cwd_rel || '.'),
-      h('dt', {}, 'Kind'), h('dd', {}, s.kind));
+      h('dt', {}, 'Kind'), h('dd', {}, KIND_LABEL[s.kind] || s.kind));
     const bar = h('div', { class: 'claude-bar' },
       h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to sessions', onclick: () => { closeCurrent(); draw(); placeholder(); } }, '←'),
       h('div', { class: 'claude-title' }, h('span', { class: 'session-name' }, s.name), statusEl),
@@ -338,7 +342,7 @@ export async function render(root, api, bus, me) {
           const ok = await confirmTyped(s.id, `Stop "${s.name}"? Its conversation is kept; you can resume it later.`);
           if (!ok) return;
           try { await api.post(`/api/v1/claude/sessions/${s.id}/stop`, undefined, { 'X-Confirm': s.id }); toast('Stopped', 'ok'); closeCurrent(); await load(); placeholder(); }
-          catch (err) { toast(err.message, 'error'); }
+          catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
         } }, 'Stop')));
     pane.append(bar, details);
 
@@ -378,14 +382,14 @@ export async function render(root, api, bus, me) {
       const view = await openLive(api, host, s, (why) => {
         if (current !== mine) return;
         current.view = null;
-        pane.append(h('div', { class: 'claude-ended' }, h('span', {}, `Live view ended: ${why}.`),
+        pane.append(h('div', { class: 'claude-ended' }, h('span', {}, `Live view ended — ${LIVE_END[why] || 'it was closed'}.`),
           h('button', { type: 'button', class: 'small', onclick: () => select(s) }, 'Reopen')));
       });
       if (current !== mine) { view.close(); return; }
       mine.view = view;
       if (mode === 'terminal') view.focus(); else conv.shown();
     } catch (err) {
-      stage.replaceWith(h('div', { class: 'claude-empty' }, h('p', { class: 'error' }, err.status === 429 ? 'Too many live views open — close one first.' : `Could not open the live view: ${err.message}`), recentOutput(s)));
+      stage.replaceWith(h('div', { class: 'claude-empty' }, h('p', { class: 'error' }, err.status === 429 ? 'Too many live views open — close one first.' : "Couldn't open the live view — try again in a moment."), recentOutput(s)));
     }
   }
 
@@ -440,7 +444,8 @@ export async function render(root, api, bus, me) {
       setTimeout(() => { if (view()) view().send('\r', { focus: false }); }, 80);
       return true;
     }
-    function sendLine(text) { if (sendText(text)) pollSoon(); }
+    // A pick is a command: ask for the new state at once, not on the next tick.
+    function sendLine(text) { if (sendText(text)) { pollSoon(); setTimeout(poll, 1200); } }
     // Esc interrupts, as in the terminal. Claude then puts an unanswered
     // message back in its own input, where the next message would be appended
     // to it; like the Claude app, it comes back to this box instead. Clearing
@@ -529,7 +534,7 @@ export async function render(root, api, bus, me) {
     return h('div', { class: 'claude-recent' },
       h('button', { type: 'button', class: 'small', onclick: async () => {
         try { const r = await api.get(`/api/v1/claude/sessions/${s.id}/logs`); clear(out); out.append(r.lines.join('\n')); out.hidden = false; }
-        catch (err) { toast(err.message, 'error'); }
+        catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
       } }, 'Show recent output'), out);
   }
 
@@ -541,7 +546,7 @@ export async function render(root, api, bus, me) {
       liveAvailable = Boolean(r.live);
       draw();
       if (!current) placeholder();
-    } catch (err) { clear(list); list.append(h('div', { class: 'empty' }, err.status === 429 ? 'Too many refreshes — wait a minute.' : err.message)); }
+    } catch (err) { clear(list); list.append(h('div', { class: 'empty' }, err.status === 429 ? 'Too many refreshes — wait a minute.' : serverError(err, 'Something went wrong — try again.'))); }
   }
 
   clear(root);
@@ -557,9 +562,9 @@ export async function render(root, api, bus, me) {
     nameInput.value = draft.name;
     promptInput.value = draft.prompt;
     form.hidden = false;
+    autosizeTextarea(promptInput, 12);
     promptInput.focus();
     promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
-    promptInput.scrollTop = promptInput.scrollHeight;
   }
   await load();
   // A link like #/claude/<id> (from the Artifacts tab) opens that session.

@@ -60,6 +60,12 @@ export function pillMenu(initial, options, onPick, note) {
  * @param {Node} [o.lead]              left side of the footer
  * @param {string} [o.stopLabel]
  */
+/** Grows a textarea with its content, up to `maxRows` lines. */
+export function autosizeTextarea(el, maxRows = 8) {
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight, maxRows * 22 + 16)}px`;
+}
+
 export function createComposer(o) {
   const input = h('textarea', { class: 'conv-input', rows: '1', placeholder: o.placeholder, 'aria-label': o.label });
   const token = h('div', { class: 'conv-token', hidden: true });
@@ -73,10 +79,7 @@ export function createComposer(o) {
   let items = [];
   let sel = 0;
 
-  function autosize() {
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(input.scrollHeight, 8 * 22 + 16)}px`;
-  }
+  const autosize = () => autosizeTextarea(input, 8);
   function drawSlash() {
     slash.replaceChildren(...items.map((c, i) => {
       const b = h('button', { type: 'button', role: 'option', 'aria-selected': String(i === sel), class: i === sel ? 'on' : '' },

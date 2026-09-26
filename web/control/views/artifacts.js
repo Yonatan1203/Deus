@@ -1,14 +1,14 @@
 import { h, clear, badge } from '../dom.js';
 import { icon } from '../icons.js';
 import { header } from '../app.js';
-import { confirmTyped, fmtTime, toast } from '../ui.js';
+import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 
 // The operator's curated list of live artifact apps, reports and previews.
 // Titles and descriptions are text nodes; an href is built only from a URL
 // the server already cleared (`url` a string). `url: null` + `blocked` is a
 // policy-withheld link; a missing `url` means read-only.
 const KIND = { app: 'Apps', report: 'Reports', preview: 'Previews' };
-const BLOCKED = { userinfo: 'link withheld · credentials in URL', host: 'link withheld · host not allowed', protocol: 'link withheld · scheme not allowed', 'secret-query': 'link withheld · secret in query' };
+const BLOCKED = { userinfo: 'link withheld · credentials in URL', host: 'link withheld · host not allowed', protocol: 'link withheld · protocol not allowed', 'secret-query': 'link withheld · secret in query' };
 const STATE = { working: ['working', 'ok'], blocked: ['needs you', 'warn'], done: ['finished', ''], gone: ['session gone', ''] };
 const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
 const REASON = { unreadable: 'file unreadable', 'too-large': 'file too large', 'not-json': 'not JSON', 'bad-schema': 'bad schema' };
@@ -31,7 +31,8 @@ export async function render(root, api, bus, me) {
       titleInput.value = ''; urlInput.value = ''; descInput.value = ''; form.hidden = true;
       await load();
     } catch (err) {
-      toast(err.data && err.data.blocked ? `Not allowed: ${BLOCKED[err.data.blocked] || err.data.blocked}` : err.status === 429 ? 'Too many changes — wait a minute' : err.message, 'error');
+      if (err.status === 429) limitToast('changes');
+      else toast(err.data && err.data.blocked ? `Not allowed: ${BLOCKED[err.data.blocked] || 'link withheld'}` : serverError(err, 'Something went wrong — try again.'), 'error');
     } finally { addBtn.disabled = false; }
   } }, 'Add');
   form.append(
@@ -62,7 +63,8 @@ export async function render(root, api, bus, me) {
       await load();
       if (r && r.id) history.replaceState(null, '', '#/artifacts');
     } catch (err) {
-      toast(err.status === 409 && err.data && err.data.id ? 'That title is already being created — see the Creating list' : err.status === 429 ? 'Too many starts — wait a few minutes' : err.message, 'error');
+      if (err.status === 429) limitToast('starts', 'a few minutes');
+      else toast(err.status === 409 && err.data && err.data.id ? 'That title is already being created — see the Creating list.' : serverError(err, 'Something went wrong — try again.'), 'error');
     } finally { createBtn.disabled = false; }
   } }, 'Create');
   createForm.append(
@@ -85,7 +87,7 @@ export async function render(root, api, bus, me) {
       const ok = await confirmTyped(a.id, `Remove "${a.title}" from the dashboard? The link is kept in the registry's removed log.`);
       if (!ok) return;
       try { await api.del(`/api/v1/artifacts/${a.id}`, { 'X-Confirm': a.id }); toast('Removed', 'ok'); await load(); }
-      catch (err) { toast(err.message, 'error'); }
+      catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
     } }, 'Remove');
     return h('div', { class: 'card art-card', 'data-id': a.id },
       h('div', { class: 'title' }, titleNode(a)),
@@ -107,7 +109,7 @@ export async function render(root, api, bus, me) {
     const creating = data.creating || [];
     if (creating.length) holder.append(h('section', { class: 'art-section' }, h('h2', {}, 'Creating', badge(String(creating.length), '')), h('div', { class: 'wf-grid' }, ...creating.map(creatingCard))));
     if (data.invalid) {
-      holder.append(h('div', { class: 'empty' }, `Registry unreadable: ${REASON[data.reason] || data.reason}. Fix or move artifacts.json on the host.`));
+      holder.append(h('div', { class: 'empty' }, `The artifact list can't be read right now (${REASON[data.reason] || 'unreadable'}). Check artifacts.json on the server.`));
       return;
     }
     if (data.artifacts.length === 0) {
@@ -123,7 +125,7 @@ export async function render(root, api, bus, me) {
   }
   async function load() {
     try { data = await api.get('/api/v1/artifacts'); draw(); }
-    catch (err) { clear(holder); holder.append(h('div', { class: 'empty' }, err.status === 503 ? 'Artifact registry unavailable on the server.' : err.status === 429 ? 'Too many refreshes — wait a minute.' : err.message)); }
+    catch (err) { clear(holder); holder.append(h('div', { class: 'empty' }, err.status === 503 ? 'The artifact list is unavailable on the server.' : err.status === 429 ? 'Too many refreshes — wait a minute.' : serverError(err, 'Something went wrong — try again.'))); }
   }
 
   clear(root);

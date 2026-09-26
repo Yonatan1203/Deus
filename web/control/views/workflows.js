@@ -1,7 +1,7 @@
 import { h, clear, badge } from '../dom.js';
 import { icon } from '../icons.js';
 import { header } from '../app.js';
-import { confirmTyped, fmtTime, toast } from '../ui.js';
+import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 
 // Every string here was written by a session through scripts/workflow.mjs and
 // cleaned by the server: text nodes only. URLs arrive already cleared by the
@@ -9,7 +9,7 @@ import { confirmTyped, fmtTime, toast } from '../ui.js';
 // link from anything else.
 const STATUS = { running: ['running', 'ok'], waiting: ['waiting for you', 'warn'], done: ['done', ''], failed: ['failed', 'bad'] };
 const KIND = { posts: 'Posts', product_images: 'Product images', site_images: 'Site images', other: 'Other' };
-const BLOCKED = { userinfo: 'link withheld · credentials in URL', host: 'link withheld · host not allowed', protocol: 'link withheld · scheme not allowed', 'secret-query': 'link withheld · secret in query' };
+const BLOCKED = { userinfo: 'link withheld · credentials in URL', host: 'link withheld · host not allowed', protocol: 'link withheld · protocol not allowed', 'secret-query': 'link withheld · secret in query' };
 const REASON = { unreadable: 'file unreadable', 'too-large': 'file too large', 'not-json': 'not JSON', 'bad-id': 'id mismatch', 'bad-kind': 'unknown kind', 'bad-percent': 'bad percent', 'bad-url': 'bad URL', 'bad-schema': 'bad schema' };
 const SESSION = { working: ['session working', 'ok'], blocked: ['session waiting for you', 'warn'], done: ['session done', ''], unknown: ['session unknown', ''] };
 
@@ -50,7 +50,7 @@ export async function render(root, api, bus, me) {
         const r = await api.post('/api/v1/workflows/archive', { id: w.id }, { 'X-Confirm': 'archive' });
         toast(r.stale ? 'Archived (stale run)' : 'Archived', 'ok');
         await load();
-      } catch (err) { toast(err.status === 409 ? 'Still active — a run older than a day can be archived' : err.message, 'error'); }
+      } catch (err) { toast(err.status === 409 ? 'Still active — a run older than a day can be archived' : serverError(err, 'Something went wrong — try again.'), 'error'); }
     } }, 'Archive');
   }
 
@@ -75,7 +75,7 @@ export async function render(root, api, bus, me) {
         try {
           await api.post('/api/v1/artifacts', { title: w.name, url: w.preview_url, kind: 'preview' });
           toast('Added to Artifacts', 'ok');
-        } catch (err) { toast(err.status === 429 ? 'Too many changes — wait a minute' : err.message, 'error'); }
+        } catch (err) { if (err.status === 429) limitToast('changes'); else toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
       } }, icon('plus', { size: 14 }), 'Add to artifacts')
       : null;
     return h('div', { class: `card wf-card ${w.status}`, 'data-id': w.id },
@@ -122,7 +122,7 @@ export async function render(root, api, bus, me) {
       draw();
     } catch (err) {
       clear(grid);
-      grid.append(h('div', { class: 'empty' }, err.status === 503 ? 'Workflow registry unavailable on the server.' : err.status === 429 ? 'Too many refreshes — wait a minute.' : err.message));
+      grid.append(h('div', { class: 'empty' }, err.status === 503 ? 'The workflow list is unavailable on the server.' : err.status === 429 ? 'Too many refreshes — wait a minute.' : serverError(err, 'Something went wrong — try again.')));
     }
   }
 
@@ -133,7 +133,7 @@ export async function render(root, api, bus, me) {
       const r = await api.post('/api/v1/workflows/archive', {}, { 'X-Confirm': 'archive' });
       toast(`Archived ${r.archived}${r.skipped ? `, skipped ${r.skipped} already archived` : ''}`, 'ok');
       await load();
-    } catch (err) { toast(err.message, 'error'); }
+    } catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
   } }, icon('archive', { size: 14 }), 'Archive finished');
 
   clear(root);

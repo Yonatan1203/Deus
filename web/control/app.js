@@ -264,7 +264,7 @@ $('login-form').addEventListener('submit', async (e) => {
     await boot();
   } catch (ex) {
     err.textContent = ex.status === 429
-      ? `Too many attempts. Try again in ${Math.ceil((ex.data?.retry_after_ms || 1000) / 1000)} s.`
+      ? `Too many attempts — wait ${Math.ceil((ex.data?.retry_after_ms || 1000) / 1000)} s.`
       : ex.status === 503 ? 'Credential unavailable on the server.' : 'Wrong password.';
   }
 });

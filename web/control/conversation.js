@@ -90,8 +90,8 @@ function toolsItem(g, h, key, expanded) {
 export function renderConversation(el, items, h, handlers = {}) {
   const nodes = groupItems(items).map((it, i) => {
     switch (it.k) {
-      case 'user': return h('div', { class: 'conv-user' }, it.text);
-      case 'assistant': return h('div', { class: 'conv-assistant' }, ...renderBlocks(parseMarkdown(it.text), h));
+      case 'user': return h('div', { class: 'conv-user', dir: 'auto' }, it.text);
+      case 'assistant': return h('div', { class: 'conv-assistant', dir: 'auto' }, ...renderBlocks(parseMarkdown(it.text), h));
       case 'tools': return toolsItem(it, h, i, handlers.expanded);
       case 'command': return h('div', { class: 'conv-command' },
         h('code', {}, [it.name, it.args].filter(Boolean).join(' ')),

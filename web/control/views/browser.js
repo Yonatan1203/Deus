@@ -338,7 +338,7 @@ export async function render(root, api, bus, me) {
           'div',
           { class: 'empty' },
           err.status === 503
-            ? 'Browser registry unavailable on the server.'
+            ? 'The browser job list is unavailable on the server.'
             : err.status === 429
               ? 'Too many refreshes — wait a minute.'
               : err.message,
