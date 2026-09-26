@@ -18,7 +18,14 @@ if (!file) {
 }
 const password = fs.readFileSync(file, 'utf-8').trim();
 const browser = await chromium.launch();
-const viewports = [['mobile', { width: 390, height: 844 }], ['desktop', { width: 1280, height: 800 }]];
+const viewports = [
+  ['mobile', { width: 390, height: 844 }],
+  ['desktop', { width: 1280, height: 800 }],
+  ['wide', { width: 1920, height: 1080 }],
+];
+// Sideways scroll on a phone is a layout bug; every tab is measured at 390 px
+// and the run fails if any page is wider than the screen.
+let overflowed = 0;
 const shoot = async (page, tab, name) => {
   const out = `${prefix}-${tab}-${name}.png`;
   await page.screenshot({ path: out, fullPage: false });
@@ -44,6 +51,10 @@ for (const [name, viewport] of viewports) {
       await page.waitForSelector('#more[open]');
       await page.locator('#more .sheet-body').evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
       await shoot(page, tab, name);
+      // The More sheet holds the phone's Sign out, so it is measured too.
+      const sheetPx = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      console.log(`overflow more ${sheetPx}px`);
+      if (sheetPx > 0) overflowed++;
       await page.keyboard.press('Escape');
       continue;
     }
@@ -102,7 +113,16 @@ for (const [name, viewport] of viewports) {
       await page.waitForSelector('#view .card, #view table, #view .row, #view .empty', { timeout: 10_000 });
     }
     await shoot(page, tab, name);
+    if (name === 'mobile' && tab !== 'login') {
+      const px = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      console.log(`overflow ${tab} ${px}px`);
+      if (px > 0) overflowed++;
+    }
   }
   await page.close();
 }
 await browser.close();
+if (overflowed) {
+  console.error(`${overflowed} tab(s) scroll sideways at 390 px`);
+  process.exit(1);
+}

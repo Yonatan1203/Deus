@@ -2,6 +2,23 @@
    Neutral near-black surfaces, hairline structure, one inverse-tone primary
    action, state colours as the only hue. Fonts are self-hosted (see fonts/). */
 
+/* Rubik (OFL 1.1, see fonts/OFL-Rubik.txt) for the Claude tab's UI text. */
+@font-face {
+  font-family: "Rubik";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("/fonts/Rubik-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Rubik";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("/fonts/Rubik-hebrew.woff2") format("woff2");
+  unicode-range: U+0307-0308, U+0590-05FF, U+200C-2010, U+20AA, U+25CC, U+FB1D-FB4F;
+}
 @font-face {
   font-family: "Geist";
   font-style: normal;
@@ -18,17 +35,22 @@
 }
 
 :root {
-  --bg: #0a0a0b;
-  --surface: #131316;
-  --surface-2: #1b1b1f;
-  --surface-3: #232328;
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.16);
-  --text: #ededef;
-  --muted: #8d8d95;
-  --faint: #5c5c66;
-  --fg-inverse: #0a0a0b;
-  --primary: #ededef;
+  /* Claude's warm palette. Text on the orange primary is dark: white on
+     #d97757 is only 3.1:1, the dark ink is 5.3:1. */
+  --bg: #1f1e1d;
+  --surface: #262624;
+  --surface-2: #30302e;
+  --surface-3: #3b3a37;
+  --line: rgba(250, 249, 245, 0.08);
+  --line-strong: rgba(250, 249, 245, 0.16);
+  --text: #faf9f5;
+  --muted: #a8a59c;
+  --faint: #6f6c64;
+  --fg-inverse: #1f1e1d;
+  --primary: #d97757;
+  --accent: #d97757;
+  --accent-text: #e08a6d;
+  --accent-soft: rgba(217, 119, 87, 0.14);
   --ok: #3dd68c;
   --warn: #f5b942;
   --bad: #f0655c;
@@ -48,17 +70,20 @@
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --bg: #f6f6f7;
+    --bg: #faf9f5;
     --surface: #ffffff;
-    --surface-2: #f0f0f2;
-    --surface-3: #e6e6ea;
-    --line: rgba(0, 0, 0, 0.09);
-    --line-strong: rgba(0, 0, 0, 0.18);
-    --text: #111113;
-    --muted: #5f5f68;
-    --faint: #8a8a93;
+    --surface-2: #f0eee6;
+    --surface-3: #e8e6dc;
+    --line: rgba(20, 20, 19, 0.09);
+    --line-strong: rgba(20, 20, 19, 0.18);
+    --text: #141413;
+    --muted: #6b6a64;
+    --faint: #8f8d85;
     --fg-inverse: #ffffff;
-    --primary: #111113;
+    --primary: #b85a39;
+    --accent: #b85a39;
+    --accent-text: #ae5630;
+    --accent-soft: rgba(184, 90, 57, 0.12);
     --ok: #1a9e5c;
     --warn: #b7791f;
     --bad: #c9362b;
@@ -105,7 +130,7 @@ button {
 button:hover { background: color-mix(in srgb, var(--surface-3) 70%, var(--text) 10%); border-color: color-mix(in srgb, var(--line-strong) 60%, var(--text) 25%); }
 button:active { transform: scale(0.98); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible {
-  outline: 2px solid var(--info); outline-offset: 2px;
+  outline: 2px solid var(--accent); outline-offset: 2px;
 }
 button.primary { background: var(--primary); color: var(--fg-inverse); border-color: transparent; font-weight: 600; }
 button.primary:hover { background: color-mix(in srgb, var(--primary) 88%, var(--bg)); }
@@ -119,7 +144,8 @@ button.danger:hover { background: color-mix(in srgb, var(--bad) 20%, transparent
 button.small { min-height: 34px; padding: 0 10px; font-size: 13px; }
 button.iconbtn { width: var(--tap); padding: 0; }
 button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
-.linkish { background: none; border: none; padding: 0; min-height: 0; color: var(--info); cursor: pointer; font-size: inherit; }
+/* Links take the decorative accent, not the semantic --info status colour. */
+.linkish { background: none; border: none; padding: 0; min-height: 0; color: var(--accent-text); cursor: pointer; font-size: inherit; }
 .linkish:hover { background: none; text-decoration: underline; }
 
 input[type="password"], input[type="search"], input[type="text"], input[type="datetime-local"], select, textarea, #confirm-input {
@@ -231,12 +257,12 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
     position: relative; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
   }
   .nav a:hover { color: var(--text); background: var(--surface); }
-  .nav a.active { color: var(--text); background: var(--surface-2); }
-  .nav a.active::before { content: ""; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 2px; background: var(--text); border-radius: 0 2px 2px 0; }
+  .nav a.active { color: var(--text); background: var(--accent-soft); }
+  .nav a.active::before { content: ""; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 2px; background: var(--accent); border-radius: 0 2px 2px 0; }
   .nav a .icon { color: var(--muted); }
-  .nav a.active .icon { color: var(--text); }
+  .nav a.active .icon { color: var(--accent); }
   .rail-foot { margin-top: auto; display: grid; gap: 6px; padding: 12px 8px 0; border-top: 1px solid var(--line); }
-  .rail-foot button { justify-content: flex-start; padding-left: 0; }
+
 
   .banner { grid-column: 2; }
   .view { grid-column: 2; padding: 32px 24px 40px; animation: none; }
@@ -540,3 +566,25 @@ body.oauth-done { display: grid; place-items: center; min-height: 100dvh; paddin
 .job-params { display: grid; gap: 2px; margin-top: 6px; font-size: 14px; }
 .job-params p { overflow-wrap: anywhere; }
 .row.job { grid-template-columns: 1fr auto; align-items: start; }
+
+/* Sign out is a row of the navigation, styled like the links above it, not a
+   content button — an intentional exception to the filled-button style. Its
+   hover takes the danger colour, because it is the one careful action here. */
+button.signout {
+  justify-content: flex-start; gap: 10px; width: 100%; min-height: 36px; padding: 0 10px;
+  background: transparent; border-color: transparent; color: var(--muted); font-weight: 500;
+}
+button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparent); border-color: transparent; color: color-mix(in srgb, var(--bad) 55%, var(--text)); }
+.sheet-foot button.signout { width: auto; }
+
+/* The route change focuses the view for screen readers; only a keyboard user
+   needs to see that ring. */
+#view:focus:not(:focus-visible) { outline: none; }
+
+/* Claude tab: Rubik for its UI text. The terminal keeps a monospace font,
+   because Claude Code lines up its screen character by character. */
+.claude-layout, .claude-bar, .claude-empty, .new-session,
+#view:has(.claude-layout) .page-head { font-family: "Rubik", var(--sans); }
+/* The terminal itself, including xterm's DOM fallback renderer, which would
+   otherwise inherit Rubik and misalign Claude Code's screen. */
+.term-host { font-family: var(--mono); }

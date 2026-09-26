@@ -969,3 +969,28 @@ coalescing is 10 ms.
 | Sender unit tests (`scripts/tests/control-ui-input-queue.test.ts`) | immediate first key, 20 ms spacing, order under retry, pause cancelled from outside, give-up + message, busy retries + message, dispose, pending cap | 8 / 8 | PASS |
 | Latency after the fix | still ~20 ms | median 24.4 ms | PASS |
 | Suite | green | 157 files / 2 495 tests; tsc, eslint clean | PASS |
+
+## Claude-orange theme, Sign out, Rubik (2026-09-26)
+
+Previewed to the operator on a throwaway fixture before building. Warm dark
+palette with Claude orange for primary buttons, the active navigation item,
+links and the focus ring; semantic status colours unchanged. Rubik (OFL 1.1,
+`fonts/OFL-Rubik.txt`, latin + hebrew subsets) for the Claude tab's UI text —
+not the terminal grid, which must stay monospace for Claude Code's layout.
+Sign out is now a navigation row (icon + label, danger tint on hover), an
+intentional exception to the filled-button style. The outline that showed
+around the page after a route change is gone for mouse users; keyboard focus
+stays visible.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Text contrast (computed) | ≥ 4.5:1 | dark: primary button ink 5.33, links 5.79, muted 6.16; light: primary white 4.61, links 5.03, muted 5.15 | PASS |
+| Screens at 390 / 1280 / 1920 | orange accents, warm surfaces, Sign out row | `orange-before/after-{artifacts-wide,agents-mobile,browser-desktop}.png` | PASS |
+| Sideways scroll at 390 px (now measured by `scripts/control-ui-screenshot.mjs`, fails the run on any overflow) | 0 px on every captured tab | 0 px on claude, workflows, artifacts, browser, agents, mcps | PASS |
+| Fonts | served from 'self' under the unchanged CSP | Rubik loads from `/fonts/` | PASS |
+| OS chrome | theme-color and manifest match the new background | `#1f1e1d` dark, `#faf9f5` light | PASS |
+- `Deviation:` verification found xterm's DOM fallback renderer inherited
+  Rubik (the WebGL path was fine); `.term-host` is now pinned to the monospace
+  font, confirmed by computed style on both host and fallback rows. The code
+  review found the new overflow check skipped the phone's More sheet — the
+  surface holding the new Sign out — so it is measured too (0 px).

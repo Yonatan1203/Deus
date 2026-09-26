@@ -276,6 +276,7 @@ async function logout() {
   if ($('more').open) $('more').close();
   showLogin();
 }
+for (const id of ['logout', 'more-logout']) $(id).prepend(icon('logout', { size: 16 }));
 $('logout').addEventListener('click', logout);
 $('more-logout').addEventListener('click', logout);
 $('more').addEventListener('click', (e) => { if (e.target === $('more')) $('more').close(); });
