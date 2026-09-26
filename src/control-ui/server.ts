@@ -114,6 +114,7 @@ import {
   CLAUDE_JOB_ID_RE,
   CLAUDE_NAME_RE,
   createLedger,
+  createPins,
   createWaitingOnReader,
   listClaudeSessions,
   readLogs as readClaudeLogs,
@@ -245,6 +246,7 @@ const LOG_BATCH_MS = 500;
 const LOG_BATCH_MAX = 100;
 const CLAUDE_STARTS_PER_10MIN = 3;
 const LIVE_OPENS_PER_MIN = 20;
+const CLAUDE_PINS_PER_MIN = 30;
 const LIVE_SWEEP_MS = 20_000;
 const CLAUDE_READS_PER_MIN = 30;
 const CLAUDE_STOPS_PER_MIN = 6;
@@ -432,6 +434,7 @@ export function createControlServer(
     600_000,
   );
   const liveOpenLimiter = createRateLimiter(LIVE_OPENS_PER_MIN, 60_000);
+  const claudePinLimiter = createRateLimiter(CLAUDE_PINS_PER_MIN, 60_000);
   const claudeReadLimiter = createRateLimiter(CLAUDE_READS_PER_MIN, 60_000);
   const claudeStopLimiter = createRateLimiter(CLAUDE_STOPS_PER_MIN, 60_000);
   const workflowReadLimiter = createRateLimiter(WORKFLOW_READS_PER_MIN, 60_000);
@@ -482,6 +485,9 @@ export function createControlServer(
         : null;
   // Leftovers from a previous process on the private socket.
   if (liveViews && opts.liveViews === undefined) void liveViews.killLeftovers();
+  const claudePins = deps.configDir
+    ? createPins(path.join(deps.configDir, 'control-ui', 'claude-pins.json'))
+    : null;
   const claudeLedger = deps.configDir
     ? createLedger(
         path.join(deps.configDir, 'control-ui', 'claude-started.json'),
@@ -1437,7 +1443,9 @@ export function createControlServer(
     });
     if ('sessions' in r) {
       claudeListCache = { at: now(), sessions: r.sessions };
-      claudeLedger?.prune(new Set(r.sessions.map((s) => s.id))); // only after a successful list
+      const listed = new Set(r.sessions.map((s) => s.id));
+      claudeLedger?.prune(listed); // only after a successful list
+      claudePins?.prune(listed);
       if (r.dropped !== claudeLastDropped) {
         // Rows outside this repo are filtered on realpath(cwd); the count is
         // the only trace that another instance's sessions were seen.
@@ -1514,6 +1522,7 @@ export function createControlServer(
         error: redactSecrets(r.error).slice(0, 200),
       });
     const started = new Set((claudeLedger?.read() ?? []).map((e) => e.id));
+    const pinned = new Set(claudePins?.read() ?? []);
     // "Last active" is the conversation file's mtime: the list itself only
     // carries a start time.
     const lastActive = (sessionId: string | null): number | null => {
@@ -1530,6 +1539,7 @@ export function createControlServer(
       sessions: r.sessions.map((s) => ({
         ...s,
         started_here: started.has(s.id),
+        pinned: pinned.has(s.id),
         last_active: lastActive(s.session_id),
       })),
       live: Boolean(liveViews) && !deps.readOnly,
@@ -1732,6 +1742,37 @@ export function createControlServer(
   }, opts.liveSweepMs ?? LIVE_SWEEP_MS);
   liveSweep.unref();
 
+  // Pinning is harmless and reversible, so it takes no typed confirmation.
+  router.add(
+    'PUT',
+    '/api/v1/claude/sessions/:id/pin',
+    async (ctx) => {
+      if (!claudePins)
+        return writeJson(ctx.res, 503, { error: 'pins unavailable' });
+      const want = (ctx.body as { pinned?: unknown } | undefined)?.pinned;
+      if (typeof want !== 'boolean')
+        return writeJson(ctx.res, 400, {
+          error: 'pinned must be true or false',
+        });
+      if (
+        claudePinLimiter.isRateLimited(
+          ctx.session?.shortId ?? ctx.remoteAddr,
+          now(),
+        )
+      )
+        return writeJson(ctx.res, 429, { error: 'too many changes' });
+      const row = await claudeRow(ctx);
+      if (!row) return;
+      if (!claudePins.set(row.id, want))
+        return writeJson(ctx.res, 503, { error: 'pins unavailable' });
+      hub.broadcast('csession', {
+        action: want ? 'pinned' : 'unpinned',
+        id: row.id,
+      });
+      writeJson(ctx.res, 200, { pinned: want });
+    },
+    { maxBody: 256 },
+  );
   router.add('POST', '/api/v1/claude/sessions/:id/stop', async (ctx) => {
     if (header(ctx.req, 'x-confirm') !== ctx.params.id)
       return writeJson(ctx.res, 428, { error: 'confirmation required' });
@@ -2687,6 +2728,7 @@ export function createControlServer(
     clearInterval(claudePoll);
     claudeStartLimiter.dispose();
     liveOpenLimiter.dispose();
+    claudePinLimiter.dispose();
     clearInterval(liveSweep);
     liveViews?.closeAll('shutdown');
     claudeReadLimiter.dispose();

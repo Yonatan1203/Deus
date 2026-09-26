@@ -3,9 +3,12 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { HostCli } from './host-cli.js';
+import { IS_WINDOWS } from '../../platform.js';
 import {
   CLAUDE_NAME_RE,
   createLedger,
+  createPins,
+  PINS_MAX,
   createWaitingOnReader,
   listClaudeSessions,
   parsePrintedId,
@@ -330,5 +333,48 @@ describe('claude sessions — ledger', () => {
     expect(l.read()).toBeNull();
     expect(l.add({ id: 'c3d4e5f6', started_at: 3 })).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('claude sessions — pins', () => {
+  let dir: string;
+  let file: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pins-'));
+    file = path.join(dir, 'control-ui', 'claude-pins.json');
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('pins and unpins, writes 0600 atomically, and ignores junk ids', () => {
+    const pins = createPins(file);
+    expect(pins.read()).toEqual([]); // missing file = no pins
+    expect(pins.set('a1b2c3d4', true)).toBe(true);
+    expect(pins.set('b2c3d4e5', true)).toBe(true);
+    expect(pins.set('a1b2c3d4', true)).toBe(true); // idempotent
+    expect(pins.read()).toEqual(['b2c3d4e5', 'a1b2c3d4']);
+    expect(pins.set('b2c3d4e5', false)).toBe(true);
+    expect(pins.read()).toEqual(['a1b2c3d4']);
+    expect(pins.set('not-an-id', true)).toBe(false);
+    if (!IS_WINDOWS) expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(['claude-pins.json']); // no temp left
+  });
+
+  it('never overwrites a file it cannot read', () => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{ not json');
+    const pins = createPins(file);
+    expect(pins.read()).toBeNull();
+    expect(pins.set('a1b2c3d4', true)).toBe(false);
+    pins.prune(new Set());
+    expect(fs.readFileSync(file, 'utf-8')).toBe('{ not json');
+  });
+
+  it('caps at PINS_MAX and prunes ids no longer listed', () => {
+    const pins = createPins(file);
+    for (let i = 0; i < PINS_MAX; i++)
+      expect(pins.set(i.toString(16).padStart(8, '0'), true)).toBe(true);
+    expect(pins.set('ffffffff', true)).toBe(false);
+    pins.prune(new Set(['00000001', '00000002']));
+    expect(pins.read()).toEqual(['00000001', '00000002']);
   });
 });

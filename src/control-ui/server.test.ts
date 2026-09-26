@@ -2508,6 +2508,61 @@ describe('control-ui server — claude sessions', () => {
     ).toBe(503);
   });
 
+  it('pins: round trip in the list, refusals, read-only, unreadable file, no config dir', async () => {
+    await bootC();
+    const { auth } = await login();
+    const pin = (id: string, body: unknown, a = auth) =>
+      request({
+        method: 'PUT',
+        path: `/api/v1/claude/sessions/${id}/pin`,
+        headers: { ...a, ...H },
+        body: JSON.stringify(body),
+      });
+    const listed = async (a = auth) =>
+      j(
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/sessions',
+          headers: a,
+        }),
+      ).sessions as { id: string; pinned: boolean }[];
+    expect((await listed()).every((r) => r.pinned === false)).toBe(true);
+    const r = await pin('b2c3d4e5', { pinned: true });
+    expect(r.status).toBe(200);
+    expect(j(r)).toEqual({ pinned: true });
+    expect((await listed()).find((x) => x.id === 'b2c3d4e5')?.pinned).toBe(
+      true,
+    );
+    const file = path.join(configDir, 'control-ui', 'claude-pins.json');
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual({
+      v: 1,
+      pins: ['b2c3d4e5'],
+    });
+    expect((await pin('b2c3d4e5', { pinned: false })).status).toBe(200);
+    expect((await listed()).find((x) => x.id === 'b2c3d4e5')?.pinned).toBe(
+      false,
+    );
+    expect((await pin('d4e5f6a7', { pinned: true })).status).toBe(404); // outside the repo
+    expect((await pin('zz', { pinned: true })).status).toBe(404);
+    expect((await pin('a1b2c3d4', { pinned: 'yes' })).status).toBe(400);
+    // A file that cannot be read is never overwritten from a failed read.
+    fs.writeFileSync(file, '{ broken');
+    expect((await pin('a1b2c3d4', { pinned: true })).status).toBe(503);
+    expect(fs.readFileSync(file, 'utf-8')).toBe('{ broken');
+    expect((await listed()).every((x) => x.pinned === false)).toBe(true);
+    server.close();
+
+    await bootC({ readOnly: true });
+    const ro = await login();
+    expect((await pin('a1b2c3d4', { pinned: true }, ro.auth)).status).toBe(403);
+    server.close();
+
+    await bootC({ configDir: undefined });
+    const nc = await login();
+    expect((await pin('a1b2c3d4', { pinned: true }, nc.auth)).status).toBe(503);
+    expect((await listed(nc.auth)).every((x) => x.pinned === false)).toBe(true);
+  });
+
   it('answers only loopback names on its own port or the tunnel port', async () => {
     await bootC({ publicPort: 4040 });
     // Allowed hosts reach the route (401 without a login); others never do.

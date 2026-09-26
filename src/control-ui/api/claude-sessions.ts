@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { IS_WINDOWS } from '../../platform.js';
@@ -364,6 +365,77 @@ export function createLedger(file: string): Ledger {
       const cur = read();
       if (cur === null) return;
       const kept = cur.filter((e) => liveIds.has(e.id));
+      if (kept.length !== cur.length) write(kept);
+    },
+  };
+}
+
+export const PINS_MAX = 50;
+
+export interface Pins {
+  /** The pinned ids, or null when the file exists but cannot be trusted. */
+  read(): string[] | null;
+  /** Pins or unpins one id; false when the current file could not be read or written. */
+  set(id: string, pinned: boolean): boolean;
+  prune(liveIds: Set<string>): void;
+}
+
+/**
+ * The operator's pinned sessions, kept on the server so a pin made on one
+ * device shows on the others. Unlike the ledger (a cost guard), this is
+ * explicit user state, so it is written atomically (temp file + rename) and
+ * an unreadable file is never overwritten from a failed read.
+ */
+export function createPins(file: string): Pins {
+  const read = (): string[] | null => {
+    let text: string;
+    try {
+      text = fs.readFileSync(file, 'utf-8');
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
+    }
+    try {
+      const v = JSON.parse(text) as { v?: unknown; pins?: unknown };
+      if (v?.v !== 1 || !Array.isArray(v.pins)) return null;
+      return v.pins
+        .filter(
+          (id): id is string =>
+            typeof id === 'string' && CLAUDE_JOB_ID_RE.test(id),
+        )
+        .slice(0, PINS_MAX);
+    } catch {
+      return null;
+    }
+  };
+  const write = (pins: string[]): boolean => {
+    const tmp = `${file}.tmp-${crypto.randomBytes(4).toString('hex')}`;
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(tmp, JSON.stringify({ v: 1, pins }) + '\n', {
+        mode: 0o600,
+        flag: 'wx',
+      });
+      fs.renameSync(tmp, file);
+      return true;
+    } catch {
+      fs.rmSync(tmp, { force: true });
+      return false;
+    }
+  };
+  return {
+    read,
+    set(id, pinned) {
+      if (!CLAUDE_JOB_ID_RE.test(id)) return false;
+      const cur = read();
+      if (cur === null) return false;
+      const rest = cur.filter((p) => p !== id);
+      if (pinned && rest.length >= PINS_MAX) return false;
+      return write(pinned ? [...rest, id] : rest);
+    },
+    prune(liveIds) {
+      const cur = read();
+      if (cur === null) return;
+      const kept = cur.filter((id) => liveIds.has(id));
       if (kept.length !== cur.length) write(kept);
     },
   };

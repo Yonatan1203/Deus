@@ -21,6 +21,7 @@ const ICONS = {
   send: ['M12 19V5', 'M5 12l7-7 7 7'],
   stop: ['M6 6h12v12H6z'],
   plus: ['M12 5v14M5 12h14'],
+  pin: ['M12 17v5', 'M9 3h6l-1 6 4 4v2H6v-2l4-4z'],
   workflows: ['M4 6h16', 'M4 12h10', 'M4 18h6', 'M17 15l3 3-3 3'],
   artifacts: ['M4 4h16v16H4z', 'M4 9h16', 'M9 9v11'],
   browser: ['M3 5h18v14H3z', 'M3 9h18', 'M7 7h.01M10 7h.01'],

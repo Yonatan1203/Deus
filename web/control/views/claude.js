@@ -202,24 +202,46 @@ export async function render(root, api, bus, me) {
   const newBtn = readOnly ? null : h('button', { type: 'button', class: 'small primary', onclick: () => { form.hidden = !form.hidden; if (!form.hidden) nameInput.focus(); } }, icon('plus', { size: 14 }), 'New session');
 
   // ---- list ----
+  async function setPinned(s, pinned) {
+    try {
+      await api.put(`/api/v1/claude/sessions/${s.id}/pin`, { pinned });
+      s.pinned = pinned;
+      draw();
+    } catch (err) { toast(err.status === 429 ? 'Too many changes — wait a minute' : err.message, 'error'); }
+  }
+  function pinButton(s, withLabel) {
+    return h('button', {
+      type: 'button', class: `small pin-btn${s.pinned ? ' on' : ''}`,
+      'aria-pressed': s.pinned ? 'true' : 'false',
+      'aria-label': `${s.pinned ? 'Unpin' : 'Pin'} ${s.name}`, title: s.pinned ? 'Unpin' : 'Pin to the top',
+      onclick: (e) => { e.stopPropagation(); setPinned(s, !s.pinned); },
+    }, icon('pin', { size: 14 }), withLabel ? (s.pinned ? 'Unpin' : 'Pin') : null);
+  }
   function row(s) {
     const [label, kind] = stateOf(s);
-    return h('button', {
-      type: 'button', role: 'listitem',
-      class: `session-row${current && current.id === s.id ? ' selected' : ''}`,
-      'data-id': s.id, onclick: () => select(s),
-    },
-    h('span', { class: `dot ${kind}`, 'aria-hidden': 'true' }),
-    h('span', { class: 'session-main' },
-      h('span', { class: 'session-name' }, s.name),
-      h('span', { class: 'session-sub' }, [label, ago(s.last_active || s.started_at)].filter(Boolean).join(' · '))));
+    // Two sibling buttons, never one inside the other.
+    return h('div', { role: 'listitem', class: `session-item${current && current.id === s.id ? ' selected' : ''}${s.pinned ? ' pinned' : ''}`, 'data-id': s.id },
+      h('button', { type: 'button', class: 'session-row', onclick: () => select(s) },
+        h('span', { class: `dot ${kind}`, 'aria-hidden': 'true' }),
+        h('span', { class: 'session-main' },
+          h('span', { class: 'session-name' }, s.name),
+          h('span', { class: 'session-sub' }, [label, ago(s.last_active || s.started_at)].filter(Boolean).join(' · ')))),
+      readOnly ? null : pinButton(s, false));
   }
   function draw() {
     clear(list);
     if (sessions.length === 0) { list.append(h('div', { class: 'empty' }, 'No sessions yet. Start one with New session.')); return; }
     const order = { 'needs you': 0, working: 1, idle: 2, done: 3 };
     const sorted = [...sessions].sort((a, b) => (order[stateOf(a)[0]] - order[stateOf(b)[0]]) || ((b.last_active || 0) - (a.last_active || 0)));
-    list.append(...sorted.map(row));
+    const pinned = sorted.filter((s) => s.pinned);
+    const rest = sorted.filter((s) => !s.pinned);
+    if (pinned.length) list.append(h('div', { class: 'session-group', role: 'presentation' }, 'Pinned'), ...pinned.map(row));
+    if (pinned.length && rest.length) list.append(h('div', { class: 'session-group', role: 'presentation' }, 'All sessions'));
+    list.append(...rest.map(row));
+    if (current && current.pinSlot) {
+      const open = sessions.find((x) => x.id === current.id);
+      if (open && !readOnly) { clear(current.pinSlot); current.pinSlot.append(pinButton(open, true)); }
+    }
     // Keep the open session's header in step with the list.
     const open = current && sessions.find((x) => x.id === current.id);
     if (open && current.statusEl) {
@@ -253,6 +275,8 @@ export async function render(root, api, bus, me) {
     const [label, kind] = stateOf(s);
     const statusEl = h('span', { class: `status ${kind}` }, label);
     current.statusEl = statusEl;
+    const pinSlot = h('span', { class: 'pin-slot' }, readOnly ? null : pinButton(s, true));
+    current.pinSlot = pinSlot;
     const details = h('dl', { class: 'claude-details', hidden: true },
       h('dt', {}, 'Id'), h('dd', { class: 'mono' }, s.id),
       h('dt', {}, 'Started'), h('dd', {}, s.started_at ? fmtTime(s.started_at) : '—'),
@@ -262,6 +286,7 @@ export async function render(root, api, bus, me) {
       h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to sessions', onclick: () => { closeCurrent(); draw(); placeholder(); } }, '←'),
       h('div', { class: 'claude-title' }, h('span', { class: 'session-name' }, s.name), statusEl),
       h('div', { class: 'claude-actions' },
+        pinSlot,
         h('button', { type: 'button', class: 'small', onclick: () => { details.hidden = !details.hidden; } }, 'Details'),
         readOnly || s.kind !== 'background' ? null : h('button', { type: 'button', class: 'small danger', onclick: async () => {
           const ok = await confirmTyped(s.id, `Stop "${s.name}"? Its conversation is kept; you can resume it later.`);
@@ -322,7 +347,7 @@ export async function render(root, api, bus, me) {
   root.append(header('Claude', { eyebrow: 'Operate', actions: newBtn ? [newBtn] : [] }), form, wrap);
   await load();
   bus.addEventListener('csession', (e) => {
-    if (e.detail && e.detail.sessions) { sessions = e.detail.sessions.map((s) => ({ ...s, last_active: (sessions.find((o) => o.id === s.id) || {}).last_active })); draw(); }
+    if (e.detail && e.detail.sessions) { sessions = e.detail.sessions.map((s) => { const o = sessions.find((x) => x.id === s.id) || {}; return { ...s, last_active: o.last_active, pinned: Boolean(o.pinned) }; }); draw(); }
     else load();
   });
   bus.addEventListener('refresh', () => load());
