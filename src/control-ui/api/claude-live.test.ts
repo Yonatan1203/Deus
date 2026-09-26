@@ -9,6 +9,7 @@ import {
   CHUNK_BYTES,
   createLineSplitter,
   createLiveViews,
+  modeSequences,
   parseControlLine,
   resolveTmuxBin,
   sendKeysCommands,
@@ -84,6 +85,29 @@ describe('what reaches the tmux command line', () => {
       [null, 24],
     ])
       expect(validSize(c, r)).toBe(false);
+  });
+});
+
+describe('terminal mode replay', () => {
+  it('turns pane flags into the sequences a fresh terminal needs', () => {
+    // alt screen, button-event mouse + SGR, app cursor keys, cursor visible at 4,2
+    const m = modeSequences('1 0 1 0 1 0 1 1 4 2');
+    expect(m.before).toContain('\x1b[?1049h');
+    expect(m.before).toContain('\x1b[?1002h');
+    expect(m.before).toContain('\x1b[?1006h');
+    expect(m.before).toContain('\x1b[?1h');
+    expect(m.before).not.toContain('\x1b[?1000h');
+    expect(m.after).toBe('\x1b[3;5H\x1b[?25h');
+    // A plain pane leaves the alternate screen and clears mouse modes.
+    const plain = modeSequences('0 0 0 0 0 0 0 1 0 0');
+    expect(plain.before).toContain('\x1b[?1049l');
+    for (const code of [1000, 1002, 1003, 1005, 1006])
+      expect(plain.before).not.toContain(`\x1b[?${code}h`);
+  });
+
+  it('emits nothing for output it does not recognise', () => {
+    for (const bad of ['', 'garbage', '1 1 1', '2 0 0 0 0 0 0 1 0 0'])
+      expect(modeSequences(bad)).toEqual({ before: '', after: '' });
   });
 });
 
@@ -180,6 +204,24 @@ describeTmux('live views against real tmux', () => {
       true,
     );
     await until(() => s.screen().includes('hello live'));
+  }, 20000);
+
+  it('tells a late-joining browser the pane is on the alternate screen with the mouse on', async () => {
+    // Like `claude attach`: switch modes at startup, before anyone connects.
+    views = make(
+      fake(
+        "printf '\\033[?1049h\\033[?1002h\\033[?1006hALT-SCREEN-UP'; exec cat",
+      ),
+    );
+    const r = await views.open('owner-a', 'abcd1234', 80, 20);
+    const vid = (r as { vid: string }).vid;
+    await new Promise((res) => setTimeout(res, 800)); // modes set before the stream exists
+    const s = new FakeStream();
+    views.attachStream(vid, 'owner-a', s as never);
+    await until(() => s.screen().includes('ALT-SCREEN-UP'));
+    expect(s.screen()).toContain('\x1b[?1049h');
+    expect(s.screen()).toContain('\x1b[?1002h');
+    expect(s.screen()).toContain('\x1b[?1006h');
   }, 20000);
 
   it('delivers a 16 KB paste intact', async () => {

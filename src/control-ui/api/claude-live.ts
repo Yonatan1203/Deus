@@ -86,6 +86,46 @@ export function createLineSplitter(onLine: (line: Buffer) => void) {
   };
 }
 
+/** The tmux formats `repaint` reads, in the order `modeSequences` expects. */
+export const MODE_FORMAT =
+  '#{alternate_on} #{mouse_standard_flag} #{mouse_button_flag} ' +
+  '#{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} ' +
+  '#{keypad_cursor_flag} #{cursor_flag} #{cursor_x} #{cursor_y}';
+
+/**
+ * The terminal modes a pane is in, as the escape sequences that put a fresh
+ * terminal into the same state. A browser that connects after the program
+ * started never saw those sequences, so without this it does not know the
+ * session is on the alternate screen with mouse reporting on — and the mouse
+ * wheel scrolls the browser's own empty history instead of reaching Claude.
+ * Only a fixed table is emitted, chosen by 0/1 flags; no pane text is used.
+ */
+export function modeSequences(flags: string): {
+  before: string;
+  after: string;
+} {
+  const f = flags.trim().split(/\s+/);
+  if (f.length < 10 || !f.slice(0, 8).every((x) => x === '0' || x === '1'))
+    return { before: '', after: '' };
+  const on = (i: number) => f[i] === '1';
+  const set = (code: number, v: boolean) => `\x1b[?${code}${v ? 'h' : 'l'}`;
+  const before =
+    set(1049, on(0)) +
+    // Clear every mouse mode first, then set the ones the pane has.
+    '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1005l' +
+    (on(1) ? set(1000, true) : '') +
+    (on(2) ? set(1002, true) : '') +
+    (on(3) ? set(1003, true) : '') +
+    (on(4) ? set(1006, true) : '') +
+    (on(5) ? set(1005, true) : '') +
+    set(1, on(6));
+  const x = Number(f[8]);
+  const y = Number(f[9]);
+  const move =
+    Number.isInteger(x) && Number.isInteger(y) ? `\x1b[${y + 1};${x + 1}H` : '';
+  return { before, after: move + set(25, on(7)) };
+}
+
 /** `send-keys -H` lines for these bytes, at most CHUNK_BYTES per command. */
 export function sendKeysCommands(target: string, bytes: Buffer): string[] {
   const lines: string[] = [];
@@ -204,26 +244,24 @@ export function createLiveViews(deps: LiveDeps) {
     send(v, 'o', buf.toString('base64'));
   };
 
-  /** Paints the current screen: the catch-up path, never a replay ring. */
+  /**
+   * Paints the current screen: the catch-up path, never a replay ring. It
+   * re-sends the pane's modes (alternate screen, mouse) every time, so it runs
+   * only when a stream (re)attaches or a slow browser catches up — never per
+   * frame, where re-entering the alternate screen would flicker.
+   */
   const repaint = async (v: View) => {
     v.needRepaint = false;
     v.pending = [];
     v.pendingBytes = 0;
-    const [screen, cursor] = await Promise.all([
+    const [screen, modes] = await Promise.all([
       tmux(['capture-pane', '-p', '-e', '-t', v.target]),
-      tmux([
-        'display-message',
-        '-p',
-        '-t',
-        v.target,
-        '#{cursor_x} #{cursor_y}',
-      ]),
+      tmux(['display-message', '-p', '-t', v.target, MODE_FORMAT]),
     ]);
     if (v.closed || !screen.ok) return;
     const lines = screen.out.replace(/\n$/, '').split('\n');
-    const m = /^(\d+) (\d+)/.exec(cursor.out.trim());
-    const move = m ? `\x1b[${Number(m[2]) + 1};${Number(m[1]) + 1}H` : '';
-    const paint = `\x1b[0m\x1b[2J\x1b[H${lines.join('\r\n')}${move}`;
+    const { before, after } = modeSequences(modes.ok ? modes.out : '');
+    const paint = `${before}\x1b[0m\x1b[2J\x1b[H${lines.join('\r\n')}${after}`;
     send(v, 'o', Buffer.from(paint, 'utf8').toString('base64'));
   };
 

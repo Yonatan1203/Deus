@@ -909,3 +909,42 @@ macOS and Linux symbol fonts that carry it.
   the list; and `CONTROL_UI_TMUX_SOCKET` lets a second process on this host (a
   verification fixture) use its own socket, so it can never close the
   operator's open views.
+
+## Claude tab — terminal scrolling fix and session pinning (2026-09-26)
+
+Two changes, committed separately so either can be reverted alone.
+
+**Scrolling (fix).** `claude attach` runs on the alternate screen with mouse
+reporting on. When the browser's stream attaches after those modes were set
+(a slow link, e.g. the SSH tunnel), xterm.js never saw them, so the wheel
+scrolled xterm's own empty history instead of reaching Claude. `repaint()` now
+reads the pane's modes (`MODE_FORMAT`) and replays them from a fixed table
+before painting.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Unit: flags → sequences | fixed table only, junk ignored | passes | PASS |
+| Real tmux: modes set before the stream attaches | repaint carries `?1049h`, `?1002h`, `?1006h` | passes | PASS |
+| A/B, stream attach delayed 6 s (verification-gate, Playwright) | before: wheel dead; after: wheel scrolls | before: 0 input bytes, lines 82..104 → 82..104; after: 16 SGR wheel events, 82..104 → 67..89 | PASS |
+| Normal attach | no regression | 128..150 → 112..134 (`claude-scroll-before.png`, `claude-scroll-after.png`) | PASS |
+| Stream's first frame | starts with the mode sequences | `\x1b[?1049h…\x1b[?1003h\x1b[?1006h…` | PASS |
+
+**Pinning (feature).** Pins live on the server in
+`CONFIG_DIR/control-ui/claude-pins.json` so they follow the operator between
+devices; `PUT /api/v1/claude/sessions/:id/pin`.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Store: atomic, 0600, cap 50, unreadable file never overwritten, prune | all | unit tests pass | PASS |
+| Routes: round trip, foreign/invalid id 404, bad body 400, unreadable 503, read-only 403, no config dir 503 | all | route test passes | PASS |
+| Browser: pinned row moves under "Pinned", survives reload, shows on a second device (390 px, touch) with the pin button visible and `aria-pressed=true`, unpin removes the heading | all | observed (screenshots withheld: they show real session names) | PASS |
+| File after pin / unpin | `{"v":1,"pins":["…"]}` mode 600, then `{"v":1,"pins":[]}`, no temp files | as expected | PASS |
+| Two concurrent pins, 6 trials | both kept | both kept every time (the update is synchronous in one process) | PASS |
+| Phone overflow | 0 px | 0 px list and open views | PASS |
+
+- `Deviation:` the plan's pre-stream output buffer was dropped: replaying the
+  modes on every (re)attach covers what it would have caught.
+- Known residual: `repaint()` awaits two tmux calls while live output keeps
+  flowing, so a mode change inside that few-millisecond window could be
+  overtaken by the repaint's older snapshot. Not observed; the next repaint
+  corrects it.
