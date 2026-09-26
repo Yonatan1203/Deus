@@ -196,6 +196,73 @@ describe('buildConversation', () => {
     expect(c.items[1]).not.toHaveProperty('answer');
   });
 
+  it('shows a message sent while Claude works: queued, then delivered or absorbed', () => {
+    const op = (
+      operation: string,
+      content: string,
+      extra: Record<string, unknown> = {},
+    ) => ({ type: 'queue-operation', operation, content, ...extra });
+    // dequeued: the normal user row follows and takes over
+    expect(
+      buildConversation([op('enqueue', 'hi'), op('dequeue', 'hi'), user('hi')])
+        .items,
+    ).toEqual([{ k: 'user', text: 'hi' }]);
+    // absorbed mid-turn: no user row ever comes; the bubble stays, not queued
+    expect(
+      buildConversation([
+        assistant([text('working')]),
+        op('enqueue', 'also this'),
+        op('remove', 'also this', { reason: 'absorbed_mid_turn' }),
+        assistant([text('done')]),
+      ]).items,
+    ).toEqual([
+      { k: 'assistant', text: 'working' },
+      { k: 'user', text: 'also this' },
+      { k: 'assistant', text: 'done' },
+    ]);
+    // still waiting
+    expect(buildConversation([op('enqueue', 'later')]).items).toEqual([
+      { k: 'user', text: 'later', queued: true },
+    ]);
+    // cleared by the operator
+    expect(
+      buildConversation([
+        op('enqueue', 'x'),
+        op('remove', 'x', { reason: 'cleared' }),
+      ]).items,
+    ).toEqual([]);
+    // the same text twice, one delivered
+    expect(
+      buildConversation([
+        op('enqueue', 'a'),
+        op('enqueue', 'a'),
+        op('dequeue', 'a'),
+        user('a'),
+      ]).items,
+    ).toEqual([
+      { k: 'user', text: 'a', queued: true },
+      { k: 'user', text: 'a' },
+    ]);
+    // delivered as the next turn with no dequeue row (seen 2026-09-26)
+    expect(
+      buildConversation([
+        op('enqueue', 'next'),
+        assistant([text('ok')]),
+        user('next'),
+      ]).items,
+    ).toEqual([
+      { k: 'assistant', text: 'ok' },
+      { k: 'user', text: 'next' },
+    ]);
+    // an operation whose enqueue fell outside the tail is a no-op
+    expect(
+      buildConversation([
+        op('dequeue', 'gone'),
+        op('remove', 'gone', { reason: 'absorbed_mid_turn' }),
+      ]).items,
+    ).toEqual([]);
+  });
+
   it('parses the answers out of the result text', () => {
     expect(
       parseAskAnswer(

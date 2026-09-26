@@ -142,6 +142,8 @@ export function createComposer(o) {
   return {
     el,
     input,
+    /** The placeholder the box was created with, for callers that swap it temporarily. */
+    placeholder: o.placeholder,
     /** A locked box takes no input and cannot submit; `why` shows in its place. */
     lock(why) { locked = true; input.disabled = true; input.placeholder = why; sendBtn.disabled = true; },
     unlock() { locked = false; input.disabled = false; input.placeholder = o.placeholder; sendBtn.disabled = false; },

@@ -668,6 +668,9 @@ export async function render(root, api, bus, me) {
       const busy = label === 'working';
       banner.hidden = label !== 'needs you' || !askEl.hidden;
       composer.setBusy(busy);
+      // Typing while Claude works is fine — Claude queues it (the bubble
+      // shows as Queued). The box says so, unless a question holds it.
+      if (!lockedByAsk) composer.input.placeholder = busy ? 'Message Claude — it will be queued until Claude is ready' : composer.placeholder;
       const why = busy ? 'Wait until Claude finishes' : '';
       composer.picker('model').disable(busy, why);
       composer.picker('effort').disable(busy, why);

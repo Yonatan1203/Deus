@@ -1279,6 +1279,40 @@ operator's real sessions beside the throwaway ones.
   fixture started without `CONTROL_UI_TMUX_SOCKET` runs its start-up
   `tmux kill-server` on the live dashboard's socket and drops its open views
   (sessions untouched); the fixture now sets its own socket.
+## Claude tab: messages sent while Claude works (2026-09-26)
+
+Operator report: messages sent while Claude was working never appeared, and
+the message box looked closed (Stop) although Enter still sent. Cause: Claude
+Code records a message typed mid-turn as `queue-operation` rows — `enqueue`,
+then either a plain `user` row with the same text (delivered as the next
+turn; a `dequeue` row may or may not precede it) or `remove` with
+`absorbed_mid_turn` (delivered inside the running turn — no user row ever) —
+and the conversation parser only read `user`/`assistant` rows.
+
+Plan-reviewer SHIP (round 2: the busy placeholder must not fight the question
+card's lock; a lone dequeue/remove is a no-op). The parser turns `enqueue`
+into a user bubble marked *Queued*, a matching `user` row retires the bubble,
+`absorbed_mid_turn` un-marks it, other removes drop it; `dequeue` is ignored
+so a bubble is never retired twice (found on the first drive: delivery
+without a dequeue row left a duplicate). The composer stays open while Claude
+works and says "Message Claude — it will be queued until Claude is ready"
+(unless a question holds it); Stop is unchanged.
+
+Driven on the real-Claude fixture, one throwaway session with a 48 s command,
+"hello from the queue" sent while it ran:
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Composer while working | open, queued placeholder | not disabled; placeholder as above | PASS |
+| Bubble | appears within 2 s, marked Queued | "hello from the queue · Queued" — `artifacts/claude-queued.png` | PASS |
+| Delivery, both paths | label goes, one bubble stays | run 1: delivered as the next turn (user row, no dequeue) — duplicate found and fixed; run 2: `remove:absorbed_mid_turn` — bubble un-marked, one bubble — `artifacts/claude-queued-settled.png` | PASS |
+| Placeholder when idle | original | "Message Claude — type / for commands" | PASS |
+| Suite | green | 389 (47 files); parser 12; tsc, eslint clean | PASS |
+
+- Known: the enqueue row can sit earlier in the transcript than the prompt's
+  own user row, so a queued bubble may show above the first prompt until it
+  lands. Transient; not changed.
+
 - Review round: code-reviewer SHIP; copy-writer and ux-reviewer (advisory)
   led to: "Back" instead of "Change answers" (it steps one question back),
   "Review answers" instead of "Done"/"Next" when no question follows, a hint

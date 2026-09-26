@@ -109,7 +109,9 @@ function askCard(it, h, handlers) {
 export function renderConversation(el, items, h, handlers = {}) {
   const nodes = groupItems(items).map((it, i) => {
     switch (it.k) {
-      case 'user': return h('div', { class: 'conv-user', dir: 'auto' }, it.text);
+      // Sent while Claude was working: shown at once, marked until it lands.
+      case 'user': return h('div', { class: `conv-user${it.queued ? ' queued' : ''}`, dir: 'auto' }, it.text,
+        it.queued ? h('span', { class: 'conv-queued' }, 'Queued') : null);
       case 'assistant': return h('div', { class: 'conv-assistant', dir: 'auto' }, ...renderBlocks(parseMarkdown(it.text), h));
       case 'tools': return toolsItem(it, h, i, handlers.expanded);
       case 'command': return h('div', { class: 'conv-command' },

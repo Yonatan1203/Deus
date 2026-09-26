@@ -29,7 +29,7 @@ const ARTIFACT_URL_RE =
   /https:\/\/claude\.ai\/[A-Za-z0-9/_-]*artifact[A-Za-z0-9/_-]*/;
 
 export type ConvItem =
-  | { k: 'user'; text: string }
+  | { k: 'user'; text: string; queued?: boolean }
   | { k: 'assistant'; text: string }
   | {
       k: 'tool';
@@ -226,10 +226,44 @@ export function buildConversation(
     items.push({ k: 'user', text: clip(s, TEXT_MAX) });
   };
 
+  // A message typed while Claude works is a queue-operation row: `enqueue`,
+  // then either a user row with the same text (delivered as the next turn —
+  // with or without a `dequeue` row first) or `remove` with
+  // `absorbed_mid_turn` (delivered inside the running turn — no user row
+  // ever). Queued bubbles show at once; the delivered user row retires one;
+  // other removes drop it. `dequeue` itself is ignored so a bubble is never
+  // retired twice. Dropped items are tombstoned and filtered at the end so
+  // tool-result pairing by reference is untouched.
+  const queued = new Map<string, ConvItem[]>(); // content → queued items
+  const dropped = new Set<ConvItem>();
+  const takeQueued = (content: string): ConvItem | undefined =>
+    queued.get(content)?.pop();
+
   for (const e of rows) {
     if (e.type === 'permission-mode') {
       const pm = String(e.permissionMode);
       mode = PERMISSION_MODES.includes(pm) ? pm : null;
+      continue;
+    }
+    if (e.type === 'queue-operation') {
+      if (typeof e.content !== 'string') continue;
+      if (e.operation === 'enqueue') {
+        const it: ConvItem = {
+          k: 'user',
+          text: clip(e.content.trim(), TEXT_MAX),
+          queued: true,
+        };
+        items.push(it);
+        const list = queued.get(e.content) ?? [];
+        list.push(it);
+        queued.set(e.content, list);
+      } else if (e.operation === 'remove') {
+        const it = takeQueued(e.content);
+        if (!it) continue;
+        if (e.reason === 'absorbed_mid_turn' && it.k === 'user')
+          delete it.queued;
+        else dropped.add(it);
+      }
       continue;
     }
     if (e.isSidechain === true || e.isMeta === true) continue;
@@ -237,6 +271,10 @@ export function buildConversation(
     const content = msg?.content;
     if (e.type === 'user') {
       if (typeof content === 'string') {
+        // A queued message delivered as the next turn (with or without a
+        // dequeue row before it): the real row takes over from the bubble.
+        const q = takeQueued(content);
+        if (q) dropped.add(q);
         userText(content);
         continue;
       }
@@ -275,9 +313,10 @@ export function buildConversation(
       }
     }
   }
+  const kept = dropped.size ? items.filter((it) => !dropped.has(it)) : items;
   return {
-    items: items.slice(-limit),
-    truncated: items.length > limit,
+    items: kept.slice(-limit),
+    truncated: kept.length > limit,
     model,
     effort,
     mode,

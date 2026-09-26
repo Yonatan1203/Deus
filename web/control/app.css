@@ -625,6 +625,8 @@ table.kv input { min-height: 36px; }
 .conv-col { max-width: 780px; margin: 0 auto; padding: 8px 16px 16px; display: grid; gap: 14px; }
 .conv-list { display: grid; gap: 14px; line-height: 1.6; font-size: 15px; }
 .conv-user { justify-self: end; max-width: 85%; padding: 9px 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.conv-user.queued { opacity: 0.75; border-style: dashed; border-color: var(--line-strong); }
+.conv-queued { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); text-align: end; }
 .conv-assistant { min-width: 0; overflow-wrap: anywhere; }
 .conv-assistant > :first-child { margin-top: 0; } .conv-assistant > :last-child { margin-bottom: 0; }
 .conv-assistant p { margin: 0 0 10px; }
