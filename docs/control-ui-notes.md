@@ -994,3 +994,39 @@ stays visible.
   font, confirmed by computed style on both host and fallback rows. The code
   review found the new overflow check skipped the phone's More sheet — the
   surface holding the new Sign out — so it is measured too (0 px).
+
+## Claude tab conversation view (2026-09-26)
+
+Plan: `docs/superpowers/plans/2026-09-26-claude-tab-conversation.md` (plan
+review SHIP, round 2). The open session now shows as a conversation in the
+Claude-app style (approved mockup: `artifacts/claude-conversation-mockup.png`),
+drawn from its own transcript. Everything typed there goes through the same
+live view as the terminal; **Conversation | Terminal** switches between them.
+New read routes: `GET /api/v1/claude/live/:vid/conversation` (only the login
+that opened the view; cached session list, so polling never runs the CLI; own
+limit of 120 a minute) and `GET /api/v1/claude/commands`. No new write route.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| First reply renders | markdown list with bold, tool fold, inline code | "Ran 1 command ›" fold, `<strong>` item, code spans | PASS |
+| Typing from the box | reaches the session, reply shows | "BANANA" / "KIWI" / "PEAR" / "PLUM" replies, box clears | PASS |
+| `/` menu and token | filters, Enter inserts, recognised command marked | `/ef` → `/effort`, inserts `/effort `, token with description | PASS |
+| Effort picker | shows the level after `/effort high` | pill reads "High" | PASS |
+| Model picker | pill follows the next reply's model | "Sonnet 5" after the next reply | PASS |
+| Stop while working | Esc interrupts; unanswered message returns to the box; next message goes on its own | first build merged the restored text into the next message (Ctrl+L does not clear in 2.1.283); fixed by reading Claude's input line and clearing with Esc Esc only when it has text — "Reply with just the word PLUM." then sent alone | PASS |
+| Conversation / Terminal switch | terminal keeps its real size | host 783×558 after switching; no resize to 20×5 | PASS |
+| Phone at 390 px | no sideways scroll; key bar only in Terminal | 0 px both modes (first build: 67 px, bar now wraps); key bar hidden in Conversation, shown in Terminal | PASS |
+| CSP | no new blocked styles | 6 blocked inline styles, same count as the build before (xterm's own) | PASS |
+| Unit tests | builder, commands, meta accessor, routes, markdown, grouping | 330 / 330 in control-ui + scripts tests | PASS |
+
+- `Deviation:` transcript tail raised from 2 MiB to 8 MiB — real transcripts
+  carry large tool results; 2 MiB held about five replies, 8 MiB about thirty,
+  parsed in ~50 ms and memoized per file version.
+- `Deviation:` instead of a zero-size resize guard, both views stay laid out
+  and the hidden one is only invisible, so the terminal never shrinks.
+- `Deviation:` in Claude Code 2.1.283, `/model` and `/effort` also save the
+  choice as the default for new sessions (the same happens in the terminal).
+  The pickers say so. Testing them changed the operator's saved default model
+  and effort; restoring it was left to the operator.
+- Known limit: a message sent a few seconds after `/model` was lost once; not
+  investigated further because each attempt changes the saved defaults.

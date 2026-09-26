@@ -2326,6 +2326,7 @@ describe('control-ui server — claude sessions', () => {
   function fakeLive() {
     const calls: unknown[][] = [];
     const owners = new Map<string, string>();
+    const ids = new Map<string, string>();
     let n = 0;
     const live = {
       calls,
@@ -2333,6 +2334,7 @@ describe('control-ui server — claude sessions', () => {
         calls.push(['open', owner, id, cols, rows]);
         const vid = (++n).toString(16).padStart(32, '0');
         owners.set(vid, owner);
+        ids.set(vid, id);
         return { ok: true as const, vid };
       },
       attachStream(vid: string, owner: string, res: http.ServerResponse) {
@@ -2368,9 +2370,98 @@ describe('control-ui server — claude sessions', () => {
       async killLeftovers() {},
       size: () => owners.size,
       has: (vid: string) => owners.has(vid),
+      meta: (vid: string) =>
+        owners.has(vid)
+          ? {
+              owner: owners.get(vid) as string,
+              claudeId: ids.get(vid) as string,
+            }
+          : null,
     };
     return live;
   }
+
+  it("conversation: only the view's own login reads it, unchanged versions are cheap, read-only refused", async () => {
+    const live = fakeLive();
+    const cli = await bootC({}, fakeCli(), { liveViews: live });
+    const a = await login();
+    const b = await login();
+    const opened = await request({
+      method: 'POST',
+      path: '/api/v1/claude/live',
+      headers: { ...a.auth, ...H },
+      body: JSON.stringify({ id: 'a1b2c3d4', cols: 80, rows: 24 }),
+    });
+    const { vid } = j(opened);
+    const agentCalls = () => cli.calls.filter((c) => c[0] === 'agents').length;
+    const before = agentCalls();
+    const get = (auth: Record<string, string>, q = '') =>
+      request({
+        method: 'GET',
+        path: `/api/v1/claude/live/${vid}/conversation${q}`,
+        headers: auth,
+      });
+    const first = await get(a.auth);
+    expect(first.status).toBe(200);
+    const conv = j(first);
+    expect(conv.items).toEqual([
+      { k: 'user', text: 'Make the posts' },
+      { k: 'assistant', text: 'Approve the hero shot?' },
+    ]);
+    expect(typeof conv.version).toBe('string');
+    // Polling reads the cached list: no CLI call per poll.
+    const again = await get(a.auth, `?v=${encodeURIComponent(conv.version)}`);
+    expect(j(again)).toEqual({ unchanged: true, version: conv.version });
+    expect(agentCalls()).toBe(before);
+    // Another login, or a view that does not exist, gets nothing.
+    expect((await get(b.auth)).status).toBe(404);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: `/api/v1/claude/live/${'f'.repeat(32)}/conversation`,
+          headers: a.auth,
+        })
+      ).status,
+    ).toBe(404);
+    // Its own limit, per login.
+    let last = 200;
+    for (let i = 0; i < 130 && last !== 429; i++)
+      last = (await get(a.auth)).status;
+    expect(last).toBe(429);
+    // The command list: names and one-line descriptions, built-ins included.
+    const cmds = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/claude/commands',
+        headers: a.auth,
+      }),
+    ).commands as { name: string; source: string }[];
+    expect(cmds.find((c) => c.name === 'effort')).toBeTruthy();
+    server.close();
+
+    await bootC({ readOnly: true }, cli, { liveViews: fakeLive() });
+    const ro = await login();
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: `/api/v1/claude/live/${vid}/conversation`,
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/claude/commands',
+          headers: ro.auth,
+        })
+      ).status,
+    ).toBe(403);
+    server.close();
+  });
 
   it('live: opens only listed background sessions, routes input by owner, refuses read-only', async () => {
     const live = fakeLive();

@@ -508,6 +508,11 @@ export function createLiveViews(deps: LiveDeps) {
 
     size: () => views.size,
     has: (vid: string) => views.has(vid),
+    /** Who opened a view and which session it shows; null once it closed. */
+    meta(vid: string): { owner: string; claudeId: string } | null {
+      const v = views.get(vid);
+      return v && !v.closed ? { owner: v.owner, claudeId: v.claudeId } : null;
+    },
   };
 }
 

@@ -51,6 +51,8 @@ import {
 } from './api/containers.js';
 import { createDockerRunner, type DockerRunner } from './api/docker.js';
 import { containerLogs, queryLogs, redactSecrets } from './api/logs.js';
+import { createConversationReader } from './api/claude-conversation.js';
+import { readSlashCommands } from './api/claude-commands.js';
 import { readSystem, type SystemView } from './api/system.js';
 import { readConfig, writeConfig } from './api/config.js';
 import {
@@ -249,6 +251,8 @@ const LIVE_OPENS_PER_MIN = 20;
 const CLAUDE_PINS_PER_MIN = 30;
 const LIVE_SWEEP_MS = 20_000;
 const CLAUDE_READS_PER_MIN = 30;
+// The conversation view polls every 1.5 s while it is showing.
+const CLAUDE_CONV_READS_PER_MIN = 120;
 const CLAUDE_STOPS_PER_MIN = 6;
 const CLAUDE_LIVE_MAX = 3;
 const CLAUDE_POLL_MS = 3000;
@@ -436,6 +440,10 @@ export function createControlServer(
   const liveOpenLimiter = createRateLimiter(LIVE_OPENS_PER_MIN, 60_000);
   const claudePinLimiter = createRateLimiter(CLAUDE_PINS_PER_MIN, 60_000);
   const claudeReadLimiter = createRateLimiter(CLAUDE_READS_PER_MIN, 60_000);
+  const claudeConvLimiter = createRateLimiter(
+    CLAUDE_CONV_READS_PER_MIN,
+    60_000,
+  );
   const claudeStopLimiter = createRateLimiter(CLAUDE_STOPS_PER_MIN, 60_000);
   const workflowReadLimiter = createRateLimiter(WORKFLOW_READS_PER_MIN, 60_000);
   const workflowArchiveLimiter = createRateLimiter(
@@ -492,6 +500,9 @@ export function createControlServer(
     ? createLedger(
         path.join(deps.configDir, 'control-ui', 'claude-started.json'),
       )
+    : null;
+  const readConversation = deps.claudeProjectsDir
+    ? createConversationReader(deps.claudeProjectsDir)
     : null;
   const waitingOn = deps.claudeProjectsDir
     ? createWaitingOnReader(deps.claudeProjectsDir)
@@ -1733,6 +1744,48 @@ export function createControlServer(
     ctx.res.writeHead(204);
     ctx.res.end();
   });
+  // The open view's session as a conversation. Keyed by the view, so only the
+  // login that opened it can read it, and resolved through the cached session
+  // list, so polling never runs the CLI and a /clear is followed.
+  router.add('GET', '/api/v1/claude/live/:vid/conversation', async (ctx) => {
+    const lv = liveGate(ctx);
+    if (!lv || !ctx.session) return;
+    const m = lv.meta(ctx.params.vid);
+    if (!m || m.owner !== ctx.session.id)
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    if (claudeConvLimiter.isRateLimited(ctx.session.shortId, now()))
+      return writeJson(ctx.res, 429, { error: 'too many reads' });
+    const list = await claudeList(false);
+    const row =
+      'sessions' in list
+        ? list.sessions.find((s) => s.id === m.claudeId)
+        : undefined;
+    const read =
+      row?.session_id && readConversation
+        ? readConversation(row.session_id)
+        : null;
+    if (!read) return writeJson(ctx.res, 404, { error: 'no conversation' });
+    auditRead(
+      ctx.session,
+      `claude-conversation:${m.claudeId}`,
+      'control_ui_claude_read',
+      ctx.remoteAddr,
+    );
+    if (ctx.url.searchParams.get('v') === read.version)
+      return writeJson(ctx.res, 200, {
+        unchanged: true,
+        version: read.version,
+      });
+    writeJson(ctx.res, 200, { version: read.version, ...read.conv });
+  });
+  router.add('GET', '/api/v1/claude/commands', (ctx) => {
+    if (deps.readOnly)
+      return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
+    if (!claudeRead(ctx)) return;
+    writeJson(ctx.res, 200, {
+      commands: readSlashCommands(deps.repoRoot, homeDir),
+    });
+  });
   // Ends views whose login is gone (expiry, revocation) or whose browser left.
   // Checking rotation here means it does not wait for the next request.
   const liveSweep = setInterval(() => {
@@ -2732,6 +2785,7 @@ export function createControlServer(
     clearInterval(liveSweep);
     liveViews?.closeAll('shutdown');
     claudeReadLimiter.dispose();
+    claudeConvLimiter.dispose();
     claudeStopLimiter.dispose();
     workflowReadLimiter.dispose();
     workflowArchiveLimiter.dispose();

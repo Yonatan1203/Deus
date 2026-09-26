@@ -308,6 +308,23 @@ describeTmux('live views against real tmux', () => {
     await until(() => !sessions().includes('v-'));
   }, 20000);
 
+  it("names a view's owner and session until it closes, by any path", async () => {
+    views = make(fake('exec cat'));
+    const open = async (owner: string) =>
+      ((await views!.open(owner, 'abcd1234', 80, 20)) as { vid: string }).vid;
+    const a = await open('owner-a');
+    expect(views.meta(a)).toEqual({ owner: 'owner-a', claudeId: 'abcd1234' });
+    expect(views.meta('v-unknown')).toBeNull();
+    views.closeOwned(a, 'owner-a');
+    expect(views.meta(a)).toBeNull();
+    const b = await open('owner-b');
+    views.closeOwner('owner-b', 'logout');
+    expect(views.meta(b)).toBeNull();
+    const c = await open('owner-c');
+    views.closeAll('rotated');
+    expect(views.meta(c)).toBeNull();
+  }, 20000);
+
   it('removes the tmux session when its control client dies (destroy-unattached)', async () => {
     views = make(fake('exec cat'));
     const r = await views.open('owner-a', 'abcd1234', 80, 20);

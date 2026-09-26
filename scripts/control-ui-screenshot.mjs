@@ -84,12 +84,12 @@ for (const [name, viewport] of viewports) {
       await page.waitForSelector('#view .gmail-panel .chips', { timeout: 10_000 });
       if (name === 'mobile') await page.locator('#view .gmail-panel').scrollIntoViewIfNeeded();
     } else if (tab === 'claude') {
-      // Open the first session so the live terminal is part of the capture.
+      // Open the first session so its conversation view is part of the capture.
       await page.waitForSelector('#view .session-row, #view .empty', { timeout: 10_000 });
       const first = page.locator('#view .session-row');
       if (await first.count()) {
         await first.first().click();
-        await page.waitForSelector('#view .term-host .xterm, #view .claude-empty, #view .claude-recent', { timeout: 15_000 });
+        await page.waitForSelector('#view .conv-list[data-loaded], #view .claude-stage[data-mode="terminal"] .xterm, #view .claude-empty, #view .claude-recent', { timeout: 15_000 });
         await page.waitForTimeout(1500); // let the first screen paint
       }
     } else if (tab === 'workflows') {

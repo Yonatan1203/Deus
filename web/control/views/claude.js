@@ -3,6 +3,7 @@ import { icon } from '../icons.js';
 import { header } from '../app.js';
 import { confirmTyped, fmtTime, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
+import { renderConversation } from '../conversation.js';
 
 // The Claude tab: your sessions, and each one live — the same `claude attach`
 // your terminal uses, so typing here is typing there, and Claude Code's own
@@ -23,6 +24,52 @@ function stateOf(s) {
   if (s.status === 'busy') return ['working', 'ok'];
   if (s.state === 'done') return ['done', ''];
   return ['idle', 'idle'];
+}
+
+const MODE_KEY = 'claude.mode';
+const isShown = (el) => (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.offsetParent !== null);
+function readMode() {
+  try { return localStorage.getItem(MODE_KEY) === 'terminal' ? 'terminal' : 'conversation'; } catch { return 'conversation'; }
+}
+function saveMode(m) {
+  try { localStorage.setItem(MODE_KEY, m); } catch { /* private window: not remembered */ }
+}
+const MODELS = [['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku'], ['fable', 'Fable']];
+const EFFORTS = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']];
+const MODE_LABEL = { auto: 'Auto mode', plan: 'Plan mode', acceptEdits: 'Accept edits', default: 'Asks before edits', bypassPermissions: 'Bypass permissions', dontAsk: "Don't ask" };
+
+/** "claude-opus-5-5" → "Opus 5.5"; a date suffix is dropped. */
+function modelLabel(id) {
+  if (!id) return 'Model';
+  const [name = '', ...ver] = id.replace(/^claude-/, '').split('-').filter((p) => !/^\d{8}$/.test(p));
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${ver.join('.')}`.trim();
+}
+/** Control characters could end the paste early or send keys; only text, newlines and tabs go in. */
+const cleanInput = (t) => t.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').replace(/\s+$/, '');
+
+/** A small pop-up picker: a pill button and its menu. */
+function pillMenu(initial, options, onPick, note) {
+  const btn = h('button', { type: 'button', class: 'pill-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, `${initial} ▾`);
+  const list = h('div', { class: 'pill-menu', role: 'menu', hidden: true });
+  const close = () => { list.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  if (note) list.append(h('div', { class: 'pill-note' }, note));
+  list.append(...options.map(([v, label]) => h('button', { type: 'button', role: 'menuitem', onclick: () => { close(); onPick(v); } }, label)));
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = list.hidden;
+    for (const m of document.querySelectorAll('.pill-menu')) m.hidden = true;
+    list.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+  });
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  return {
+    wrap: h('div', { class: 'pill-wrap' }, btn, list),
+    set(text) { btn.textContent = `${text} ▾`; },
+    disable(d, title) { btn.disabled = d; btn.title = title; if (d) close(); },
+    dispose() { document.removeEventListener('click', close); document.removeEventListener('keydown', onKey); },
+  };
 }
 
 // ---- xterm, loaded on first use from same-origin vendor files -------------
@@ -144,9 +191,20 @@ async function openLive(api, host, session, onEnd) {
     if (es) es.close();
     term.dispose();
   }
-  term.focus();
+  if (isShown(host)) term.focus();
   return {
-    send: (s) => { sendBytes(enc.encode(s)); term.focus(); },
+    vid,
+    send: (s, { focus = true } = {}) => { sendBytes(enc.encode(s)); if (focus) term.focus(); },
+    focus: () => term.focus(),
+    /** Text in Claude Code's own input line (the bottom `❯` line), or '' when empty. */
+    inputLine() {
+      const b = term.buffer.active;
+      for (let y = b.length - 1, n = 0; y >= 0 && n < 30; y--, n++) {
+        const m = /^\s*\u276f\s?(.*)$/.exec(b.getLine(y)?.translateToString(true) ?? '');
+        if (m) return m[1].trim();
+      }
+      return '';
+    },
     close() {
       if (closed) return;
       closed = true;
@@ -243,6 +301,7 @@ export async function render(root, api, bus, me) {
       const [l, k] = stateOf(open);
       current.statusEl.textContent = l;
       current.statusEl.className = `status ${k}`;
+      if (current.conv) current.conv.setSession(open);
     }
   }
 
@@ -258,6 +317,7 @@ export async function render(root, api, bus, me) {
           : 'Live view needs tmux on the server; only recent output is available.')));
   }
   function closeCurrent() {
+    if (current && current.conv) current.conv.dispose();
     if (current && current.view) current.view.close();
     current = null;
     document.body.classList.remove('claude-full');
@@ -302,9 +362,27 @@ export async function render(root, api, bus, me) {
     const host = h('div', { class: 'term-host' });
     const keybar = h('div', { class: 'keybar', role: 'toolbar', 'aria-label': 'Terminal keys' },
       ...KEYBAR.map(([label, bytes]) => h('button', { type: 'button', class: 'small', onclick: () => current && current.view && current.view.send(bytes) }, label)));
-    pane.append(host, keybar);
-    if (window.matchMedia('(max-width: 767px)').matches) document.body.classList.add('claude-full');
     const mine = current;
+    const conv = conversationView(s, mine, () => setMode('terminal'));
+    mine.conv = conv;
+    const stage = h('div', { class: 'claude-stage' }, h('div', { class: 'term-pane' }, host, keybar), conv.el);
+    // Both views stay laid out; the hidden one is only invisible, so the
+    // terminal keeps its real size (and its session its width) either way.
+    let mode = readMode();
+    const segBtn = (m, label) => h('button', { type: 'button', 'data-mode': m, onclick: () => setMode(m) }, label);
+    const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'View' }, segBtn('conversation', 'Conversation'), segBtn('terminal', 'Terminal'));
+    function setMode(m) {
+      mode = m;
+      saveMode(m);
+      stage.dataset.mode = m;
+      for (const b of seg.children) b.setAttribute('aria-pressed', String(b.dataset.mode === m));
+      if (m === 'terminal') { if (mine.view) mine.view.focus(); }
+      else conv.shown();
+    }
+    bar.insertBefore(seg, bar.querySelector('.claude-actions'));
+    pane.append(stage);
+    setMode(mode);
+    if (window.matchMedia('(max-width: 767px)').matches) document.body.classList.add('claude-full');
     try {
       const view = await openLive(api, host, s, (why) => {
         if (current !== mine) return;
@@ -314,9 +392,219 @@ export async function render(root, api, bus, me) {
       });
       if (current !== mine) { view.close(); return; }
       mine.view = view;
+      if (mode === 'terminal') view.focus(); else conv.shown();
     } catch (err) {
-      host.replaceWith(h('div', { class: 'claude-empty' }, h('p', { class: 'error' }, err.status === 429 ? 'Too many live views open — close one first.' : `Could not open the live view: ${err.message}`), recentOutput(s)));
+      stage.replaceWith(h('div', { class: 'claude-empty' }, h('p', { class: 'error' }, err.status === 429 ? 'Too many live views open — close one first.' : `Could not open the live view: ${err.message}`), recentOutput(s)));
     }
+  }
+
+  // ---- conversation view ----
+  // Draws the open session like the Claude app, from its own transcript, and
+  // types into the same live view as the terminal: nothing here has a way in
+  // to the session of its own.
+  let commands = null;
+  function loadCommands() {
+    if (commands) return;
+    commands = [];
+    api.get('/api/v1/claude/commands').then((r) => { commands = r.commands || []; }).catch(() => { commands = null; });
+  }
+  function conversationView(s, mine, openTerminal) {
+    loadCommands();
+    const listEl = h('div', { class: 'conv-list', role: 'log', 'aria-label': 'Conversation' },
+      h('div', { class: 'conv-note' }, 'Loading the conversation…'));
+    const truncNote = h('div', { class: 'conv-note', hidden: true }, 'Earlier messages are in the Terminal view.');
+    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl));
+
+    const input = h('textarea', { class: 'conv-input', rows: '1', placeholder: 'Message Claude — type / for commands', 'aria-label': 'Message Claude' });
+    const token = h('div', { class: 'conv-token', hidden: true });
+    const slash = h('div', { class: 'conv-slash', role: 'listbox', 'aria-label': 'Commands', hidden: true });
+    const banner = h('div', { class: 'conv-banner', hidden: true },
+      h('span', {}, 'Claude is waiting for you in the terminal.'),
+      h('button', { type: 'button', class: 'small', onclick: openTerminal }, 'Open terminal'));
+    const modeEl = h('span', { class: 'conv-mode' });
+    // Claude Code saves either choice as the default for new sessions, exactly
+    // as /model and /effort do in the terminal; the menus say so.
+    const DEFAULT_NOTE = 'Also becomes the default for new sessions.';
+    const modelMenu = pillMenu('Model', MODELS, (v) => sendLine(`/model ${v}`), DEFAULT_NOTE);
+    const effortMenu = pillMenu('Effort', EFFORTS, (v) => sendLine(`/effort ${v}`), DEFAULT_NOTE);
+    const sendBtn = h('button', { type: 'button', class: 'conv-send', 'aria-label': 'Send' }, icon('send', { size: 16 }));
+    const box = h('div', { class: 'conv-box' }, slash, token, input,
+      h('div', { class: 'conv-foot' }, modeEl, h('span', { class: 'sp' }), modelMenu.wrap, effortMenu.wrap, sendBtn));
+    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, banner, box));
+
+    const view = () => mine.view;
+    let busy = false;
+    function sendText(text) {
+      const t = cleanInput(text);
+      if (!t) return false;
+      if (!view()) { toast('The live view is not open', 'error'); return false; }
+      // Text goes in as a paste, so a fast burst is never read as keystrokes
+      // that submit early; Enter follows on its own.
+      view().send(`\x1b[200~${t}\x1b[201~`, { focus: false });
+      setTimeout(() => { if (view()) view().send('\r', { focus: false }); }, 80);
+      return true;
+    }
+    function sendLine(text) { if (sendText(text)) pollSoon(); }
+    // Esc interrupts, as in the terminal. Claude then puts an unanswered
+    // message back in its own input, where the next message would be appended
+    // to it; like the Claude app, it comes back to this box instead. Clearing
+    // takes Esc twice, which on an empty input would open Claude's rewind
+    // menu, so it is sent only when the input line shows text.
+    let lastItems = [];
+    const later = (ms) => new Promise((r) => setTimeout(r, ms));
+    async function stop() {
+      if (!view()) return;
+      const last = lastItems[lastItems.length - 1];
+      const unanswered = last && last.k === 'user' ? last.text : '';
+      view().send('\x1b', { focus: false });
+      await later(800);
+      const v = view();
+      const restored = v ? v.inputLine() : '';
+      if (v && restored) {
+        v.send('\x1b', { focus: false });
+        await later(200);
+        v.send('\x1b', { focus: false });
+        if (!input.value) {
+          input.value = unanswered && unanswered.startsWith(restored.slice(0, 40)) ? unanswered : restored;
+          autosize();
+        }
+      }
+      pollSoon();
+    }
+    function submit() {
+      if (!sendText(input.value)) return;
+      input.value = '';
+      autosize();
+      updateSlash();
+      pollSoon();
+    }
+    sendBtn.addEventListener('click', () => {
+      if (busy) stop();
+      else submit();
+      input.focus();
+    });
+
+    // `/` menu and the command token.
+    let items = [];
+    let sel = 0;
+    function drawSlash() {
+      slash.replaceChildren(...items.map((c, i) => {
+        const b = h('button', { type: 'button', role: 'option', 'aria-selected': String(i === sel), class: i === sel ? 'on' : '' },
+          h('code', {}, `/${c.name}`), h('span', {}, c.description));
+        b.addEventListener('mousedown', (e) => e.preventDefault());
+        b.addEventListener('click', () => pick(c));
+        return b;
+      }));
+      slash.hidden = items.length === 0;
+    }
+    function pick(c) {
+      input.value = `/${c.name} `;
+      items = [];
+      drawSlash();
+      updateToken();
+      input.focus();
+    }
+    function updateToken() {
+      const t = /^\/(\S+)(\s|$)/.exec(input.value);
+      const cmd = t && (commands || []).find((c) => c.name === t[1]);
+      token.hidden = !cmd;
+      if (cmd) token.replaceChildren(h('code', {}, `/${cmd.name}`), h('span', {}, cmd.description));
+    }
+    function updateSlash() {
+      const m = /^\/(\S*)$/.exec(input.value);
+      if (!m || !commands || !commands.length) items = [];
+      else {
+        const q = m[1].toLowerCase();
+        // Before anything is typed, your own commands and the built-ins lead.
+        const rank = { personal: 0, 'built-in': 1, project: 2 };
+        const pool = q ? commands : [...commands].sort((a, b) => rank[a.source] - rank[b.source]);
+        items = [...pool.filter((c) => c.name.startsWith(q)), ...pool.filter((c) => !c.name.startsWith(q) && c.name.includes(q))].slice(0, 8);
+      }
+      sel = 0;
+      drawSlash();
+      updateToken();
+    }
+    function autosize() {
+      input.style.height = 'auto';
+      input.style.height = `${Math.min(input.scrollHeight, 8 * 22 + 16)}px`;
+    }
+    input.addEventListener('input', () => { autosize(); updateSlash(); });
+    input.addEventListener('keydown', (e) => {
+      if (!slash.hidden && items.length) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+          drawSlash();
+          return;
+        }
+        if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') { e.preventDefault(); pick(items[sel]); return; }
+        if (e.key === 'Escape') { e.preventDefault(); items = []; drawSlash(); return; }
+      }
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
+    });
+
+    // Polling, only while this view shows and the page is visible.
+    let version = '';
+    let first = true;
+    let disposed = false;
+    const expanded = new Set();
+    const visible = () => !document.hidden && isShown(el);
+    async function poll() {
+      if (disposed || !view() || !visible()) return;
+      try {
+        const r = await api.get(`/api/v1/claude/live/${view().vid}/conversation?v=${encodeURIComponent(version)}`);
+        if (disposed || r.unchanged) return;
+        version = r.version;
+        lastItems = r.items;
+        const near = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
+        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded });
+        else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below.'));
+        truncNote.hidden = !r.truncated;
+        modelMenu.set(modelLabel(r.model));
+        const eff = EFFORTS.find(([v]) => v === r.effort);
+        effortMenu.set(eff ? eff[1] : 'Effort');
+        modeEl.textContent = MODE_LABEL[r.mode] || '';
+        if (first || near) scroller.scrollTop = scroller.scrollHeight;
+        first = false;
+        listEl.dataset.loaded = 'true';
+      } catch (err) {
+        if (err.status === 404) {
+          listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No conversation found for this session yet.'));
+          listEl.dataset.loaded = 'true';
+        }
+      }
+    }
+    let soon = null;
+    const pollSoon = () => { clearTimeout(soon); soon = setTimeout(poll, 400); };
+    const timer = setInterval(poll, 1500);
+    const onVisible = () => { if (!document.hidden) poll(); };
+    document.addEventListener('visibilitychange', onVisible);
+
+    function setSession(row) {
+      const [label] = stateOf(row);
+      busy = label === 'working';
+      banner.hidden = label !== 'needs you';
+      sendBtn.replaceChildren(icon(busy ? 'stop' : 'send', { size: 16 }));
+      sendBtn.setAttribute('aria-label', busy ? 'Stop Claude' : 'Send');
+      sendBtn.classList.toggle('busy', busy);
+      const why = busy ? 'Wait until Claude finishes' : '';
+      modelMenu.disable(busy, why);
+      effortMenu.disable(busy, why);
+    }
+    setSession(s);
+    return {
+      el,
+      setSession,
+      shown() { poll(); if (!window.matchMedia('(hover: none)').matches) input.focus(); },
+      dispose() {
+        disposed = true;
+        clearInterval(timer);
+        clearTimeout(soon);
+        document.removeEventListener('visibilitychange', onVisible);
+        modelMenu.dispose();
+        effortMenu.dispose();
+      },
+    };
   }
   function recentOutput(s) {
     const out = h('pre', { class: 'console', hidden: true });
