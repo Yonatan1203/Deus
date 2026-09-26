@@ -4551,3 +4551,36 @@ describe('control-ui server — browser jobs', () => {
     expect(auto.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('control-ui server — one agent', () => {
+  it('serves one agent file by name, and 404 for anything else', async () => {
+    fs.mkdirSync(path.join(root, '.claude', 'agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.claude', 'agents', 'helper.md'),
+      '---\nname: helper\ndescription: Helps.\n---\n# Helper\nDo things.\n',
+    );
+    await boot();
+    const { auth } = await login();
+    const ok = await request({
+      method: 'GET',
+      path: '/api/v1/agents/helper',
+      headers: auth,
+    });
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(ok.text)).toMatchObject({
+      name: 'helper',
+      body: '# Helper\nDo things.\n',
+      truncated: false,
+    });
+    for (const bad of ['nobody', '..%2F..%2Fetc', 'HELPER'])
+      expect(
+        (
+          await request({
+            method: 'GET',
+            path: `/api/v1/agents/${bad}`,
+            headers: auth,
+          })
+        ).status,
+      ).toBe(404);
+  });
+});

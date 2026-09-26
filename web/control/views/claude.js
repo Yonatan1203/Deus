@@ -546,6 +546,21 @@ export async function render(root, api, bus, me) {
 
   clear(root);
   root.append(header('Claude', { eyebrow: 'Operate', actions: newBtn ? [newBtn] : [] }), form, wrap);
+  // A draft handed over by another tab (Agents → Add agent): used once.
+  let draft = null;
+  try {
+    draft = JSON.parse(sessionStorage.getItem('claude.draft') || 'null');
+    sessionStorage.removeItem('claude.draft');
+  } catch { draft = null; }
+  if (!readOnly && draft && typeof draft.name === 'string' && typeof draft.prompt === 'string'
+    && draft.name.length <= 60 && draft.prompt.length <= 8192) {
+    nameInput.value = draft.name;
+    promptInput.value = draft.prompt;
+    form.hidden = false;
+    promptInput.focus();
+    promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
+    promptInput.scrollTop = promptInput.scrollHeight;
+  }
   await load();
   bus.addEventListener('csession', (e) => {
     if (e.detail && e.detail.sessions) { sessions = e.detail.sessions.map((s) => { const o = sessions.find((x) => x.id === s.id) || {}; return { ...s, last_active: o.last_active, pinned: Boolean(o.pinned) }; }); draw(); }

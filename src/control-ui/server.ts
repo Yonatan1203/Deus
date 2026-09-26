@@ -17,7 +17,7 @@ import {
 import { logger } from '../logger.js';
 import { homeDir } from '../platform.js';
 import { createRateLimiter } from '../rate-limiter.js';
-import { listAgents } from './api/agents.js';
+import { listAgents, readAgent } from './api/agents.js';
 import { listChannels, whatsappQr } from './api/channels.js';
 import { abortChatTurn, startChatTurn } from './api/chat.js';
 import { listGroups, readClaudeMd, writeClaudeMd } from './api/groups.js';
@@ -711,6 +711,11 @@ export function createControlServer(
   router.add('GET', '/api/v1/agents', (ctx) =>
     writeJson(ctx.res, 200, listAgents(agentsDir)),
   );
+  router.add('GET', '/api/v1/agents/:name', (ctx) => {
+    const a = readAgent(agentsDir, ctx.params.name);
+    if (!a) return writeJson(ctx.res, 404, { error: 'not found' });
+    writeJson(ctx.res, 200, a);
+  });
   router.add('GET', '/api/v1/wardens', (ctx) =>
     writeJson(ctx.res, 200, listWardens(wardensDir)),
   );

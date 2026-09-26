@@ -1082,3 +1082,25 @@ markdown reply (`serve-chat.mjs`, port 3121).
   saved. Tested.
 - Pending at deploy: container rebuild for the `model` field and one real turn
   per model, confirmed from `model_usage` in the service log.
+
+## Agents tab: viewer and "Add agent" (2026-09-26)
+
+Plan: `docs/superpowers/plans/2026-09-26-agents-tab.md` (plan-reviewer SHIP).
+Cards open a panel with the whole agent file; `GET /api/v1/agents/:name` is
+name-checked, confined to `.claude/agents` (lstat + realpath), redacted and cut
+at 128 KiB on a character boundary. **Add agent** opens the Claude tab's New
+session form with an agent-creation prompt (operator's decision: a Claude
+session can write the file; sandboxed Amos cannot).
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Viewer, desktop 1440 | panel beside the grid; description, badges, tools, instructions formatted | code-reviewer: 6 headings, 4 lists rendered — `artifacts/agents-viewer-desktop.png` | PASS |
+| Address | open agent in the URL; reload reopens; Esc closes | `#/agents/code-reviewer`; reload of `#/agents/plan-reviewer` reopens it; Esc → `#/agents` | PASS |
+| Phone 390 px | full-screen panel with back; no sideways scroll | full screen, back closes, 0 px — `artifacts/agents-viewer-mobile.png` | PASS |
+| Add agent | Claude tab, form open and filled, cursor at the end; used once | name "New agent", prompt ends "What the agent should do:", caret at end; revisiting Claude shows the form closed — `artifacts/agents-add-agent-form.png` | PASS |
+| Route safety | unknown, malformed or symlinked names refused; keys redacted | unit + route tests | PASS |
+| Suite | green | control-ui + scripts: 41 files / 354 tests; tsc, eslint clean; overflow 0 px at 3 viewports | PASS |
+
+- Found while testing: a stray "null" under the description (native
+  `append()` stringifies null, unlike `h()`), and descriptions written as YAML
+  block text showed a leading `>`. Both fixed before the record above.

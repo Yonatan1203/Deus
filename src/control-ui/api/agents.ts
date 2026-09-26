@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { redactSecrets } from './logs.js';
 
 export interface AgentInfo {
   name: string;
@@ -91,4 +92,59 @@ export function listAgents(agentsDir: string): AgentInfo[] {
     agents.push(a);
   }
   return agents.sort((x, y) => x.name.localeCompare(y.name));
+}
+
+export interface AgentDetail extends AgentInfo {
+  body: string;
+  truncated: boolean;
+}
+
+const AGENT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const AGENT_BODY_MAX = 128 * 1024;
+
+/** The text after the frontmatter. */
+function bodyOf(text: string): string {
+  const lines = text.split(/\r?\n/);
+  if (lines[0] !== '---') return text;
+  const end = lines.indexOf('---', 1);
+  return end === -1
+    ? ''
+    : lines
+        .slice(end + 1)
+        .join('\n')
+        .replace(/^\n+/, '');
+}
+
+/**
+ * One agent, found by its frontmatter name, read only when it is a plain file
+ * directly inside the agents folder. The body is redacted and cut at 128 KiB
+ * (on a character boundary).
+ */
+export function readAgent(agentsDir: string, name: string): AgentDetail | null {
+  if (!AGENT_NAME_RE.test(name)) return null;
+  const info = listAgents(agentsDir).find((a) => a.name === name);
+  if (!info) return null;
+  let root: string;
+  try {
+    root = fs.realpathSync(agentsDir);
+  } catch {
+    return null;
+  }
+  const file = path.join(agentsDir, info.file);
+  try {
+    const st = fs.lstatSync(file);
+    if (!st.isFile()) return null;
+    if (path.dirname(fs.realpathSync(file)) !== root) return null;
+  } catch {
+    return null;
+  }
+  const raw = Buffer.from(bodyOf(fs.readFileSync(file, 'utf-8')), 'utf-8');
+  const truncated = raw.length > AGENT_BODY_MAX;
+  const body = truncated
+    ? raw
+        .subarray(0, AGENT_BODY_MAX)
+        .toString('utf-8')
+        .replace(/\uFFFD+$/, '')
+    : raw.toString('utf-8');
+  return { ...info, body: redactSecrets(body), truncated };
 }
