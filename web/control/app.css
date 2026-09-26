@@ -733,3 +733,6 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 /* The terminal itself, including xterm's DOM fallback renderer, which would
    otherwise inherit Rubik and misalign Claude Code's screen. */
 .term-host { font-family: var(--mono); }
+/* Touch devices: the page never scrolls from a drag on the terminal — the
+   view's own handler decides what the drag does (views/claude.js). */
+@media (hover: none) { .term-host, .term-host .xterm-viewport, .term-host .xterm-screen { touch-action: none; } }

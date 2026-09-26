@@ -158,6 +158,51 @@ async function openLive(api, host, session, onEnd) {
   term.onData((d) => sendBytes(enc.encode(d)));
   term.onBinary((d) => { const u8 = new Uint8Array(d.length); for (let i = 0; i < d.length; i++) u8[i] = d.charCodeAt(i) & 0xff; sendBytes(u8); });
 
+  // On a phone, a one-finger vertical drag scrolls. Claude Code draws on the
+  // alternate screen with mouse reporting on and scrolls its own view from
+  // wheel reports, so the drag becomes wheel events for xterm to report — the
+  // same thing a mouse wheel does. On the normal screen the drag scrolls
+  // xterm's own history instead.
+  const touch = { y: null, x: null, carry: 0, moved: false };
+  const rowHeight = () => host.clientHeight / Math.max(1, term.rows);
+  const onTouchStart = (e) => {
+    if (e.touches.length !== 1) { touch.y = null; return; }
+    touch.y = e.touches[0].clientY; touch.x = e.touches[0].clientX; touch.carry = 0; touch.moved = false;
+  };
+  const onTouchMove = (e) => {
+    if (touch.y === null || e.touches.length !== 1) return;
+    const dy = touch.y - e.touches[0].clientY;
+    const dx = touch.x - e.touches[0].clientX;
+    // With touch-action: none on the host, the browser never scrolls the page
+    // or the viewport itself; the only question is whether this drag is ours.
+    if (!touch.moved && Math.abs(dy) < 6 && Math.abs(dx) < 6) return; // a tap
+    if (!touch.moved && Math.abs(dx) > Math.abs(dy)) { touch.y = null; return; } // sideways: not ours
+    touch.moved = true;
+    e.preventDefault();
+    e.stopPropagation(); // xterm's own handler must not see it
+    const rows = (dy + touch.carry) / rowHeight();
+    const whole = Math.trunc(rows);
+    touch.carry = (rows - whole) * rowHeight();
+    if (whole === 0) return;
+    if (term.buffer.active.type === 'alternate') {
+      const screen = host.querySelector('.xterm-screen') || host;
+      for (let i = 0; i < Math.abs(whole); i++)
+        screen.dispatchEvent(new WheelEvent('wheel', { deltaY: Math.sign(whole) * rowHeight(), deltaMode: 0, clientX: e.touches[0].clientX, clientY: e.touches[0].clientY, bubbles: true, cancelable: true }));
+    } else {
+      term.scrollLines(whole);
+    }
+    touch.y = e.touches[0].clientY; touch.x = e.touches[0].clientX;
+  };
+  const onTouchEnd = () => { touch.y = null; };
+  const touchScroll = window.matchMedia('(hover: none)').matches;
+  if (touchScroll) {
+    // Capture phase: xterm's listeners sit deeper and would run first.
+    host.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    host.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
+    host.addEventListener('touchend', onTouchEnd, { capture: true, passive: true });
+    host.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true });
+  }
+
   let resizeTimer = null;
   const ro = new ResizeObserver(() => {
     if (closed) return;
@@ -168,6 +213,12 @@ async function openLive(api, host, session, onEnd) {
   ro.observe(host);
 
   function cleanup() {
+    if (touchScroll) {
+      host.removeEventListener('touchstart', onTouchStart, { capture: true });
+      host.removeEventListener('touchmove', onTouchMove, { capture: true });
+      host.removeEventListener('touchend', onTouchEnd, { capture: true });
+      host.removeEventListener('touchcancel', onTouchEnd, { capture: true });
+    }
     queue.dispose();
     ro.disconnect();
     clearTimeout(resizeTimer);

@@ -1168,3 +1168,25 @@ live-session fixture.
 | First paint / Claude tab ready | 88 ms / 318 ms | 132 ms / 323 ms (same run-to-run spread as before) | PASS |
 | 304 | — | `If-None-Match` with the served ETag → 304, no body (unit + HTTP tests) | PASS |
 | Suite | — | static 6, server 73; tsc, eslint clean | PASS |
+
+## Quality pass 3 of 3: finger-drag scrolling on phones (2026-09-26)
+
+Plan Task 4 (task #27). Found while building: Claude Code draws on the
+alternate screen with mouse reporting on and scrolls its own view from wheel
+reports; xterm's touch handlers do nothing in that mode and there is no local
+history to scroll. So on a phone a one-finger vertical drag on the terminal is
+turned into wheel events for xterm to report (the same as a mouse wheel), or
+into a viewport scroll on the normal screen. The handler runs in the capture
+phase so xterm never sees the touch; a tap still focuses; sideways drags are
+left alone.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Baseline | a mouse wheel scrolls the session's view | pane content changed after a wheel (tmux capture) | PASS |
+| 400 px drag down at 390 px | the view scrolls back through the reply | first visible line 121 → 101 (20 rows) — `artifacts/claude-touch-before.png`, `artifacts/claude-touch-after.png` | PASS |
+| Drag back | returns toward the end | pane content changed back | PASS |
+| Nothing typed | the input line stays empty after the drags | empty | PASS |
+| Normal screen (plain shell with scrollback: a stand-in `claude attach` printing 300 lines after the stream attaches) | the drag scrolls xterm's own history; the page does not move | viewport 5149 → 4769 px after a 400 px drag, page at 0, back to 5149 after dragging back; `touch-action: none` computed on the host — `artifacts/claude-touch-plain-before.png`, `artifacts/claude-touch-plain-after.png` | PASS |
+| First attempt | — | with a collapsed tool output the screen had nothing to scroll (wheel did nothing either); re-tested on a session with a 150-line reply | noted |
+
+- `Deviation:` the plan said "scroll the viewport only" (`term.scrollLines`). Found while building: on Claude Code's alternate screen xterm has no history, so that scrolls nothing — the wheel fix from earlier today works only because xterm turns a wheel into mouse reports the app scrolls from. A finger drag therefore becomes the same wheel events on the alternate screen (nothing typed: only wheel reports, exactly what a mouse wheel sends), and stays a viewport scroll on the normal screen. `touch-action: none` on the terminal (touch devices) keeps the browser from scrolling the page or the viewport on its own, so the two never race.
