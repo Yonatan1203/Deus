@@ -1,0 +1,5 @@
+Harness text and the conversation view — 2026-09-26
+
+Throwaway session "Harness-delete-me" (real Claude Code 2.1.283 on the fixture): the transcript carried 2 agent-message hand-back row(s) and 4 task-notification row(s); the conversation view showed 1 bubble(s) from the operator, none containing harness text.
+
+This job's own transcript (088167b7…, last 8 MiB, 400 items) through the same parser: 12 operator bubbles, 0 harness text, 0 paste wrapper tags (before the fix: 29, of which 11 hand-backs and 9 task notifications).

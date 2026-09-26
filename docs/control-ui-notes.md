@@ -1312,6 +1312,25 @@ Driven on the real-Claude fixture, one throwaway session with a 48 s command,
 - Known: the enqueue row can sit earlier in the transcript than the prompt's
   own user row, so a queued bubble may show above the first prompt until it
   lands. Transient; not changed.
+## Claude tab: harness text is not the operator's (2026-09-26)
+
+Operator report: the conversation view showed subagent hand-backs and task
+notifications as messages they had sent. Cause: text the harness puts into
+the session — `<agent-message` (preceded by "Another Claude session sent a
+message"), `<task-notification`, `<cross-session-message`,
+`<artifact-content-authored-by-others`, `<local-command-caveat`,
+`<system-reminder>` — arrives as a user row or a queued row, and only two of
+those were filtered. Plan-reviewer SHIP (round 3). Seven evidenced prefixes
+are hidden on both paths; a paste's `<pasted_content id="…">` wrapper is
+unwrapped (the closing tag repeats the id — found on the live transcript,
+regex widened; deviation recorded).
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| A real session with a subagent (fixture, throwaway) | the hand-back is in the transcript, not on screen | transcript: 2 `agent-message` rows, 4 task notifications; view: 1 operator bubble (the prompt), no harness tags anywhere — `artifacts/claude-harness-hidden.png` | PASS |
+| This job's own transcript through the built parser | no harness bubbles, no wrapper tags | 29 operator bubbles → 12; harness text 0; wrapper tags 0 — `artifacts/claude-harness-check.txt` | PASS |
+| Pastes | inner text only, separators kept | unit cases: whole message, text around, two blocks (space / newline), attributed closing tag | PASS |
+| Suite | green | parser 13; control-ui + scripts green; tsc, eslint clean | PASS |
 
 - Review round: code-reviewer SHIP; copy-writer and ux-reviewer (advisory)
   led to: "Back" instead of "Change answers" (it steps one question back),

@@ -263,6 +263,72 @@ describe('buildConversation', () => {
     ).toEqual([]);
   });
 
+  it('hides what the harness puts into the session, as a row or queued', () => {
+    const op = (
+      operation: string,
+      content: string,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      type: 'queue-operation',
+      operation,
+      content,
+      ...extra,
+    });
+    const harness = [
+      '<agent-message from="a1">[Subagent hand-back] report</agent-message>',
+      'Another Claude session sent a message:\n<agent-message from="a2">x</agent-message>',
+      '<task-notification><task-id>t</task-id></task-notification>',
+      '<cross-session-message from="s">hi</cross-session-message>',
+      '<artifact-content-authored-by-others>page</artifact-content-authored-by-others>',
+      '<local-command-caveat>Caveat: …</local-command-caveat>',
+    ];
+    for (const text of harness) {
+      expect(buildConversation([user(text)]).items).toEqual([]);
+      expect(buildConversation([op('enqueue', text)]).items).toEqual([]);
+      expect(
+        buildConversation([
+          op('enqueue', text),
+          op('remove', text, { reason: 'absorbed_mid_turn' }),
+        ]).items,
+      ).toEqual([]);
+    }
+    // the operator's own paste stays, without its wrapper
+    expect(
+      buildConversation([user('<pasted_content id="1">hello</pasted_content>')])
+        .items,
+    ).toEqual([{ k: 'user', text: 'hello' }]);
+    expect(
+      buildConversation([
+        user('Look at this:\n<pasted_content id="2">x</pasted_content>'),
+      ]).items,
+    ).toEqual([{ k: 'user', text: 'Look at this:\nx' }]);
+    expect(
+      buildConversation([
+        user(
+          '<pasted_content id="1">a</pasted_content> and <pasted_content id="2">b</pasted_content>',
+        ),
+      ]).items,
+    ).toEqual([{ k: 'user', text: 'a and b' }]);
+    expect(
+      buildConversation([
+        user(
+          '<pasted_content id="1">a</pasted_content>\n<pasted_content id="2">b</pasted_content>',
+        ),
+      ]).items,
+    ).toEqual([{ k: 'user', text: 'a\nb' }]);
+    expect(
+      buildConversation([
+        op('enqueue', '<pasted_content id="3">later</pasted_content>'),
+      ]).items,
+    ).toEqual([{ k: 'user', text: 'later', queued: true }]);
+    // the closing tag repeats the id (seen in a real transcript)
+    expect(
+      buildConversation([
+        user('<pasted_content id="3f15">\nwhy?\n</pasted_content id="3f15">'),
+      ]).items,
+    ).toEqual([{ k: 'user', text: 'why?' }]);
+  });
+
   it('parses the answers out of the result text', () => {
     expect(
       parseAskAnswer(

@@ -135,6 +135,33 @@ export interface AskQuestion {
   multi: boolean;
 }
 
+// Text the harness puts into the session as if it were a message: subagent
+// hand-backs, task notifications, other sessions' messages, artifact
+// content. The terminal does not show these as the operator's words, so
+// neither does the conversation view. Seen in transcripts 2026-09-26. Tag
+// prefixes stop before `>` on purpose: the tags carry attributes.
+const HARNESS_PREFIXES = [
+  '<system-reminder>',
+  '<task-notification',
+  '<agent-message',
+  'Another Claude session sent a message',
+  '<cross-session-message',
+  '<artifact-content-authored-by-others',
+  '<local-command-caveat',
+];
+const isHarness = (s: string) => HARNESS_PREFIXES.some((p) => s.startsWith(p));
+
+// A paste arrives wrapped in <pasted_content id="…">…</pasted_content id="…">
+// (the closing tag repeats the id); the operator wrote what is inside. All
+// blocks in a message, separators kept. Bounded first so a huge message
+// costs no more than the text that could be shown anyway.
+const PASTE_RE = /<pasted_content[^>]*>([\s\S]*?)<\/pasted_content[^>]*>/g;
+const unwrapPastes = (s: string) =>
+  s
+    .slice(0, TEXT_MAX * 2)
+    .replace(PASTE_RE, '$1')
+    .trim();
+
 const ASK_QUESTIONS_MAX = 4;
 const ASK_OPTIONS_MAX = 6;
 const ASK_RESULT_SCAN = 4096;
@@ -191,11 +218,7 @@ export function buildConversation(
   const userText = (raw: string) => {
     const s = raw.trim();
     if (!s) return;
-    if (
-      s.startsWith('<system-reminder>') ||
-      s.startsWith('<task-notification>')
-    )
-      return;
+    if (isHarness(s)) return;
     const cmd = tag(s, 'command-name');
     if (cmd !== null) {
       items.push({
@@ -223,7 +246,7 @@ export function buildConversation(
       });
     if (s.startsWith('[Request interrupted by user'))
       return void items.push({ k: 'note', text: 'Interrupted' });
-    items.push({ k: 'user', text: clip(s, TEXT_MAX) });
+    items.push({ k: 'user', text: clip(unwrapPastes(s), TEXT_MAX) });
   };
 
   // A message typed while Claude works is a queue-operation row: `enqueue`,
@@ -248,9 +271,12 @@ export function buildConversation(
     if (e.type === 'queue-operation') {
       if (typeof e.content !== 'string') continue;
       if (e.operation === 'enqueue') {
+        // Harness text is queued like anything else; it is never registered,
+        // so its later user/remove rows find nothing and do nothing.
+        if (isHarness(e.content.trim())) continue;
         const it: ConvItem = {
           k: 'user',
-          text: clip(e.content.trim(), TEXT_MAX),
+          text: clip(unwrapPastes(e.content), TEXT_MAX),
           queued: true,
         };
         items.push(it);
