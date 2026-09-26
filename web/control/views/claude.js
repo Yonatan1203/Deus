@@ -2,6 +2,7 @@ import { h, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { header } from '../app.js';
 import { confirmTyped, fmtTime, toast } from '../ui.js';
+import { createInputQueue } from '../input-queue.js';
 
 // The Claude tab: your sessions, and each one live — the same `claude attach`
 // your terminal uses, so typing here is typing there, and Claude Code's own
@@ -98,8 +99,6 @@ async function openLive(api, host, session, onEnd) {
   let closed = false;
   let vid = null;
   let es = null;
-  let outBuf = [];
-  let outTimer = null;
 
   const ended = (why) => { if (!closed) { closed = true; cleanup(); onEnd(why); } };
   vid = opened.vid;
@@ -118,19 +117,14 @@ async function openLive(api, host, session, onEnd) {
   };
   await connect();
 
-  const flush = async () => {
-    outTimer = null;
-    if (!outBuf.length || closed) return;
-    const total = outBuf.reduce((n, a) => n + a.length, 0);
-    const all = new Uint8Array(total);
-    let off = 0; for (const a of outBuf) { all.set(a, off); off += a.length; }
-    outBuf = [];
-    for (let i = 0; i < all.length; i += 12 * 1024) {
-      try { await api.post(`/api/v1/claude/live/${vid}/input`, { data: toB64(all.subarray(i, i + 12 * 1024)) }); }
-      catch (err) { if (err.status === 404 || err.status === 403) { ended('this view is no longer open'); return; } toast(err.message, 'error'); return; }
-    }
-  };
-  const sendBytes = (u8) => { outBuf.push(u8); if (!outTimer) outTimer = setTimeout(flush, 12); };
+  // Keystroke sending (order, pacing, retries) lives in input-queue.js, where
+  // it is tested without a browser.
+  const queue = createInputQueue({
+    post: (chunk) => api.post(`/api/v1/claude/live/${vid}/input`, { data: toB64(chunk) }),
+    onEnded: () => ended('this view is no longer open'),
+    onWarn: (msg) => toast(msg, 'error'),
+  });
+  const sendBytes = (u8) => queue.push(u8);
   term.onData((d) => sendBytes(enc.encode(d)));
   term.onBinary((d) => { const u8 = new Uint8Array(d.length); for (let i = 0; i < d.length; i++) u8[i] = d.charCodeAt(i) & 0xff; sendBytes(u8); });
 
@@ -144,6 +138,7 @@ async function openLive(api, host, session, onEnd) {
   ro.observe(host);
 
   function cleanup() {
+    queue.dispose();
     ro.disconnect();
     clearTimeout(resizeTimer);
     if (es) es.close();

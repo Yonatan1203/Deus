@@ -948,3 +948,24 @@ devices; `PUT /api/v1/claude/sessions/:id/pin`.
   flowing, so a mode change inside that few-millisecond window could be
   overtaken by the repaint's older snapshot. Not observed; the next repaint
   corrects it.
+
+## Claude tab — faster typing (2026-09-26)
+
+Research (measured on this host): tmux control mode and loopback HTTP cost
+under a millisecond; the fixed cost per keystroke was two timers — a 12 ms
+client input batch and 30 ms server output coalescing. Keystrokes now go out
+immediately when nothing is in flight (anything typed meanwhile rides the next
+request; one request in flight, at most one start per 20 ms to stay under the
+server's 50/s), failed sends are requeued in order with backoff (a visible
+message if they finally fail — the old code dropped them silently), and output
+coalescing is 10 ms.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Keypress → echoed character on screen, 20 keys, throwaway session, loopback | ~32 ms lower | median 55.5 → 20.6 ms, p90 59.9 → 23.1 ms (A/B on the same session) | PASS |
+| Server limit: 51st input in a second | 429 "typing too fast", accepted after the second rolls over | real-tmux test passes | PASS |
+| Server limit: queue overflow | refused whole, never partly | real-tmux test passes | PASS |
+| Resize while typing (63 keys, viewport resized every 10) | every key arrives in order, typing continues after | first build: input stopped for good (a stray `clearTimeout` in the resize handler left the pump's timer id set) — caught by both reviewers; after moving the sender into `web/control/input-queue.js` with a boolean `scheduled` flag: all 63 + later keys arrive, twice | PASS |
+| Sender unit tests (`scripts/tests/control-ui-input-queue.test.ts`) | immediate first key, 20 ms spacing, order under retry, pause cancelled from outside, give-up + message, busy retries + message, dispose, pending cap | 8 / 8 | PASS |
+| Latency after the fix | still ~20 ms | median 24.4 ms | PASS |
+| Suite | green | 157 files / 2 495 tests; tsc, eslint clean | PASS |

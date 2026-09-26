@@ -9,6 +9,8 @@ import {
   CHUNK_BYTES,
   createLineSplitter,
   createLiveViews,
+  INPUT_MAX_BYTES,
+  INPUT_PER_SECOND,
   modeSequences,
   parseControlLine,
   resolveTmuxBin,
@@ -222,6 +224,56 @@ describeTmux('live views against real tmux', () => {
     expect(s.screen()).toContain('\x1b[?1049h');
     expect(s.screen()).toContain('\x1b[?1002h');
     expect(s.screen()).toContain('\x1b[?1006h');
+  }, 20000);
+
+  it('answers 429 past 50 inputs a second, and accepts again once the second rolls over', async () => {
+    let t = 1_000;
+    views = createLiveViews({
+      tmuxBin: tmuxBin as string,
+      socket: TEST_SOCKET,
+      claudeBin: fake('exec cat'),
+      cwd: os.tmpdir(),
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: os.tmpdir(),
+        TERM: 'xterm-256color',
+      },
+      now: () => t,
+    });
+    const r = await views.open('owner-a', 'abcd1234', 80, 20);
+    const vid = (r as { vid: string }).vid;
+    for (let i = 0; i < INPUT_PER_SECOND; i++)
+      expect(
+        views.input(vid, 'owner-a', Buffer.from('x')).ok,
+        `input ${i}`,
+      ).toBe(true);
+    expect(views.input(vid, 'owner-a', Buffer.from('x'))).toEqual({
+      ok: false,
+      status: 429,
+      error: 'typing too fast',
+    });
+    t += 1_001;
+    expect(views.input(vid, 'owner-a', Buffer.from('x')).ok).toBe(true);
+  }, 20000);
+
+  it('refuses input that would overflow the queue, whole, never partly', async () => {
+    views = make(fake('exec cat'));
+    const r = await views.open('owner-a', 'abcd1234', 80, 20);
+    const vid = (r as { vid: string }).vid;
+    // Synchronously, so the queue cannot drain between calls.
+    const results = Array.from({ length: 8 }, () =>
+      views!.input(vid, 'owner-a', Buffer.alloc(INPUT_MAX_BYTES, 0x61)),
+    );
+    const refused = results.filter((x) => !x.ok);
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused[0]).toEqual({
+      ok: false,
+      status: 429,
+      error: 'input queue full',
+    });
+    // Every accepted call is whole: once one is refused, none after it slipped in.
+    const first = results.findIndex((x) => !x.ok);
+    expect(results.slice(first).every((x) => !x.ok)).toBe(true);
   }, 20000);
 
   it('delivers a 16 KB paste intact', async () => {
