@@ -259,7 +259,10 @@ node scripts/artifact-registry.mjs add --title "Supplier Line" \
   --url https://claude.ai/artifact/… --kind app|report|preview [--description "…"]
 ```
 
-Never add without asking; never add scratch or one-off artifacts. Only
+Never add without asking; never add scratch or one-off artifacts. One
+exception: when the operator started your session from the dashboard's
+**Create artifact** form (the prompt says so), that click is the approval —
+register the finished artifact without asking again. Only
 `https://claude.ai/…` links are accepted unless the operator configured
 `CONTROL_UI_PREVIEW_HOSTS`. A finished workflow's preview can also be added
 from its card in the Workflows tab.

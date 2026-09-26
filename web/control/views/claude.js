@@ -562,6 +562,13 @@ export async function render(root, api, bus, me) {
     promptInput.scrollTop = promptInput.scrollHeight;
   }
   await load();
+  // A link like #/claude/<id> (from the Artifacts tab) opens that session.
+  const wantedId = decodeURIComponent(location.hash.replace(/^#\/?/, '').split('/')[1] || '');
+  if (wantedId) {
+    const s = sessions.find((x) => x.id === wantedId);
+    if (s) select(s);
+    history.replaceState(null, '', '#/claude');
+  }
   bus.addEventListener('csession', (e) => {
     if (e.detail && e.detail.sessions) { sessions = e.detail.sessions.map((s) => { const o = sessions.find((x) => x.id === s.id) || {}; return { ...s, last_active: o.last_active, pinned: Boolean(o.pinned) }; }); draw(); }
     else load();

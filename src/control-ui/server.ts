@@ -98,12 +98,20 @@ import {
   type GmailAuthOptions,
 } from './api/gmail-auth.js';
 import {
+  ARTIFACT_KINDS,
   addArtifact,
   ARTIFACT_ID_RE,
   listArtifacts,
   removeArtifact,
   validateAddInput,
 } from './api/artifacts.js';
+import {
+  CREATIONS_FILE,
+  createCreations,
+  creationPrompt,
+  validDescription,
+  validTitle,
+} from './api/artifact-creations.js';
 import {
   archiveWorkflows,
   createDirWatcher,
@@ -1738,44 +1746,61 @@ export function createControlServer(
     );
     writeJson(ctx.res, 200, r);
   });
-  router.add('POST', '/api/v1/claude/sessions', async (ctx) => {
-    if (header(ctx.req, 'x-confirm') !== 'start')
-      return writeJson(ctx.res, 428, { error: 'confirmation required' });
-    if (!claudeCli) return claudeUnavailable(ctx.res);
-    const body = (ctx.body ?? {}) as { name?: unknown; prompt?: unknown };
-    const name = typeof body.name === 'string' ? body.name.trim() : '';
-    const prompt = validatePrompt(body.prompt);
-    // Validated before the limiter so invalid input never spends budget.
-    if (!CLAUDE_NAME_RE.test(name) || prompt === null)
-      return writeJson(ctx.res, 400, { error: 'name and prompt are required' });
-    if (claudeStartLimiter.isRateLimited('global', now()))
-      return writeJson(ctx.res, 429, { error: 'too many session starts' });
+  /**
+   * Starts a background session in the repo the way New session does, for
+   * this route and for Create artifact: limiter, live cap, ledger, audit.
+   * Answers the response itself on failure and returns null.
+   */
+  const startDashboardSession = async (
+    ctx: RequestContext,
+    name: string,
+    prompt: string,
+  ): Promise<{ id: string } | null> => {
+    if (!claudeCli) {
+      claudeUnavailable(ctx.res);
+      return null;
+    }
+    if (!CLAUDE_NAME_RE.test(name) || validatePrompt(prompt) === null) {
+      writeJson(ctx.res, 400, { error: 'name and prompt are required' });
+      return null;
+    }
+    if (claudeStartLimiter.isRateLimited('global', now())) {
+      writeJson(ctx.res, 429, { error: 'too many session starts' });
+      return null;
+    }
     const ledgerRaw = claudeLedger ? claudeLedger.read() : [];
-    if (ledgerRaw === null)
-      return writeJson(ctx.res, 409, {
-        error: 'live-session ledger unreadable',
-      });
+    if (ledgerRaw === null) {
+      writeJson(ctx.res, 409, { error: 'live-session ledger unreadable' });
+      return null;
+    }
     const ledger = ledgerRaw;
     const listed = await claudeList(true);
-    if (!('sessions' in listed)) return claudeUnavailable(ctx.res);
+    if (!('sessions' in listed)) {
+      claudeUnavailable(ctx.res);
+      return null;
+    }
     const live = listed.sessions.filter(
       (s) => s.state === 'working' && ledger.some((e) => e.id === s.id),
     ).length;
-    if (live >= CLAUDE_LIVE_MAX)
-      return writeJson(ctx.res, 409, {
+    if (live >= CLAUDE_LIVE_MAX) {
+      writeJson(ctx.res, 409, {
         error: `${live} dashboard-started sessions are already working`,
         live,
       });
+      return null;
+    }
     const promptHash = crypto
       .createHash('sha256')
       .update(prompt)
       .digest('hex')
       .slice(0, 12);
     const r = await startClaudeSession(claudeCli, name, prompt);
-    if ('error' in r)
-      return writeJson(ctx.res, r.error.startsWith('invalid') ? 400 : 502, {
+    if ('error' in r) {
+      writeJson(ctx.res, r.error.startsWith('invalid') ? 400 : 502, {
         error: r.error,
       });
+      return null;
+    }
     if ('unparsed' in r) {
       logger.warn(
         {
@@ -1788,9 +1813,8 @@ export function createControlServer(
         },
         'Control UI started a Claude session but could not parse its id',
       );
-      return writeJson(ctx.res, 502, {
-        error: 'could not determine the session id',
-      });
+      writeJson(ctx.res, 502, { error: 'could not determine the session id' });
+      return null;
     }
     const after = await claudeList(true);
     const row =
@@ -1811,13 +1835,24 @@ export function createControlServer(
     if (
       claudeLedger &&
       !claudeLedger.add({ id: r.id, started_at: row?.started_at ?? now() })
-    )
-      return writeJson(ctx.res, 500, {
-        error: 'ledger write failed',
-        id: r.id,
-      });
+    ) {
+      writeJson(ctx.res, 500, { error: 'ledger write failed', id: r.id });
+      return null;
+    }
     hub.broadcast('csession', { action: 'started', id: r.id });
-    writeJson(ctx.res, 200, { started: true, id: r.id });
+    return { id: r.id };
+  };
+  router.add('POST', '/api/v1/claude/sessions', async (ctx) => {
+    if (header(ctx.req, 'x-confirm') !== 'start')
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    const body = (ctx.body ?? {}) as { name?: unknown; prompt?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const prompt = validatePrompt(body.prompt);
+    // Validated before the limiter so invalid input never spends budget.
+    if (!CLAUDE_NAME_RE.test(name) || prompt === null)
+      return writeJson(ctx.res, 400, { error: 'name and prompt are required' });
+    const r = await startDashboardSession(ctx, name, prompt);
+    if (r) writeJson(ctx.res, 200, { started: true, id: r.id });
   });
   // ---- Live views -----------------------------------------------------------
   // Read-only gets no live screen, matching the rule that it never gets the
@@ -2697,6 +2732,37 @@ export function createControlServer(
       );
     }
   }
+  const creations = controlDir
+    ? createCreations(path.join(controlDir, CREATIONS_FILE))
+    : null;
+  // Artifacts being created by a session the dashboard started, with the
+  // session's state; records fall away once the title is registered.
+  const creatingList = async () => {
+    if (!creations) return [];
+    const listed = await claudeList(false);
+    if (!('sessions' in listed)) return [];
+    const reg = artifactList();
+    const registry =
+      'artifacts' in reg
+        ? reg.artifacts.map((a) => ({
+            title: a.title,
+            added_at: Date.parse(a.added_at) || 0,
+          }))
+        : [];
+    const kept = creations.prune({
+      listedIds: new Set(listed.sessions.map((s) => s.id)),
+      registry,
+      now: now(),
+    });
+    return kept.map((c) => {
+      const s = listed.sessions.find((x) => x.id === c.id);
+      return {
+        ...c,
+        state: s?.state ?? 'gone',
+        status: s?.status ?? null,
+      };
+    });
+  };
   const artifactList = () =>
     controlDir
       ? listArtifacts(controlDir, {
@@ -2704,13 +2770,78 @@ export function createControlServer(
           readOnly: deps.readOnly,
         })
       : ({ error: 'registry unavailable' } as const);
-  router.add('GET', '/api/v1/artifacts', (ctx) => {
+  router.add('GET', '/api/v1/artifacts', async (ctx) => {
     if (artifactReadLimiter.isRateLimited(sid(ctx), now()))
       return writeJson(ctx.res, 429, { error: 'too many requests' });
     const r = artifactList();
     if ('error' in r) return writeJson(ctx.res, 503, { error: r.error });
-    writeJson(ctx.res, 200, r);
+    writeJson(ctx.res, 200, { ...r, creating: await creatingList() });
   });
+  // Create: a session builds and publishes it, then registers the link. The
+  // click is the approval; the prompt says so (AGENTS.md § Publishing artifacts).
+  router.add(
+    'POST',
+    '/api/v1/artifacts/create',
+    async (ctx) => {
+      if (deps.readOnly)
+        return writeJson(ctx.res, 403, {
+          error: 'read-only from the dashboard',
+        });
+      if (header(ctx.req, 'x-confirm') !== 'create')
+        return writeJson(ctx.res, 428, { error: 'confirmation required' });
+      const b = (ctx.body ?? {}) as Record<string, unknown>;
+      const title = typeof b.title === 'string' ? b.title.trim() : '';
+      if (!validTitle(title))
+        return writeJson(ctx.res, 400, {
+          error:
+            'title: letters, digits, spaces, . _ - only, up to 60 characters',
+        });
+      if (!(ARTIFACT_KINDS as readonly unknown[]).includes(b.kind))
+        return writeJson(ctx.res, 400, {
+          error: 'kind must be app, report or preview',
+        });
+      const description =
+        typeof b.description === 'string' ? b.description.trim() : '';
+      if (!validDescription(description))
+        return writeJson(ctx.res, 400, {
+          error: 'description: 10 to 2000 characters',
+        });
+      if (!creations)
+        return writeJson(ctx.res, 503, { error: 'registry unavailable' });
+      const live = (await creatingList()).find(
+        (c) => c.title === title && c.state !== 'done',
+      );
+      if (live)
+        return writeJson(ctx.res, 409, {
+          error: 'already being created — see the Creating list',
+          id: live.id,
+        });
+      const kind = b.kind as (typeof ARTIFACT_KINDS)[number];
+      const r = await startDashboardSession(
+        ctx,
+        title,
+        creationPrompt({ title, kind, description }),
+      );
+      if (!r) return;
+      creations.add({ id: r.id, title, kind, started_at: now() });
+      logger.warn(
+        {
+          event: 'control_ui_artifact_create',
+          id: r.id,
+          title,
+          kind,
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI asked a session to create an artifact',
+      );
+      // The creations file lives in the watched dir, so the watcher tells
+      // every open tab; clearing the memo makes it send even an unchanged list.
+      artifactLastJson = '';
+      writeJson(ctx.res, 200, { id: r.id });
+    },
+    { maxBody: 8 * 1024 },
+  );
   router.add('POST', '/api/v1/artifacts', (ctx) => {
     if (deps.readOnly)
       return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
@@ -2800,7 +2931,9 @@ export function createControlServer(
         const json = JSON.stringify(r);
         if (json === artifactLastJson) return;
         artifactLastJson = json;
-        hub.broadcast('artifact', r);
+        void creatingList().then((creating) =>
+          hub.broadcast('artifact', { ...r, creating }),
+        );
       },
       {
         debounceMs: opts.workflowDebounceMs ?? WORKFLOW_WATCH_DEBOUNCE_MS,

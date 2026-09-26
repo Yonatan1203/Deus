@@ -2678,6 +2678,108 @@ describe('control-ui server — claude sessions', () => {
     server.close();
   });
 
+  it('create artifact: starts a session with the fixed prompt, lists it as creating, drops it once registered', async () => {
+    const cli = await bootC();
+    const { auth } = await login();
+    const post = (body: unknown, confirm = 'create') =>
+      request({
+        method: 'POST',
+        path: '/api/v1/artifacts/create',
+        headers: {
+          ...auth,
+          ...H,
+          ...(confirm ? { 'X-Confirm': confirm } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    const good = {
+      title: 'Posts preview',
+      kind: 'app',
+      description: 'A page with one card per post this week.',
+    };
+    expect((await post(good, '')).status).toBe(428);
+    expect((await post({ ...good, title: 'Q3: Sales (v2)' })).status).toBe(400);
+    expect((await post({ ...good, description: 'short' })).status).toBe(400);
+    expect(
+      (await post({ ...good, description: 'has \x1b[0m an escape in it' }))
+        .status,
+    ).toBe(400);
+    expect((await post({ ...good, kind: 'thing' })).status).toBe(400);
+    // The list the server refreshes right after the start already shows it.
+    cli.state.rows = [
+      {
+        id: 'e5f6a7b8',
+        sessionId: SID,
+        name: 'Posts preview',
+        kind: 'background',
+        state: 'working',
+        status: 'busy',
+        cwd: root,
+        startedAt: 9,
+      },
+    ];
+    const r = await post(good);
+    expect(r.status).toBe(200);
+    expect(j(r)).toEqual({ id: 'e5f6a7b8' });
+    const spawn = cli.calls.find((c) => c[0] === '--bg')!;
+    expect(spawn[1]).toBe('--name=Posts preview');
+    expect(spawn[4]).toContain('Title: Posts preview');
+    expect(spawn[4]).toContain(
+      'artifact-registry.mjs add --title "Posts preview" --url <the artifact url> --kind app',
+    );
+    const list = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    expect(list.creating).toEqual([
+      expect.objectContaining({
+        id: 'e5f6a7b8',
+        title: 'Posts preview',
+        kind: 'app',
+        state: 'working',
+      }),
+    ]);
+    // A second create with the same title while it runs is refused.
+    expect((await post(good)).status).toBe(409);
+    // Once the session registers the title, the creating entry is gone.
+    await request({
+      method: 'POST',
+      path: '/api/v1/artifacts',
+      headers: { ...auth, ...H },
+      body: JSON.stringify({
+        title: 'Posts preview',
+        url: 'https://claude.ai/artifact/abc',
+        kind: 'app',
+      }),
+    });
+    const after = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    expect(after.creating).toEqual([]);
+    expect(after.artifacts).toHaveLength(1);
+    server.close();
+    // Read-only: refused before anything starts.
+    await bootC({ readOnly: true });
+    const ro = await login();
+    expect(
+      (
+        await request({
+          method: 'POST',
+          path: '/api/v1/artifacts/create',
+          headers: { ...ro.auth, ...H, 'X-Confirm': 'create' },
+          body: JSON.stringify(good),
+        })
+      ).status,
+    ).toBe(403);
+  });
+
   it('live: opens only listed background sessions, routes input by owner, refuses read-only', async () => {
     const live = fakeLive();
     const cli = await bootC({}, fakeCli(), { liveViews: live });
@@ -3396,7 +3498,7 @@ describe('control-ui server — artifacts', () => {
           headers: auth,
         }),
       ),
-    ).toEqual({ artifacts: [], rev: 0 });
+    ).toEqual({ artifacts: [], rev: 0, creating: [] });
     plant(
       [
         art(),
@@ -3443,6 +3545,7 @@ describe('control-ui server — artifacts', () => {
       rev: 0,
       invalid: true,
       reason: 'bad-schema',
+      creating: [],
     });
     await new Promise<void>((res) => server.close(() => res()));
     await bootA({ configDir: undefined });

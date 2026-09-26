@@ -686,6 +686,9 @@ table.kv input { min-height: 36px; }
 .art-section { display: grid; gap: 10px; }
 .art-section h2 { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .art-card { display: grid; gap: 8px; align-content: start; }
+.art-card.creating .art-link { display: inline-flex; align-items: center; gap: 8px; }
+.art-card.creating.running { background: color-mix(in srgb, var(--primary) 7%, var(--surface)); }
+.new-artifact .counter { justify-self: end; margin-top: 4px; font-size: 12px; }
 .art-link { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 .art-link.withheld { font-weight: 500; }
 .wf-foot-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }

@@ -1104,3 +1104,33 @@ session can write the file; sandboxed Amos cannot).
 - Found while testing: a stray "null" under the description (native
   `append()` stringifies null, unlike `h()`), and descriptions written as YAML
   block text showed a leading `>`. Both fixed before the record above.
+
+## Artifacts: Create artifact (2026-09-26)
+
+Plan: `docs/superpowers/plans/2026-09-26-create-artifact.md` (plan-reviewer
+SHIP round 2). **Create artifact** takes a title, a kind and a description
+and starts a Claude session through the same code as New session (extracted
+into `startDashboardSession`: limiter, live cap, ledger, audit) with a fixed
+prompt; the session publishes with the Artifact tool and registers the link
+itself — the click is the approval (AGENTS.md § Publishing artifacts now says
+so). Creations are recorded in `artifact-creations.json` and shown as
+"Creating" cards with the session's state until the title is registered.
+
+Driven on a fixture whose `claude` is a stand-in script (`fake-claude.sh`),
+so no real session or artifact was created.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Create | session started with the fixed prompt; Creating card with state | card "✻ Posts preview · Being built · started just now · working" — `artifacts/artifacts-creating-card.png`; route test checks the exact prompt argv | PASS |
+| Same title again | refused | toast "That title is already being created — see the Creating list" | PASS |
+| Open session | Claude tab with that session selected | selected "Posts preview", hash cleaned to `#/claude` | PASS |
+| Registration | card gone, artifact card shown, live via the watcher | after `POST /api/v1/artifacts` with the title: creating card gone, artifact card shown without reload | PASS |
+| Validation | title by the session-name rule; description 10–2000, no control chars; kind; confirm; read-only | route tests: 400 ×4, 428, 403, 409 | PASS |
+| Phone 390 px | form fits, no sideways scroll | 0 px — `artifacts/artifacts-create-mobile.png` | PASS |
+| Suite | green | control-ui + scripts: 42 files / 363 tests; tsc, eslint clean | PASS |
+
+- `Deviation:` a just-started session may not be in the session list for a
+  moment; records younger than 30 s are kept even when unlisted, so a fresh
+  creation never vanishes from the tab.
+- Pending: one real run from the live dashboard is the operator's (I hold no
+  password); the record above covers the dashboard side end to end.

@@ -9,6 +9,8 @@ import { confirmTyped, fmtTime, toast } from '../ui.js';
 // policy-withheld link; a missing `url` means read-only.
 const KIND = { app: 'Apps', report: 'Reports', preview: 'Previews' };
 const BLOCKED = { userinfo: 'link withheld · credentials in URL', host: 'link withheld · host not allowed', protocol: 'link withheld · scheme not allowed', 'secret-query': 'link withheld · secret in query' };
+const STATE = { working: ['working', 'ok'], blocked: ['needs you', 'warn'], done: ['finished', ''], gone: ['session gone', ''] };
+const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
 const REASON = { unreadable: 'file unreadable', 'too-large': 'file too large', 'not-json': 'not JSON', 'bad-schema': 'bad schema' };
 
 export async function render(root, api, bus, me) {
@@ -38,7 +40,38 @@ export async function render(root, api, bus, me) {
       h('label', { class: 'wide' }, 'URL', urlInput, h('span', { class: 'hint' }, 'claude.ai links, or a host the operator allowed on the server')),
       h('label', { class: 'wide' }, 'Description', descInput)),
     h('div', { class: 'editor-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => { form.hidden = true; } }, 'Cancel'), addBtn));
-  const addAction = readOnly ? null : h('button', { type: 'button', class: 'small primary', onclick: () => { form.hidden = !form.hidden; if (!form.hidden) titleInput.focus(); } }, icon('plus', { size: 14 }), 'Add artifact');
+  const addAction = readOnly ? null : h('button', { type: 'button', class: 'small', onclick: () => { createForm.hidden = true; form.hidden = !form.hidden; if (!form.hidden) titleInput.focus(); } }, 'Add a link');
+
+  // Create: a Claude session builds and publishes it, then registers the link.
+  const createForm = h('div', { class: 'card new-artifact', hidden: true });
+  const cTitle = h('input', { type: 'text', placeholder: 'e.g. Posts preview', 'aria-label': 'Title', maxlength: '60' });
+  const cKind = h('select', { 'aria-label': 'Kind' }, ...Object.keys(KIND).map((k) => h('option', { value: k }, k)));
+  const cDesc = h('textarea', { rows: '6', placeholder: 'What should it show, and for whom? The more specific, the better.', 'aria-label': 'What should it be?', maxlength: '2000' });
+  const counter = h('span', { class: 'hint counter' }, '0 / 2000');
+  cDesc.addEventListener('input', () => { counter.textContent = `${cDesc.value.length} / 2000`; });
+  const createBtn = h('button', { type: 'button', class: 'primary', onclick: async () => {
+    const title = cTitle.value.trim();
+    const description = cDesc.value.trim();
+    if (!/^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,59}$/u.test(title)) { toast('Title: letters, digits, spaces, . _ - only, up to 60 characters', 'error'); cTitle.focus(); return; }
+    if (description.length < 10) { toast('Say a little more about what it should be', 'error'); cDesc.focus(); return; }
+    createBtn.disabled = true;
+    try {
+      const r = await api.post('/api/v1/artifacts/create', { title, kind: cKind.value, description }, { 'X-Confirm': 'create' });
+      toast(`Creating "${title}" — a session is on it`, 'ok');
+      cTitle.value = ''; cDesc.value = ''; counter.textContent = '0 / 2000'; createForm.hidden = true;
+      await load();
+      if (r && r.id) history.replaceState(null, '', '#/artifacts');
+    } catch (err) {
+      toast(err.status === 409 && err.data && err.data.id ? 'That title is already being created — see the Creating list' : err.status === 429 ? 'Too many starts — wait a few minutes' : err.message, 'error');
+    } finally { createBtn.disabled = false; }
+  } }, 'Create');
+  createForm.append(
+    h('div', { class: 'form-grid' },
+      h('label', {}, 'Title', cTitle), h('label', {}, 'Kind', cKind),
+      h('label', { class: 'wide' }, 'What should it be?', cDesc, counter)),
+    h('p', { class: 'hint' }, 'A Claude session builds and publishes it, then it appears here. You can watch or help it on the Claude tab.'),
+    h('div', { class: 'editor-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => { createForm.hidden = true; } }, 'Cancel'), createBtn));
+  const createAction = readOnly ? null : h('button', { type: 'button', class: 'small primary', onclick: () => { form.hidden = true; createForm.hidden = !createForm.hidden; if (!createForm.hidden) cTitle.focus(); } }, icon('plus', { size: 14 }), 'Create artifact');
 
   function titleNode(a) {
     if (typeof a.url === 'string') {
@@ -59,14 +92,27 @@ export async function render(root, api, bus, me) {
       a.description ? h('p', {}, a.description) : null,
       h('div', { class: 'wf-foot muted' }, h('span', {}, `added ${fmtTime(a.added_at)} · ${a.added_by}`), remove));
   }
+  function creatingCard(c) {
+    const [label, kind] = STATE[c.state] || STATE.gone;
+    const running = c.state === 'working';
+    return h('div', { class: `card art-card creating${running ? ' running' : ''}` },
+      h('div', { class: 'title' }, h('span', { class: 'art-link' }, running ? h('span', { class: 'spin', 'aria-hidden': 'true' }, '✻') : h('span', { class: `dot ${kind}`, 'aria-hidden': 'true' }), h('span', {}, c.title)), badge(c.kind, '')),
+      h('p', {}, c.state === 'done'
+        ? 'Finished without registering a link — open the session to see why.'
+        : c.state === 'blocked' ? 'The session needs an answer from you.' : `Being built · started ${ago(c.started_at)}`),
+      h('div', { class: 'wf-foot muted' }, h('span', {}, `${label} · ${c.kind}`), h('a', { href: `#/claude/${encodeURIComponent(c.id)}`, class: 'small linkish' }, 'Open session')));
+  }
   function draw() {
     clear(holder);
+    const creating = data.creating || [];
+    if (creating.length) holder.append(h('section', { class: 'art-section' }, h('h2', {}, 'Creating', badge(String(creating.length), '')), h('div', { class: 'wf-grid' }, ...creating.map(creatingCard))));
     if (data.invalid) {
       holder.append(h('div', { class: 'empty' }, `Registry unreadable: ${REASON[data.reason] || data.reason}. Fix or move artifacts.json on the host.`));
       return;
     }
     if (data.artifacts.length === 0) {
-      holder.append(h('div', { class: 'empty' }, readOnly ? 'No artifacts registered.' : 'Nothing registered yet. Add a link here, or say yes when a session asks to register one it published.'));
+      if (creating.length) return;
+      holder.append(h('div', { class: 'empty' }, readOnly ? 'No artifacts registered.' : 'Nothing here yet. Create one, add a link, or say yes when Claude asks to add one it published.'));
       return;
     }
     for (const kind of Object.keys(KIND)) {
@@ -81,8 +127,9 @@ export async function render(root, api, bus, me) {
   }
 
   clear(root);
-  root.append(header('Artifacts', { eyebrow: 'Operate', actions: addAction ? [addAction] : [] }), form, holder);
+  root.append(header('Artifacts', { eyebrow: 'Operate', actions: [addAction, createAction].filter(Boolean) }), createForm, form, holder);
   await load();
   bus.addEventListener('artifact', (e) => { if (e.detail && e.detail.artifacts) { data = e.detail; draw(); } });
+  bus.addEventListener('csession', () => { if (data.creating && data.creating.length) load(); });
   bus.addEventListener('refresh', load);
 }
