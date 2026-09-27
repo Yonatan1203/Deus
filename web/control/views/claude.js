@@ -549,6 +549,9 @@ export async function render(root, api, bus, me) {
     }
     const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl, tasksEl, thinkEl, askEl));
 
+    // Two browsers on one session (the raw terminal has the same race): the
+    // other one's recent typing is said, not hidden. Set on every poll.
+    const othersEl = h('div', { class: 'conv-others', role: 'status', hidden: true }, 'Someone else is answering this session from another browser.');
     const banner = h('div', { class: 'conv-banner', hidden: true },
       h('span', {}, 'Claude is waiting for you in the terminal.'),
       h('button', { type: 'button', class: 'small', onclick: openTerminal }, 'Open terminal'));
@@ -571,7 +574,7 @@ export async function render(root, api, bus, me) {
         { id: 'effort', initial: 'Effort', options: EFFORTS, onPick: (v) => sendLine(`/effort ${v}`), note: DEFAULT_NOTE },
       ],
     });
-    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, banner, composer.el));
+    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, othersEl, banner, composer.el));
 
     const view = () => mine.view;
     function sendText(t) {
@@ -725,7 +728,9 @@ export async function render(root, api, bus, me) {
       if (!view()) return;
       try {
         const r = await api.get(`/api/v1/claude/live/${view().vid}/conversation?v=${encodeURIComponent(version)}`);
-        if (disposed || r.unchanged) return;
+        if (disposed) return;
+        othersEl.hidden = !r.others_active;
+        if (r.unchanged) return;
         version = r.version;
         lastItems = r.items;
         const near = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;

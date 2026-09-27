@@ -18,6 +18,7 @@ import {
   SOCKET,
   validSize,
   type LiveViews,
+  isTerminalReply,
 } from './claude-live.js';
 
 const FIXTURE = path.join(
@@ -54,6 +55,37 @@ describe('control-mode parsing', () => {
     expect(got).toEqual([]);
     push(Buffer.from('llo\n%exit\n'));
     expect(got).toEqual(['%output %0 hello', '%exit']);
+  });
+});
+
+describe('isTerminalReply', () => {
+  it("knows the terminal's own answers from typing", () => {
+    for (const s of [
+      '\x1b[?1;2c',
+      '\x1b[>0;276;0c',
+      '\x1b[24;80R',
+      '\x1b[I',
+      '\x1b[O',
+      '\x1b[0n',
+      '\x1b]11;rgb:1c1c/1c1c/1c1cA\x07',
+      '\x1b]10;rgb:ffff/ffff/ffff\x1b\\',
+      '\x1b[?1;2c\x1b[24;80R',
+    ])
+      expect(isTerminalReply(Buffer.from(s, 'latin1')), JSON.stringify(s)).toBe(
+        true,
+      );
+    for (const s of [
+      'a',
+      '\r',
+      '\x1b',
+      '\x1b[A',
+      '\x1b[<64;10;5M',
+      '\x1b[200~hi\x1b[201~',
+      '\x1b[?1;2cq',
+    ])
+      expect(isTerminalReply(Buffer.from(s, 'latin1')), JSON.stringify(s)).toBe(
+        false,
+      );
   });
 });
 
@@ -306,6 +338,36 @@ describeTmux('live views against real tmux', () => {
     views.sweep((owner) => owner !== 'owner-a'); // owner-a's login ended
     expect(views.size()).toBe(0);
     await until(() => !sessions().includes('v-'));
+  }, 20000);
+
+  it('tells a view when another view of the same session typed recently', async () => {
+    let t = 1_000;
+    views = createLiveViews({
+      tmuxBin: tmuxBin as string,
+      socket: TEST_SOCKET,
+      claudeBin: fake('exec cat'),
+      cwd: os.tmpdir(),
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: os.tmpdir(),
+        TERM: 'xterm-256color',
+      },
+      now: () => t,
+    });
+    const open = async (owner: string, id: string) =>
+      ((await views!.open(owner, id, 80, 20)) as { vid: string }).vid;
+    const a = await open('owner-a', 'abcd1234');
+    const b = await open('owner-b', 'abcd1234');
+    const c = await open('owner-c', 'ffff0000');
+    expect(views.othersActive(a, 10_000)).toBe(false);
+    expect(views.input(a, 'owner-a', Buffer.from('x')).ok).toBe(true);
+    expect(views.othersActive(b, 10_000)).toBe(true); // a typed
+    expect(views.othersActive(a, 10_000)).toBe(false); // its own typing is not "others"
+    expect(views.othersActive(c, 10_000)).toBe(false); // another session
+    t += 10_001;
+    expect(views.othersActive(b, 10_000)).toBe(false);
+    views.closeOwned(a, 'owner-a');
+    expect(views.othersActive('v-unknown', 10_000)).toBe(false);
   }, 20000);
 
   it("names a view's owner and session until it closes, by any path", async () => {

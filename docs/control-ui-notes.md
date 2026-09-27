@@ -1601,3 +1601,33 @@ creates three tasks and moves two; removed by the drive):
 | No stray text | none | none (the "null" row is gone) | PASS |
 | Collapse | rows hidden; still collapsed after reopening the same session; expands again | as expected | PASS |
 | Unit | validator, order + version, reader (links, oversize, memo, bad ids), route (rides along; a status flip is a new version and not `unchanged`) | 4 + 2 green | PASS |
+
+## Claude tab: when another browser is answering the same session (2026-09-27)
+
+Two browsers on one session (a laptop and a phone, say) type into the same
+`claude attach`, as two terminals would — the raw terminal has the same
+race. The conversation view now says so: every live view records when it
+last sent input, the conversation route asks the live views whether
+another view of the same session typed within 10 s
+(`othersActive(vid, ms)` in `claude-live.ts`) and answers `others_active`
+on every poll, the unchanged fast path included, and the view shows
+"Someone else is answering this session from another browser." above the
+composer while it is true. Two things the tests caught: a view that never
+typed carries timestamp 0 and must never count as recent; and the
+browser's terminal answers the program's queries on its own (device
+attributes, cursor position, OSC colours, focus events) — those bytes go
+to tmux like any input but are not typing, so `isTerminalReply` keeps
+them from counting (arrow keys, Enter and the mouse wheel do count).
+Scoping, stated: the match is by session, not by login — the dashboard has
+one operator, and two logins on one session are that operator's two
+browsers; a second person would be a second password, which does not exist.
+
+Driven on the real-Claude fixture (`others.mjs`: two logins, one session,
+removed by the drive):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Both quiet | no notice in either browser (the second one has just attached) | hidden in both | PASS |
+| Browser 1 sends a message | browser 2 told within a poll; browser 1 sees nothing | notice in 2 — `artifacts/claude-others.png`; hidden in 1 | PASS |
+| Quiet again | the notice goes after the window | hidden | PASS |
+| Unit | `isTerminalReply` (replies vs typing), `othersActive` (same session, own view, other session, window, closed), route field on both reply shapes | 18 + 3 green | PASS |

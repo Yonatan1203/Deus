@@ -824,3 +824,7 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 .task-row.completed .task-glyph { color: var(--ok); }
 .task-more { margin-top: 2px; justify-self: start; }
 @media (prefers-reduced-motion: reduce) { .tasks-chev { transition: none; } }
+
+/* Another browser is typing into this session (views/claude.js poll). */
+.conv-others { font-size: 13px; color: var(--warn); padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--warn) 10%, var(--bg)); margin-bottom: 8px; }
+.conv-others[hidden] { display: none; }

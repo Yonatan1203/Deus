@@ -2544,6 +2544,9 @@ describe('control-ui server — claude sessions', () => {
     const ids = new Map<string, string>();
     let n = 0;
     const live = {
+      othersActive() {
+        return false;
+      },
       calls,
       async open(owner: string, id: string, cols: unknown, rows: unknown) {
         calls.push(['open', owner, id, cols, rows]);
@@ -2626,7 +2629,11 @@ describe('control-ui server — claude sessions', () => {
     expect(typeof conv.version).toBe('string');
     // Polling reads the cached list: no CLI call per poll.
     const again = await get(a.auth, `?v=${encodeURIComponent(conv.version)}`);
-    expect(j(again)).toEqual({ unchanged: true, version: conv.version });
+    expect(j(again)).toEqual({
+      unchanged: true,
+      version: conv.version,
+      others_active: false,
+    });
     expect(agentCalls()).toBe(before);
     // Another login, or a view that does not exist, gets nothing.
     expect((await get(b.auth)).status).toBe(404);
@@ -2731,6 +2738,7 @@ describe('control-ui server — claude sessions', () => {
     expect(j(await get(`?v=${encodeURIComponent(first.version)}`))).toEqual({
       unchanged: true,
       version: first.version,
+      others_active: false,
     });
     put(2, 'completed');
     fs.utimesSync(
@@ -2789,6 +2797,7 @@ describe('control-ui server — claude sessions', () => {
     expect(j(await get(`?v=${encodeURIComponent(first.version)}`))).toEqual({
       unchanged: true,
       version: first.version,
+      others_active: false,
     });
     // A settings change is a new version.
     fs.writeFileSync(

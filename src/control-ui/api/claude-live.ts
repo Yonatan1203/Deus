@@ -203,6 +203,8 @@ interface View {
   queueBytes: number;
   writing: boolean;
   inputTimes: number[];
+  /** When this view last sent input; another view on the same session reads it. */
+  lastInputAt: number;
   bytesIn: number;
   closed: boolean;
 }
@@ -211,6 +213,22 @@ export type LiveResult =
   { ok: true } | { ok: false; status: number; error: string };
 export type OpenResult =
   { ok: true; vid: string } | { ok: false; status: number; error: string };
+
+/**
+ * Bytes the browser's terminal sends on its own — answers to the program's
+ * queries (device attributes, cursor position, OSC colours), focus events —
+ * not the operator typing. They must reach tmux, but they are not "someone
+ * is answering". Arrow keys, Enter and mouse wheel are typing.
+ */
+// Built from a string: a literal with \x1b would trip no-control-regex.
+const ESC = '\\x1b';
+const REPLY_RE = new RegExp(
+  `^(?:${ESC}\\[\\?[\\d;]*c|${ESC}\\[>[\\d;]*c|${ESC}\\[\\d+;\\d+R|${ESC}\\[[IO]|${ESC}\\[\\d*n|` +
+    `${ESC}\\][^\\x07\\x1b]*(?:\\x07|${ESC}\\\\)|${ESC}P[^\\x1b]*${ESC}\\\\)+$`,
+);
+export function isTerminalReply(bytes: Buffer): boolean {
+  return REPLY_RE.test(bytes.toString('latin1'));
+}
 
 export function createLiveViews(deps: LiveDeps) {
   const now = deps.now ?? Date.now;
@@ -394,6 +412,7 @@ export function createLiveViews(deps: LiveDeps) {
         queueBytes: 0,
         writing: false,
         inputTimes: [],
+        lastInputAt: 0,
         bytesIn: 0,
         closed: false,
       };
@@ -457,6 +476,7 @@ export function createLiveViews(deps: LiveDeps) {
       if (v.queueBytes + size > QUEUE_MAX_BYTES)
         return { ok: false, status: 429, error: 'input queue full' };
       v.inputTimes.push(t);
+      if (!isTerminalReply(bytes)) v.lastInputAt = t;
       for (const l of lines) enqueue(v, l);
       v.bytesIn += bytes.length;
       return { ok: true };
@@ -512,6 +532,22 @@ export function createLiveViews(deps: LiveDeps) {
     meta(vid: string): { owner: string; claudeId: string } | null {
       const v = views.get(vid);
       return v && !v.closed ? { owner: v.owner, claudeId: v.claudeId } : null;
+    },
+    /** Another open view of the same session typed within `withinMs`. */
+    othersActive(vid: string, withinMs: number): boolean {
+      const me = views.get(vid);
+      if (!me || me.closed) return false;
+      const t = now();
+      for (const v of views.values())
+        if (
+          v !== me &&
+          !v.closed &&
+          v.claudeId === me.claudeId &&
+          v.lastInputAt > 0 && // never typed is never "recent"
+          t - v.lastInputAt < withinMs
+        )
+          return true;
+      return false;
     },
   };
 }

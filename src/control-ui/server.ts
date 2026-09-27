@@ -290,6 +290,7 @@ const LIVE_SWEEP_MS = 20_000;
 const CLAUDE_READS_PER_MIN = 30;
 // The conversation view polls every 1.5 s while it is showing.
 const CLAUDE_CONV_READS_PER_MIN = 120;
+const OTHERS_ACTIVE_MS = 10_000; // "someone else is answering" after their last key
 const CLAUDE_STOPS_PER_MIN = 6;
 const CLAUDE_LIVE_MAX = 3;
 const CLAUDE_POLL_MS = 3000;
@@ -2026,8 +2027,15 @@ export function createControlServer(
     const tasks =
       readTasks && row?.session_id ? readTasks(row.session_id) : null;
     const version = `${read.version}|${defaults?.version ?? ''}|${tasks?.version ?? ''}`;
+    // Two browsers on one session: the other one's recent typing is shown as
+    // a notice, on every poll, so it rides on the unchanged reply too.
+    const others_active = lv.othersActive(ctx.params.vid, OTHERS_ACTIVE_MS);
     if (ctx.url.searchParams.get('v') === version)
-      return writeJson(ctx.res, 200, { unchanged: true, version });
+      return writeJson(ctx.res, 200, {
+        unchanged: true,
+        version,
+        others_active,
+      });
     const conv = { ...read.conv };
     if (defaults) {
       if (conv.model === null && conv.model_label === null)
@@ -2035,7 +2043,12 @@ export function createControlServer(
       if (conv.effort === null)
         conv.effort = resolveDefaults(defaults.settings, conv.model).effort;
     }
-    writeJson(ctx.res, 200, { version, ...conv, tasks: tasks?.tasks ?? [] });
+    writeJson(ctx.res, 200, {
+      version,
+      ...conv,
+      tasks: tasks?.tasks ?? [],
+      others_active,
+    });
   });
   router.add('GET', '/api/v1/claude/commands', (ctx) => {
     if (deps.readOnly)
