@@ -1,4 +1,4 @@
-const CACHE = 'deus-control-v24';
+const CACHE = 'deus-control-v25';
 const SHELL = ['/', '/app.css', '/app.js', '/dom.js', '/icons.js', '/ui.js', '/input-queue.js', '/markdown.js', '/conversation.js', '/composer.js', '/ask-keys.js', '/ask-screen.js', '/integrations.js', '/views/chat.js', '/views/agents.js', '/views/wardens.js', '/views/mcps.js', '/views/sessions.js', '/views/groups.js', '/views/tasks.js', '/views/channels.js', '/views/memory.js', '/views/containers.js', '/views/logs.js', '/views/system.js', '/views/config.js', '/views/debug.js', '/views/claude.js', '/views/workflows.js', '/views/artifacts.js', '/views/browser.js', '/manifest.webmanifest', '/fonts/Geist-latin.woff2', '/fonts/GeistMono-latin.woff2', '/fonts/Rubik-latin.woff2', '/fonts/Rubik-hebrew.woff2', '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

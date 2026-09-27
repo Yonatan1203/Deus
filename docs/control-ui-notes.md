@@ -1379,3 +1379,55 @@ command:
   section, so the no-token-in-conversation rule does not rest on the note alone.
   Not driven against a real installer (it would change the live checkout); the
   first real setup is the operator's, on the Claude tab.
+
+## A new version reaches the open tab; the terminal's delay is the link (2026-09-27)
+
+Reported live right after v24 went out: "the conversation view is still
+stuck" and "the terminal view still has delay in typing and scrolling".
+Measured before touching anything:
+
+| Check | Observed | Meaning |
+|-------|----------|---------|
+| Server (3017) | 1 ms per request, 0 % CPU, no errors in the journal | healthy |
+| Conversation reader on the open session | returns the newest assistant text; cold parse of a 74 MB transcript 83 ms, memoized after | not the cause |
+| Drive on the production code (fixture 3117, real Claude, 40 s command) | the view catches up 0 ms after "Done", thinking line hides, composer unlocked, no page errors | v24 behaves |
+| Keystroke echo on localhost | 17–25 ms (POST 6–25 ms) | the app adds ~20 ms |
+| The operator's SSH tunnel (`ss -ti` on the sshd socket) | **RTT 195 ms** | every key and every wheel tick needs one network round trip before its echo |
+
+So the typing and scrolling delay is the link, not the app: the terminal is a
+remote terminal, and nothing short of predictive local echo (mosh-style, which
+would fight Claude Code's own redraws) removes a 195 ms round trip. The
+conversation composer sends whole messages and does not feel it.
+
+"Still stuck" had a different, code-verified cause: the shell is served from
+the service worker's cache (`sw.js`, cache-first, `skipWaiting` + `claim`), and
+`app.js` only ever *registered* the worker. After a deploy the first reload
+still runs the old files while the new worker installs; only a second reload
+loads the new version, and a tab that is never navigated never checks at all —
+so the operator kept seeing v23 and reported v24's fixes as missing. The
+operator's own tab cannot be inspected from here; the mechanism is what the
+code says, and the fix stands regardless because no path existed by which a
+deploy reached an open tab.
+
+The fix (`app.js`): remember whether a controller existed at load; register;
+check for a new worker every 30 min and whenever the tab comes back into view;
+on `controllerchange` after a first install, show `#update` — "A new version
+of the dashboard is ready." with a Reload button (`.update-bar`, the banner's
+tokens in accent). The reload is the operator's, so a half-typed message or an
+open live view is never dropped by surprise. Shell cache v25.
+
+Driven on a second fixture instance (3118 — beside the usual 3117, which was
+serving the production code for the measurements above) whose web root is a
+temp copy of `web/control`, so the deploy could be simulated by rewriting the
+served `sw.js`:
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| First visit | no notice (the first install claims the page) | hidden; cache `deus-control-v25` present | PASS |
+| Reload with no new version | no notice | hidden | PASS |
+| Served `sw.js` changes, `registration.update()` | the bar with Reload, in the content column | text and button as specified; bar x = rail's right edge — `artifacts/update-bar.png`, `update-bar-mobile.png` (390 px) | PASS |
+| Reload | new cache, old cache gone, bar hidden | `deus-control-v99-drive` present, v25 gone, hidden | PASS |
+| Page errors | none | none | PASS |
+
+Fixture rule, again: run any fixture with `CONTROL_UI_TMUX_SOCKET=deus-dash-fixture`
+— without it the server's start-up cleanup kills the live dashboard's tmux views.

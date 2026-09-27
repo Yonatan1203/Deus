@@ -285,6 +285,8 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 
 /* Feedback */
 .banner { background: color-mix(in srgb, var(--warn) 14%, var(--bg)); color: var(--text); border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); padding: 10px var(--gutter); font-size: 14px; }
+.update-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: color-mix(in srgb, var(--accent) 14%, var(--bg)); color: var(--text); border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); padding: 10px var(--gutter); font-size: 14px; }
+.update-bar[hidden] { display: none; }
 .toast {
   position: fixed; left: 50%; bottom: calc(var(--tabbar) + 16px + env(safe-area-inset-bottom)); transform: translateX(-50%);
   background: var(--surface-2); border: 1px solid var(--line-strong); padding: 10px 14px; border-radius: 10px; max-width: 90vw; z-index: 20;

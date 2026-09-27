@@ -286,5 +286,28 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && source && source.readyState === EventSource.CLOSED) connectEvents();
 });
 window.addEventListener('online', () => { if (source) connectEvents(); });
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+// The shell is served from the service worker's cache, so a deploy reaches an
+// open tab only through a new worker. It takes over at once (sw.js: skipWaiting
+// + claim) but this page still runs the old files — so an update is announced
+// and the reload is the operator's. A long-lived tab checks now and then, and
+// when it comes back into view.
+if ('serviceWorker' in navigator) {
+  const sw = navigator.serviceWorker;
+  // A controller at load means this is not the first visit: a later
+  // controllerchange is an update, not the first install claiming the page.
+  const hadController = !!sw.controller;
+  sw.register('/sw.js').then((reg) => {
+    const check = () => reg.update().catch(() => {});
+    setInterval(check, 30 * 60_000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+  }).catch(() => {});
+  sw.addEventListener('controllerchange', () => { if (hadController) showUpdate(); });
+}
+function showUpdate() {
+  const bar = $('update');
+  bar.replaceChildren(
+    h('span', {}, 'A new version of the dashboard is ready.'),
+    h('button', { type: 'button', class: 'small', onclick: () => location.reload() }, 'Reload'));
+  bar.hidden = false;
+}
 boot();
