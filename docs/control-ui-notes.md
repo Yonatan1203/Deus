@@ -1516,3 +1516,52 @@ list's. Stated, not fixed: containers run as the host uid (`--user
 hostUid:hostGid`, root on this VPS), so a container-written HTML in a
 mounted folder would pass the uid check if the operator registered it — the
 sandbox and the "Page written by a session" label are the bound there.
+
+## Claude tab: the model and effort labels follow the session (2026-09-27)
+
+The operator switched a session to Opus and the tab kept saying Fable; the
+effort pill said only "Effort". Two causes. (1) The model label came only
+from the last reply's `message.model`, so a `/model` switch showed nothing
+until the next reply — and, found while driving this: Claude Code 2.1.283
+asks **"Switch model?"** (a two-option menu) before switching mid-session,
+so a pick from the GUI's model pill stopped at that prompt, unseen from the
+conversation view, and the switch never happened. (2) The effort came only
+from a `Set effort level to …` row, so a session that never ran `/effort`
+showed nothing although Claude Code applies a default from
+`~/.claude/settings.json`.
+
+Now: the conversation carries `model_label` from Claude Code's own
+`` Set model to `Opus 5.5` `` row the moment `/model` runs (the id follows
+with the next reply; rows are in order, so the last write wins), the model
+pill confirms the "Switch model?" prompt itself (the pick already was the
+answer — `switchModel` in `views/claude.js` reads the screen for up to 3.6 s
+and sends `1`), and when the transcript gives no model or effort the route
+fills them from the settings defaults, resolved deterministically
+(`resolveDefaults` in `claude-conversation.ts`): the exact model id's
+`modelSettings` entry when the transcript knows the id, else the
+highest-versioned `claude-<alias>(-N…)` key, else a key equal to the alias,
+else nothing — never "whichever key mentions it" (the live file has both
+`claude-opus-5-5` and `claude-opus-5`). The settings file is read on an
+`O_NOFOLLOW` handle, ≤ 256 KiB, memoized on mtime+size, and its version is
+composed into the conversation's `version`, so the `?v=` fast path still
+works and a settings change refreshes the view. Deviation from the plan: the
+switch-prompt confirmation (not in the plan; discovered on the fixture).
+
+Two facts for anyone driving this again: `/model` from a session also
+rewrites `model` in the operator's `~/.claude/settings.json` ("Also becomes
+the default for new sessions" — Claude Code's own behaviour, which the pill
+menus say); the drive's switch to Sonnet changed the operator's default and
+it was restored to `opus` by hand afterwards. And a session whose current
+model has no `modelSettings` entry (Sonnet here) shows "Effort" — the plan's
+"never guess" rule — until `/effort` is used.
+
+Driven on the real-Claude fixture (`model.mjs`, a throwaway session removed
+by the drive):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| After the first reply | model from the reply id; effort from the settings default | "Opus 5.5", "Medium" | PASS |
+| Pick Sonnet from the pill | Claude Code's switch prompt confirmed; the label from its own line, at once | "Sonnet 5" after 717 ms — `artifacts/claude-model-switch.png` | PASS |
+| After the next reply | the id names the model | "Sonnet 5"; the reply arrived | PASS |
+| Effort with no entry for the model | "Effort" (no guess) | "Effort" | PASS (by design) |
+| Unit | parser (model switch), resolver (two-key live shape, exact id, alias miss, bad level), settings reader (memo, link refused, bad JSON), route (defaults fill, unchanged fast path, settings edit, transcript wins) | 16 + 71 green | PASS |

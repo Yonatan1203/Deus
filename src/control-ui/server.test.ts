@@ -2678,6 +2678,91 @@ describe('control-ui server — claude sessions', () => {
     server.close();
   });
 
+  it('conversation: model and effort fall back to the settings defaults, and the transcript wins', async () => {
+    const settings = path.join(root, 'settings.json');
+    fs.writeFileSync(
+      settings,
+      JSON.stringify({
+        model: 'opus',
+        modelSettings: {
+          'claude-opus-5': { effortLevel: 'medium' },
+          'claude-opus-5-5': { effortLevel: 'high' },
+        },
+      }),
+    );
+    const live = fakeLive();
+    await bootC({ claudeSettingsFile: settings }, fakeCli(), {
+      liveViews: live,
+    });
+    const { auth } = await login();
+    const { vid } = j(
+      await request({
+        method: 'POST',
+        path: '/api/v1/claude/live',
+        headers: { ...auth, ...H },
+        body: JSON.stringify({ id: 'a1b2c3d4', cols: 80, rows: 24 }),
+      }),
+    );
+    const get = (q = '') =>
+      request({
+        method: 'GET',
+        path: `/api/v1/claude/live/${vid}/conversation${q}`,
+        headers: auth,
+      });
+    const first = j(await get());
+    // The fixture's reply names no model, so the alias stands in; the effort is
+    // the highest-versioned opus entry.
+    expect(first.model).toBeNull();
+    expect(first.model_label).toBe('opus');
+    expect(first.effort).toBe('high');
+    expect(first.version).toMatch(/^[0-9]+:[0-9]+\|[0-9]+:[0-9]+$/);
+    expect(j(await get(`?v=${encodeURIComponent(first.version)}`))).toEqual({
+      unchanged: true,
+      version: first.version,
+    });
+    // A settings change is a new version.
+    fs.writeFileSync(
+      settings,
+      JSON.stringify({
+        model: 'opus',
+        modelSettings: { 'claude-opus-5-5': { effortLevel: 'low' } },
+      }),
+    );
+    fs.utimesSync(settings, new Date(), new Date(Date.now() + 2000));
+    const second = j(await get(`?v=${encodeURIComponent(first.version)}`));
+    expect(second.unchanged).toBeUndefined();
+    expect(second.effort).toBe('low');
+    // The transcript wins over the defaults.
+    const transcript = path.join(projects, 'p1', `${SID}.jsonl`);
+    fs.appendFileSync(
+      transcript,
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content:
+            '<local-command-stdout>Set effort level to max (this session only)</local-command-stdout>',
+        },
+      }) +
+        '\n' +
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            model: 'claude-opus-5-5',
+            content: [{ type: 'text', text: 'ok' }],
+          },
+        }) +
+        '\n',
+    );
+    fs.utimesSync(transcript, new Date(), new Date(Date.now() + 4000));
+    const third = j(await get(`?v=${encodeURIComponent(second.version)}`));
+    expect(third.effort).toBe('max');
+    expect(third.model).toBe('claude-opus-5-5');
+    expect(third.model_label).toBeNull();
+    server.close();
+  });
+
   it('create artifact: starts a session with the fixed prompt, lists it as creating, drops it once registered', async () => {
     const cli = await bootC();
     const { auth } = await login();

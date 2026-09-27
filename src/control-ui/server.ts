@@ -51,7 +51,11 @@ import {
 } from './api/containers.js';
 import { createDockerRunner, type DockerRunner } from './api/docker.js';
 import { containerLogs, queryLogs, redactSecrets } from './api/logs.js';
-import { createConversationReader } from './api/claude-conversation.js';
+import {
+  createConversationReader,
+  createDefaultsReader,
+  resolveDefaults,
+} from './api/claude-conversation.js';
 import { readSkillDir, readSlashCommands } from './api/claude-commands.js';
 import { createChatStore } from './api/chat-store.js';
 import {
@@ -222,6 +226,8 @@ export interface ControlDeps {
   /** Claude Code CLI (absolute path, resolved at boot) and its projects dir; null → the Claude tab answers 503. */
   claudeBin?: string | null;
   claudeProjectsDir?: string;
+  /** Claude Code's settings.json — the model/effort defaults a session starts with. */
+  claudeSettingsFile?: string;
 }
 
 export interface ControlServerOptions {
@@ -557,6 +563,9 @@ export function createControlServer(
     : null;
   const readConversation = deps.claudeProjectsDir
     ? createConversationReader(deps.claudeProjectsDir)
+    : null;
+  const readDefaults = deps.claudeSettingsFile
+    ? createDefaultsReader(deps.claudeSettingsFile)
     : null;
   const waitingOn = deps.claudeProjectsDir
     ? createWaitingOnReader(deps.claudeProjectsDir)
@@ -2003,12 +2012,20 @@ export function createControlServer(
       'control_ui_claude_read',
       ctx.remoteAddr,
     );
-    if (ctx.url.searchParams.get('v') === read.version)
-      return writeJson(ctx.res, 200, {
-        unchanged: true,
-        version: read.version,
-      });
-    writeJson(ctx.res, 200, { version: read.version, ...read.conv });
+    // One composed version for the fast path and the body: a transcript
+    // change or a settings change each produce a new value.
+    const defaults = readDefaults ? readDefaults() : null;
+    const version = `${read.version}|${defaults?.version ?? ''}`;
+    if (ctx.url.searchParams.get('v') === version)
+      return writeJson(ctx.res, 200, { unchanged: true, version });
+    const conv = { ...read.conv };
+    if (defaults) {
+      if (conv.model === null && conv.model_label === null)
+        conv.model_label = resolveDefaults(defaults.settings, null).model;
+      if (conv.effort === null)
+        conv.effort = resolveDefaults(defaults.settings, conv.model).effort;
+    }
+    writeJson(ctx.res, 200, { version, ...conv });
   });
   router.add('GET', '/api/v1/claude/commands', (ctx) => {
     if (deps.readOnly)

@@ -54,6 +54,8 @@ export interface Conversation {
   items: ConvItem[];
   truncated: boolean;
   model: string | null;
+  /** Between a `/model` switch and the next reply: the name Claude Code printed. */
+  model_label: string | null;
   effort: string | null;
   mode: string | null;
 }
@@ -212,6 +214,7 @@ export function buildConversation(
   const items: ConvItem[] = [];
   const pending = new Map<string, ConvItem>(); // tool_use id → its item
   let model: string | null = null;
+  let model_label: string | null = null;
   let effort: string | null = null;
   let mode: string | null = null;
 
@@ -232,6 +235,13 @@ export function buildConversation(
     if (out !== null) {
       const m = /Set effort level to (\w+)/.exec(out);
       if (m) effort = EFFORT_LEVELS.includes(m[1]) ? m[1] : null;
+      // `/model` prints a display name ("Opus 5.5"); the id arrives with the
+      // next reply. Rows are in order, so the last write wins.
+      const mm = /Set model to `([^`]{1,60})`/.exec(out);
+      if (mm) {
+        model_label = mm[1];
+        model = null;
+      }
       const prev = items[items.length - 1];
       const clean = clip(out, OUTPUT_MAX);
       if (prev && prev.k === 'command' && prev.output === undefined)
@@ -324,8 +334,10 @@ export function buildConversation(
         }
       }
     } else if (e.type === 'assistant') {
-      if (typeof msg?.model === 'string' && msg.model.startsWith('claude'))
+      if (typeof msg?.model === 'string' && msg.model.startsWith('claude')) {
         model = msg.model.slice(0, 64);
+        model_label = null;
+      }
       if (!Array.isArray(content)) continue;
       for (const b of content as Block[]) {
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
@@ -344,8 +356,100 @@ export function buildConversation(
     items: kept.slice(-limit),
     truncated: kept.length > limit,
     model,
+    model_label,
     effort,
     mode,
+  };
+}
+
+/**
+ * Claude Code's defaults from `~/.claude/settings.json`, resolved
+ * deterministically or not at all: `model` is the alias (`opus`); the effort
+ * comes from `modelSettings[<the session's model id>]` when the transcript
+ * knows it, else from the highest-versioned `claude-<alias>(-N…)` key, else
+ * from a key equal to the alias — never from "whichever key mentions it".
+ */
+export function resolveDefaults(
+  settings: unknown,
+  modelId: string | null,
+): { model: string | null; effort: string | null } {
+  const out: { model: string | null; effort: string | null } = {
+    model: null,
+    effort: null,
+  };
+  if (!settings || typeof settings !== 'object') return out;
+  const s = settings as Record<string, unknown>;
+  const alias =
+    typeof s.model === 'string' && s.model.length > 0 && s.model.length <= 40
+      ? s.model
+      : null;
+  out.model = alias;
+  const ms =
+    s.modelSettings && typeof s.modelSettings === 'object'
+      ? (s.modelSettings as Record<string, unknown>)
+      : null;
+  if (!ms) return out;
+  const has = (k: string) => Object.prototype.hasOwnProperty.call(ms, k);
+  let key: string | null = null;
+  if (modelId && has(modelId)) key = modelId;
+  else if (alias) {
+    const re = new RegExp(
+      `^claude-${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(-\\d+(-\\d+)*)?$`,
+    );
+    const matches = Object.keys(ms)
+      .filter((k) => re.test(k))
+      .sort(compareVersions);
+    if (matches.length) key = matches[matches.length - 1];
+    else if (has(alias)) key = alias;
+  }
+  if (!key) return out;
+  const entry = ms[key];
+  const level =
+    entry && typeof entry === 'object'
+      ? (entry as Record<string, unknown>).effortLevel
+      : undefined;
+  if (typeof level === 'string' && EFFORT_LEVELS.includes(level))
+    out.effort = level;
+  return out;
+}
+const numbers = (k: string): number[] => (k.match(/\d+/g) ?? []).map(Number);
+function compareVersions(a: string, b: string): number {
+  const x = numbers(a);
+  const y = numbers(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+const SETTINGS_MAX = 256 * 1024;
+/** The settings file, parsed, memoized on its mtime and size; null when unreadable. */
+export function createDefaultsReader(file: string) {
+  let memo: { version: string; settings: unknown } | null = null;
+  return (): { version: string; settings: unknown } | null => {
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(
+        file,
+        fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+      );
+      const st = fs.fstatSync(fd);
+      if (!st.isFile() || st.size > SETTINGS_MAX) return null;
+      const version = `${Math.trunc(st.mtimeMs)}:${st.size}`;
+      if (memo && memo.version === version) return memo;
+      const buf = Buffer.alloc(st.size);
+      const n = fs.readSync(fd, buf, 0, st.size, 0);
+      memo = {
+        version,
+        settings: JSON.parse(buf.subarray(0, n).toString('utf-8')),
+      };
+      return memo;
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) fs.closeSync(fd);
+    }
   };
 }
 

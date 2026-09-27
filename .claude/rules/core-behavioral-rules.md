@@ -39,6 +39,7 @@
 - Default to cross-platform. Flag OS-specific code loudly in PRs.
 - During planned implementation, log each forced deviation from the plan (edge case, wrong assumption, changed approach) as a `Deviation:` note in the session as it happens — each is a discovered unknown; capture at discovery, don't reconstruct later.
 - Chat responses always in English. Hebrew only inside artifacts.
+- Every Claude session created for a test or a drive is stopped and removed (`claude stop <id>` then `claude rm <id>`) by the session that created it, before that work is reported done — never left for the operator to find in the list. (Operator directive, 2026-09-27.)
 
 ## Code Exploration
 - Three-stage protocol: (1) `search_code` or `codegraph_context` (the composite primary) for semantic candidates, (2) `codegraph_callers`/`codegraph_callees`/`codegraph_impact` for structural context (what connects to the candidates), (3) grep/read for exact confirmation. Skip stages when the answer is already known.

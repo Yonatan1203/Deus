@@ -596,6 +596,7 @@ async function main(): Promise<void> {
     ...createChannelLifecycle(channels, channelOpts),
     claudeBin: resolveClaudeBin(process.env.PATH ?? ''),
     claudeProjectsDir: path.join(homeDir, '.claude', 'projects'),
+    claudeSettingsFile: path.join(homeDir, '.claude', 'settings.json'),
     vaultPath: resolveVaultPath(),
     // Resolved so a relative WHATSAPP_AUTH_DIR cannot differ from the adapter's view.
     whatsappAuthDir: path.resolve(

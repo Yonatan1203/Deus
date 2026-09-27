@@ -58,6 +58,11 @@ function modelLabel(id) {
   const [name = '', ...ver] = id.replace(/^claude-/, '').split('-').filter((p) => !/^\d{8}$/.test(p));
   return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${ver.join('.')}`.trim();
 }
+// The label a switch or the settings default gave: a printed name ("Opus 5.5")
+// is already cased, a bare alias ("opus") is capitalised, a literal id is
+// formatted like one from a reply.
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const givenLabel = (label) => (/^claude-/.test(label) ? modelLabel(label) : cap(label));
 // ---- xterm, loaded on first use from same-origin vendor files -------------
 let xtermReady = null;
 function loadXterm() {
@@ -523,7 +528,7 @@ export async function render(root, api, bus, me) {
       stopLabel: 'Stop Claude',
       lead: modeEl,
       pickers: [
-        { id: 'model', initial: 'Model', options: MODELS, onPick: (v) => sendLine(`/model ${v}`), note: DEFAULT_NOTE },
+        { id: 'model', initial: 'Model', options: MODELS, onPick: (v) => switchModel(v), note: DEFAULT_NOTE },
         { id: 'effort', initial: 'Effort', options: EFFORTS, onPick: (v) => sendLine(`/effort ${v}`), note: DEFAULT_NOTE },
       ],
     });
@@ -541,6 +546,20 @@ export async function render(root, api, bus, me) {
     }
     // A pick is a command: ask for the new state at once, not on the next tick.
     function sendLine(text) { if (sendText(text)) { pollSoon(); setTimeout(poll, 1200); } }
+    // Claude Code (2.1.283) asks "Switch model?" before switching mid-session
+    // — the pick already is the answer, so the prompt is confirmed when it
+    // shows: its first option is "Yes, switch to <model>".
+    async function switchModel(v) {
+      if (!sendText(`/model ${v}`)) return;
+      pollSoon();
+      for (let i = 0; i < 12; i++) {
+        await later(300);
+        const view = mine.view;
+        if (!view) return;
+        if (view.screenLines(20).some((l) => /^\s*❯\s*1\.\s+Yes, switch to/.test(l))) { view.send('1', { focus: false }); break; }
+      }
+      pollSoon(); setTimeout(poll, 1200);
+    }
     // Esc interrupts, as in the terminal. Claude then puts an unanswered
     // message back in its own input, where the next message would be appended
     // to it; like the Claude app, it comes back to this box instead. Clearing
@@ -674,7 +693,7 @@ export async function render(root, api, bus, me) {
         if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact });
         else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below.'));
         truncNote.hidden = !r.truncated;
-        composer.picker('model').set(modelLabel(r.model));
+        composer.picker('model').set(r.model_label ? givenLabel(r.model_label) : modelLabel(r.model));
         const eff = EFFORTS.find(([v]) => v === r.effort);
         composer.picker('effort').set(eff ? eff[1] : 'Effort');
         modeEl.textContent = MODE_LABEL[r.mode] || '';

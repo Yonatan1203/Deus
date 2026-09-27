@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { IS_WINDOWS } from '../../platform.js';
 import {
   buildConversation,
   parseAskAnswer,
   createConversationReader,
+  createDefaultsReader,
+  resolveDefaults,
 } from './claude-conversation.js';
 
 const user = (content: unknown, extra: Record<string, unknown> = {}) => ({
@@ -392,5 +395,99 @@ describe('createConversationReader', () => {
     expect(b?.version).not.toBe(a?.version);
     expect(b?.conv.items).toHaveLength(2);
     expect(read('not-a-session-id')).toBeNull();
+  });
+});
+
+describe('the model switch and the settings defaults', () => {
+  it('shows the printed name after /model until the next reply names the id', () => {
+    const c1 = buildConversation([
+      assistant([text('hi')], 'claude-fable-5-1'),
+      user(
+        '<local-command-stdout>Set model to `Opus 5.5` · Also the default for new sessions</local-command-stdout>',
+      ),
+    ]);
+    expect(c1.model).toBeNull();
+    expect(c1.model_label).toBe('Opus 5.5');
+    const c2 = buildConversation([
+      assistant([text('hi')], 'claude-fable-5-1'),
+      user(
+        '<local-command-stdout>Set model to `Opus 5.5`</local-command-stdout>',
+      ),
+      assistant([text('now')], 'claude-opus-5-5'),
+    ]);
+    expect(c2.model).toBe('claude-opus-5-5');
+    expect(c2.model_label).toBeNull();
+  });
+  it('resolves the effort deterministically', () => {
+    const live = {
+      model: 'opus',
+      modelSettings: {
+        'claude-opus-5': { effortLevel: 'medium' },
+        'claude-opus-5-5': { effortLevel: 'high' },
+        'claude-opus-5-5-fast': { effortLevel: 'low' },
+      },
+    };
+    expect(resolveDefaults(live, null)).toEqual({
+      model: 'opus',
+      effort: 'high',
+    }); // highest version, anchored
+    expect(resolveDefaults(live, 'claude-opus-5')).toEqual({
+      model: 'opus',
+      effort: 'medium',
+    }); // the exact id wins
+    expect(
+      resolveDefaults(
+        { model: 'sonnet', modelSettings: live.modelSettings },
+        null,
+      ),
+    ).toEqual({ model: 'sonnet', effort: null });
+    expect(
+      resolveDefaults(
+        {
+          model: 'opus',
+          modelSettings: { 'claude-opus-5-5': { effortLevel: 'ultra' } },
+        },
+        null,
+      ).effort,
+    ).toBeNull();
+    expect(
+      resolveDefaults(
+        {
+          model: 'claude-opus-5-5',
+          modelSettings: { 'claude-opus-5-5': { effortLevel: 'max' } },
+        },
+        null,
+      ),
+    ).toEqual({ model: 'claude-opus-5-5', effort: 'max' });
+    expect(resolveDefaults('nope', null)).toEqual({
+      model: null,
+      effort: null,
+    });
+    expect(resolveDefaults({ model: 'x'.repeat(41) }, null).model).toBeNull();
+  });
+  it('reads the settings file once per version and never follows a link', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-settings-'));
+    try {
+      const file = path.join(dir, 'settings.json');
+      fs.writeFileSync(file, JSON.stringify({ model: 'opus' }));
+      const read = createDefaultsReader(file);
+      const a = read();
+      expect(a && (a.settings as { model: string }).model).toBe('opus');
+      expect(read()).toBe(a); // memoized
+      fs.writeFileSync(file, JSON.stringify({ model: 'sonnet' }));
+      fs.utimesSync(file, new Date(), new Date(Date.now() + 2000));
+      const b = read();
+      expect(b && (b.settings as { model: string }).model).toBe('sonnet');
+      expect(b && b.version).not.toBe(a && a.version);
+      fs.writeFileSync(file, '{not json');
+      fs.utimesSync(file, new Date(), new Date(Date.now() + 4000));
+      expect(read()).toBeNull();
+      const link = path.join(dir, 'link.json');
+      fs.symlinkSync(file, link);
+      if (!IS_WINDOWS) expect(createDefaultsReader(link)()).toBeNull();
+      expect(createDefaultsReader(path.join(dir, 'missing.json'))()).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
