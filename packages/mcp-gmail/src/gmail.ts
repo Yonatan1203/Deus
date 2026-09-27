@@ -30,6 +30,7 @@ const POLL_INTERVAL_MS = parseInt(
   10,
 );
 const MAX_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
+const PROCESSED_LABEL = 'deus-processed'; // hidden Gmail label on handled mail
 
 // Use stderr for logging (stdout is reserved for MCP JSON-RPC)
 const logger = pino(
@@ -52,6 +53,7 @@ export class GmailProvider implements ChannelProvider {
   private connectTime = 0;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private processedIds = new Set<string>();
+  private processedLabelId = '';
   private threadMeta = new Map<string, ThreadMeta>();
   private knownChats = new Map<string, { name: string; isGroup: boolean }>();
   private consecutiveErrors = 0;
@@ -114,6 +116,14 @@ export class GmailProvider implements ChannelProvider {
     this.userEmail = profile.data.emailAddress || '';
     this.connectTime = Date.now();
     logger.info({ email: this.userEmail }, 'Gmail channel connected');
+
+    try {
+      await this.ensureProcessedLabel();
+    } catch (err) {
+      this.gmail = null;
+      const cause = err instanceof Error ? err.message : String(err);
+      throw new Error(`Gmail processed-label setup failed: ${cause}`);
+    }
 
     // Start polling with error backoff
     const schedulePoll = () => {
@@ -343,8 +353,79 @@ export class GmailProvider implements ChannelProvider {
 
   // ── Private ──────────────────────────────────────────────────────────
 
+  // `category:primary` matches nothing through the API on some accounts;
+  // the Primary tab's search name is `category:personal`. Handled mail is
+  // tagged with PROCESSED_LABEL instead of being marked read, so the
+  // human's unread state is left alone.
   private buildQuery(): string {
-    return 'is:unread category:primary';
+    return `is:unread category:personal -label:${PROCESSED_LABEL}`;
+  }
+
+  /**
+   * Finds or creates the hidden PROCESSED_LABEL. On first creation, tags the
+   * existing unread backlog without delivering it, so a new install doesn't
+   * dump old mail on the agent.
+   */
+  private async ensureProcessedLabel(): Promise<void> {
+    if (!this.gmail) return;
+
+    const res = await this.gmail.users.labels.list({ userId: 'me' });
+    const existing = (res.data.labels || []).find(
+      (l) => l.name === PROCESSED_LABEL,
+    );
+    if (existing?.id) {
+      this.processedLabelId = existing.id;
+      return;
+    }
+
+    const created = await this.gmail.users.labels.create({
+      userId: 'me',
+      requestBody: {
+        name: PROCESSED_LABEL,
+        labelListVisibility: 'labelHide',
+        messageListVisibility: 'hide',
+      },
+    });
+    if (!created.data.id) throw new Error('label create returned no id');
+    this.processedLabelId = created.data.id;
+
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const page = await this.gmail.users.messages.list({
+        userId: 'me',
+        q: this.buildQuery(),
+        maxResults: 500,
+        pageToken,
+      });
+      for (const m of page.data.messages || []) if (m.id) ids.push(m.id);
+      pageToken = page.data.nextPageToken || undefined;
+    } while (pageToken);
+
+    // batchModify accepts at most 1000 ids per call.
+    for (let i = 0; i < ids.length; i += 1000) {
+      await this.gmail.users.messages.batchModify({
+        userId: 'me',
+        requestBody: {
+          ids: ids.slice(i, i + 1000),
+          addLabelIds: [this.processedLabelId],
+        },
+      });
+    }
+    logger.info({ baselined: ids.length }, 'Gmail processed label created');
+  }
+
+  private async markProcessed(messageId: string): Promise<void> {
+    if (!this.gmail || !this.processedLabelId) return;
+    try {
+      await this.gmail.users.messages.modify({
+        userId: 'me',
+        id: messageId,
+        requestBody: { addLabelIds: [this.processedLabelId] },
+      });
+    } catch (err) {
+      logger.warn({ messageId, err }, 'Failed to label email as processed');
+    }
   }
 
   private async pollForMessages(): Promise<void> {
@@ -365,6 +446,9 @@ export class GmailProvider implements ChannelProvider {
         this.processedIds.add(stub.id);
 
         await this.processMessage(stub.id);
+        // Label skipped mail too: unlabelled unread mail would match the
+        // query forever and crowd new mail out of maxResults.
+        await this.markProcessed(stub.id);
       }
 
       // Cap processed ID set to prevent unbounded growth
@@ -484,17 +568,6 @@ export class GmailProvider implements ChannelProvider {
         subject,
       },
     });
-
-    // Mark as read
-    try {
-      await this.gmail.users.messages.modify({
-        userId: 'me',
-        id: messageId,
-        requestBody: { removeLabelIds: ['UNREAD'] },
-      });
-    } catch (err) {
-      logger.warn({ messageId, err }, 'Failed to mark email as read');
-    }
 
     logger.info(
       { from: senderName, subject, threadId },
