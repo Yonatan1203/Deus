@@ -9,6 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { PROJECT_ROOT } from '../config.js';
+import { isGmailJid } from '../gmail-jid.js';
 import { McpChannelAdapter } from './mcp-adapter.js';
 import { registerChannel } from './registry.js';
 
@@ -44,6 +45,6 @@ registerChannel('gmail', (opts) => {
     },
     onMessage: opts.onMessage,
     onChatMetadata: opts.onChatMetadata,
-    ownsJid: (jid) => jid.startsWith('gmail:'),
+    ownsJid: isGmailJid,
   });
 });

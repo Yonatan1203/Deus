@@ -166,6 +166,11 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: receive one publicIngress event's whole output together with the
+  // event it answers (used instead of sendMessage when present).
+  sendEventOutput?(event: NewMessage, text: string): Promise<void>;
+  // Optional: told when a publicIngress event was dropped by the ingress caps.
+  onEventDropped?(eventId: string, reason: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

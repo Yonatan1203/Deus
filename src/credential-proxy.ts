@@ -259,11 +259,13 @@ export function startCredentialProxy(
         // once the route is known below — the tool-proxy's per-tool scope never
         // covered provider routes, so /openai/* would otherwise be reachable
         // from a reduced-privilege container.
-        let scopedToken = false;
+        // Detected whether or not proxy auth is on (only the 401 is gated), so
+        // the scoped-token confinements below also hold with DEUS_PROXY_AUTH=0.
+        const token = req.headers['x-deus-proxy-token'] as string | undefined;
+        const tokenGroup = token ? validateGroupToken(token) : null;
+        const scopedToken = !!token && !!tokenGroup && isScopedToken(token);
         if (DEUS_PROXY_AUTH_ENABLED) {
-          const token = req.headers['x-deus-proxy-token'] as string | undefined;
-          groupFolder = token ? validateGroupToken(token) : null;
-          scopedToken = !!token && !!groupFolder && isScopedToken(token);
+          groupFolder = tokenGroup;
           if (!groupFolder) {
             logger.error(
               { statusCode: 401, url: req.url, hasToken: !!token },
@@ -285,6 +287,17 @@ export function startCredentialProxy(
 
         /* ── Memory bridge route: POST /memory/query ───────────── */
         if (req.method === 'POST' && req.url === '/memory/query') {
+          // A scoped (publicIngress) caller's query is untrusted input; never
+          // let it search the operator's memory.
+          if (scopedToken) {
+            logger.warn(
+              { group: tokenGroup },
+              'Memory bridge denied for scoped token',
+            );
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Forbidden' }));
+            return;
+          }
           // Rate-limit per AUTHENTICATED group, not the client-supplied
           // x-deus-source header — that header is the constant 'container-claude'
           // for every Claude container, so it collapsed all groups into one shared

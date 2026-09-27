@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildAllowedTools,
   computeTeamsNeeded,
+  refuseSessionCommand,
   SWARM_SIGNALS,
 } from './allowed-tools.js';
 
@@ -87,5 +88,21 @@ describe('computeTeamsNeeded', () => {
 
   it('is false for a plain query with no project and no swarm signal', () => {
     expect(computeTeamsNeeded('remind me to buy milk', false)).toBe(false);
+  });
+});
+
+// LIA-315: the session-command query runs without the webhook restrictions.
+describe('refuseSessionCommand', () => {
+  it('refuses a session command under the webhook profile', () => {
+    expect(refuseSessionCommand('webhook', true)).toBe(true);
+  });
+
+  it('allows a session command under the full profile', () => {
+    expect(refuseSessionCommand('full', true)).toBe(false);
+  });
+
+  it('never refuses an ordinary prompt', () => {
+    expect(refuseSessionCommand('webhook', false)).toBe(false);
+    expect(refuseSessionCommand('full', false)).toBe(false);
   });
 });

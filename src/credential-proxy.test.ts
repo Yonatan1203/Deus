@@ -574,6 +574,60 @@ describe('credential-proxy', () => {
     expect(res.statusCode).toBe(200);
   });
 
+  // LIA-315: a scoped (publicIngress) token's prompt is untrusted — it must
+  // never query the operator's memory, with or without proxy auth.
+  it.each([true, false])(
+    'denies the memory bridge to a scoped token (proxy auth %s)',
+    async (authEnabled) => {
+      Object.defineProperty(configModule, 'DEUS_PROXY_AUTH_ENABLED', {
+        value: authEnabled,
+        writable: true,
+      });
+      proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+      const res = await makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/memory/query',
+          headers: {
+            'content-type': 'application/json',
+            'x-deus-proxy-token': SCOPED_PROXY_TOKEN,
+          },
+        },
+        JSON.stringify({ query: 'what is the operator bank account' }),
+      );
+
+      expect(res.statusCode).toBe(403);
+    },
+  );
+
+  it('keeps a scoped token on Anthropic even with proxy auth disabled', async () => {
+    Object.defineProperty(configModule, 'DEUS_PROXY_AUTH_ENABLED', {
+      value: false,
+      writable: true,
+    });
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant-real-key',
+      OPENAI_API_KEY: 'sk-openai-real',
+      OPENAI_BASE_URL: `http://127.0.0.1:${upstreamPort}`,
+    });
+
+    const denied = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/openai/v1/images/generations',
+        headers: {
+          'content-type': 'application/json',
+          'x-deus-proxy-token': SCOPED_PROXY_TOKEN,
+        },
+      },
+      '{}',
+    );
+    expect(denied.statusCode).toBe(403);
+  });
+
   // -------------------------------------------------------------------------
   // Proactive OAuth refresh timer (issue #625): an idle host with no incoming
   // traffic must still refresh the token before it expires. The timer is only
