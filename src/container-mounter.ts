@@ -101,6 +101,30 @@ function pushProjectShadows(
   }
 }
 
+/**
+ * A publicIngress group must never be a control group or carry extra host
+ * mounts; a misconfiguration fails closed instead of exposing a project,
+ * the vault, or arbitrary allowlisted paths to untrusted input.
+ */
+function assertPublicIngressIsolated(
+  group: RegisteredGroup,
+  isControlGroup: boolean,
+  worktreePath?: string,
+): void {
+  const reasons: string[] = [];
+  if (isControlGroup || group.isControlGroup === true)
+    reasons.push('control group');
+  if (group.projectId) reasons.push('projectId');
+  if (group.containerConfig?.additionalMounts?.length)
+    reasons.push('additionalMounts');
+  if (worktreePath) reasons.push('worktreePath');
+  if (reasons.length > 0) {
+    throw new Error(
+      `publicIngress group "${group.folder}" refused: ${reasons.join(', ')}`,
+    );
+  }
+}
+
 export function buildVolumeMounts(
   group: RegisteredGroup,
   isControlGroup: boolean,
@@ -110,6 +134,12 @@ export function buildVolumeMounts(
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
+  // publicIngress groups run on untrusted input: no vault, no global dir, a
+  // fresh .claude every run, and no way to attach extra host paths.
+  const isPublicIngress = group.containerConfig?.publicIngress === true;
+  if (isPublicIngress) {
+    assertPublicIngressIsolated(group, isControlGroup, worktreePath);
+  }
 
   if (isControlGroup) {
     // Only mount the Deus project root as a fallback when no worktree or
@@ -196,7 +226,7 @@ export function buildVolumeMounts(
     // Global memory directory (read-only for non-main)
     // Only directory mounts are supported, not file mounts
     const globalDir = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(globalDir)) {
+    if (!isPublicIngress && fs.existsSync(globalDir)) {
       mounts.push({
         hostPath: globalDir,
         containerPath: '/workspace/global',
@@ -315,9 +345,23 @@ export function buildVolumeMounts(
     group.folder,
     '.claude',
   );
+  if (isPublicIngress) {
+    // Start from empty every run: no earlier transcripts, planted hooks,
+    // settings, agents or plugins survive into the next untrusted event.
+    fs.rmSync(groupSessionsDir, { recursive: true, force: true });
+  }
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
+  if (isPublicIngress) {
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify(
+        { env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } },
+        null,
+        2,
+      ) + '\n',
+    );
+  } else if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
       settingsFile,
       JSON.stringify(
@@ -356,7 +400,8 @@ export function buildVolumeMounts(
           scopes: [
             'user:file_upload',
             'user:inference',
-            'user:mcp_servers',
+            // Account MCP connectors are never loaded for untrusted input.
+            ...(isPublicIngress ? [] : ['user:mcp_servers']),
             'user:profile',
             'user:sessions:claude_code',
           ],
@@ -368,7 +413,7 @@ export function buildVolumeMounts(
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
+  if (!isPublicIngress && fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
       const srcDir = path.join(skillsSrc, skillDir);
       if (!fs.statSync(srcDir).isDirectory()) continue;
@@ -423,7 +468,12 @@ export function buildVolumeMounts(
   // Vault mount: control group gets full rw at /workspace/vault; non-control
   // groups get a private rw subdir + shared ro root (skills use /workspace/vault/).
   const vaultPath = resolveVaultPath();
-  if (vaultPath && fs.existsSync(vaultPath)) {
+  if (isPublicIngress) {
+    logger.debug(
+      { group: group.name },
+      'publicIngress group: vault and global dir not mounted',
+    );
+  } else if (vaultPath && fs.existsSync(vaultPath)) {
     if (isControlGroup) {
       mounts.push({
         hostPath: vaultPath,

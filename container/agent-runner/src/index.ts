@@ -37,7 +37,13 @@ import { DoomLoopDetector, createDoomLoopHook } from './doom-loop-detector.js';
 import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import { createToolCallLogHook } from './tool-call-log.js';
 import { writeAvailableTools } from './available-tools-log.js';
-import { buildAllowedTools, computeTeamsNeeded } from './allowed-tools.js';
+import {
+  assertWebhookInit,
+  buildAllowedTools,
+  computeTeamsNeeded,
+  refuseSessionCommand,
+  webhookQueryRestrictions,
+} from './allowed-tools.js';
 import { subagentNudgeAppend } from './subagent-nudge.js';
 import { readDisciplineNudgeAppend } from './read-discipline-nudge.js';
 import { openaiProxyAppend } from './openai-proxy-nudge.js';
@@ -1050,9 +1056,19 @@ async function runQuery(
               ],
             }
           : {}),
-        UserPromptSubmit: [
-          { hooks: [createMemoryRetrievalHook() as unknown as HookCallback] },
-        ],
+        // Never for webhook runs: the prompt is untrusted and would be used to
+        // search the operator's memory.
+        ...(toolProfile === 'webhook'
+          ? {}
+          : {
+              UserPromptSubmit: [
+                {
+                  hooks: [
+                    createMemoryRetrievalHook() as unknown as HookCallback,
+                  ],
+                },
+              ],
+            }),
         PreCompact: [
           { hooks: [createPreCompactHook(containerInput.assistantName)] },
         ],
@@ -1084,6 +1100,8 @@ async function runQuery(
           return { PostToolUse: [{ hooks }] };
         })(),
       },
+      // LAST: a later literal key would override these (LIA-315 isolation).
+      ...webhookQueryRestrictions(toolProfile, allowedTools),
     },
   })) {
     messageCount++;
@@ -1132,6 +1150,10 @@ async function runQuery(
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
+      if (toolProfile === 'webhook') {
+        // Fail closed if anything beyond the manifest was loaded.
+        assertWebhookInit(message, allowedTools);
+      }
       newSessionId = message.session_id;
       if (newSessionId !== _trackedSessionId) {
         resetContextTracking(newSessionId);
@@ -1216,6 +1238,12 @@ async function main(): Promise<void> {
   // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  if (process.env.DEUS_TOOL_PROFILE === 'webhook') {
+    // Untrusted-input runs: no account MCP connectors, no auto-memory. The
+    // init check in runQuery is the enforcement; these reduce what loads.
+    sdkEnv.ENABLE_CLAUDEAI_MCP_SERVERS = 'false';
+    sdkEnv.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
+  }
 
   // Forward proxy auth token to the Claude SDK via ANTHROPIC_CUSTOM_HEADERS.
   // The SDK parses this env var as newline-separated "key: value" pairs and
@@ -1317,6 +1345,23 @@ async function main(): Promise<void> {
   const KNOWN_SESSION_COMMANDS = new Set(['/compact']);
   const trimmedPrompt = prompt.trim();
   const isSessionSlashCommand = KNOWN_SESSION_COMMANDS.has(trimmedPrompt);
+
+  // The slash-command query below runs without the webhook restrictions, so a
+  // webhook run never takes it.
+  if (
+    refuseSessionCommand(
+      process.env.DEUS_TOOL_PROFILE === 'webhook' ? 'webhook' : 'full',
+      isSessionSlashCommand,
+    )
+  ) {
+    log(`Refused session command for webhook profile: ${trimmedPrompt}`);
+    writeOutput({
+      status: 'error',
+      result: null,
+      error: 'session commands are not available for this group',
+    });
+    return;
+  }
 
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);

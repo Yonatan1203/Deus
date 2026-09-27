@@ -62,6 +62,31 @@ beforeEach(() => {
 });
 
 describe('McpChannelAdapter', () => {
+  it('callTool returns the tool text', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"ok":true}' }],
+    });
+    const adapter = new McpChannelAdapter(makeOpts());
+    await expect(
+      adapter.callTool('label_thread', { thread_id: 'abc', label: 'X' }),
+    ).resolves.toBe('{"ok":true}');
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'label_thread',
+      arguments: { thread_id: 'abc', label: 'X' },
+    });
+  });
+
+  it('callTool throws on a tool error', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: 'text', text: 'label not allowed: TRASH' }],
+    });
+    const adapter = new McpChannelAdapter(makeOpts());
+    await expect(
+      adapter.callTool('label_thread', { thread_id: 'abc', label: 'TRASH' }),
+    ).rejects.toThrow('label_thread failed: label not allowed: TRASH');
+  });
+
   it('should set connected=true even when get_status tool call fails', async () => {
     mockCallTool.mockRejectedValueOnce(new Error('status check failed'));
 

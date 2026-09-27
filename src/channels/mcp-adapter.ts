@@ -167,6 +167,18 @@ export class McpChannelAdapter implements Channel {
     }
   }
 
+  /** Call one of the channel server's own tools; throws on a tool error. */
+  async callTool(name: string, args: Record<string, unknown>): Promise<string> {
+    const result = await this.client.callTool({ name, arguments: args });
+    const text = Array.isArray(result.content)
+      ? result.content.map((c) => ('text' in c ? c.text : '')).join(' ')
+      : '';
+    if (result.isError) {
+      throw new Error(`${name} failed: ${text || 'unknown error'}`);
+    }
+    return text;
+  }
+
   async sendMessage(jid: string, text: string): Promise<void> {
     const result = await this.client.callTool({
       name: 'send_message',

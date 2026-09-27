@@ -71,6 +71,44 @@ describe('RouterState', () => {
     expect(mockSetRegisteredGroup).not.toHaveBeenCalled();
   });
 
+  // A group on a gmail: chat would have its agent output emailed out.
+  it('refuses to register a group on a Gmail chat', () => {
+    const state = new RouterState();
+    state.load();
+
+    state.registerGroup('gmail:1a0e3525f8ad8cdc', {
+      name: 'Inbox',
+      folder: 'gmail_inbox',
+      trigger: '@bot',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    expect(mockSetRegisteredGroup).not.toHaveBeenCalled();
+    expect(state.registeredGroups['gmail:1a0e3525f8ad8cdc']).toBeUndefined();
+  });
+
+  it('drops a Gmail-chat group already in the DB when loading', () => {
+    mockGetAllRegisteredGroups.mockReturnValue({
+      'gmail:1a0e3525f8ad8cdc': {
+        name: 'Inbox',
+        folder: 'gmail_inbox',
+        trigger: '@bot',
+        added_at: '2024-01-01T00:00:00.000Z',
+      },
+      'group@g.us': {
+        name: 'Other',
+        folder: 'other',
+        trigger: '@bot',
+        added_at: '2024-01-01T00:00:00.000Z',
+      },
+    });
+
+    const state = new RouterState();
+    state.load();
+
+    expect(Object.keys(state.registeredGroups)).toEqual(['group@g.us']);
+  });
+
   it('should reset last_agent_timestamp on corrupt JSON without throwing', () => {
     mockGetRouterState.mockImplementation((key) => {
       if (key === 'last_agent_timestamp') return '{bad-json{{';
