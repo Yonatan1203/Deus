@@ -16,7 +16,7 @@ import Database from 'better-sqlite3';
 
 import { STORE_DIR } from '../src/config.js';
 import { logger } from '../src/logger.js';
-import { getServiceManager, isRoot } from './platform.js';
+import { getServiceManager, getSystemdServiceStatus } from './platform.js';
 import { emitStatus } from './status.js';
 
 interface SmokeTestArgs {
@@ -40,7 +40,7 @@ function parseArgs(args: string[]): SmokeTestArgs {
 }
 
 /** Check if the Deus service process is running. */
-function checkServiceRunning(): 'running' | 'stopped' | 'not_found' {
+export function checkServiceRunning(): 'running' | 'stopped' | 'not_found' {
   const mgr = getServiceManager();
 
   if (mgr === 'launchd') {
@@ -55,13 +55,9 @@ function checkServiceRunning(): 'running' | 'stopped' | 'not_found' {
       // launchctl not available
     }
   } else if (mgr === 'systemd') {
-    const prefix = isRoot() ? 'systemctl' : 'systemctl --user';
-    try {
-      execSync(`${prefix} is-active deus`, { stdio: 'ignore' });
-      return 'running';
-    } catch {
-      return 'stopped';
-    }
+    return getSystemdServiceStatus(process.cwd()) === 'running'
+      ? 'running'
+      : 'stopped';
   } else if (mgr === 'nssm') {
     try {
       const out = execSync('nssm status deus', {
