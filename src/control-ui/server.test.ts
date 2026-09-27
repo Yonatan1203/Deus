@@ -2678,6 +2678,76 @@ describe('control-ui server — claude sessions', () => {
     server.close();
   });
 
+  it('conversation: the session task list rides along and its changes are a new version', async () => {
+    const tasksDir = path.join(root, 'tasks');
+    const store = path.join(tasksDir, SID);
+    fs.mkdirSync(store, { recursive: true });
+    const put = (n: number, status: string) =>
+      fs.writeFileSync(
+        path.join(store, `${n}.json`),
+        JSON.stringify({
+          id: String(n),
+          subject: `Task ${n}`,
+          activeForm: `Doing ${n}`,
+          status,
+          blocks: [],
+          blockedBy: [],
+        }),
+      );
+    put(1, 'completed');
+    put(2, 'in_progress');
+    const live = fakeLive();
+    await bootC({ claudeTasksDir: tasksDir }, fakeCli(), { liveViews: live });
+    const { auth } = await login();
+    const { vid } = j(
+      await request({
+        method: 'POST',
+        path: '/api/v1/claude/live',
+        headers: { ...auth, ...H },
+        body: JSON.stringify({ id: 'a1b2c3d4', cols: 80, rows: 24 }),
+      }),
+    );
+    const get = (q = '') =>
+      request({
+        method: 'GET',
+        path: `/api/v1/claude/live/${vid}/conversation${q}`,
+        headers: auth,
+      });
+    const first = j(await get());
+    expect(first.tasks).toEqual([
+      {
+        id: '2',
+        subject: 'Task 2',
+        status: 'in_progress',
+        activeForm: 'Doing 2',
+      },
+      {
+        id: '1',
+        subject: 'Task 1',
+        status: 'completed',
+        activeForm: 'Doing 1',
+      },
+    ]);
+    expect(j(await get(`?v=${encodeURIComponent(first.version)}`))).toEqual({
+      unchanged: true,
+      version: first.version,
+    });
+    put(2, 'completed');
+    fs.utimesSync(
+      path.join(store, '2.json'),
+      new Date(),
+      new Date(Date.now() + 3000),
+    );
+    const second = j(await get(`?v=${encodeURIComponent(first.version)}`));
+    expect(second.unchanged).toBeUndefined();
+    expect(
+      second.tasks.map(
+        (t: { id: string; status: string }) => `${t.id}:${t.status}`,
+      ),
+    ).toEqual(['1:completed', '2:completed']);
+    server.close();
+  });
+
   it('conversation: model and effort fall back to the settings defaults, and the transcript wins', async () => {
     const settings = path.join(root, 'settings.json');
     fs.writeFileSync(
@@ -2715,7 +2785,7 @@ describe('control-ui server — claude sessions', () => {
     expect(first.model).toBeNull();
     expect(first.model_label).toBe('opus');
     expect(first.effort).toBe('high');
-    expect(first.version).toMatch(/^[0-9]+:[0-9]+\|[0-9]+:[0-9]+$/);
+    expect(first.version).toMatch(/^[0-9]+:[0-9]+\|[0-9]+:[0-9]+\|[0-9a-f]*$/); // transcript | settings | tasks
     expect(j(await get(`?v=${encodeURIComponent(first.version)}`))).toEqual({
       unchanged: true,
       version: first.version,

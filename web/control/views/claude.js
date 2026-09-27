@@ -508,7 +508,46 @@ export async function render(root, api, bus, me) {
       if (thinkMeta.textContent !== meta) thinkMeta.textContent = meta;
       thinkEl.hidden = false;
     }
-    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl, thinkEl, askEl));
+    // Claude Code's own task list for this session (the ✻/■/□ tree the
+    // terminal draws), read from its task store by the conversation route.
+    // A collapsed panel stays collapsed for this session (sessionStorage).
+    const TASKS_KEY = `claude.tasks.${s.id}`;
+    const TASKS_MAX_ROWS = 10;
+    const TASK_GLYPH = { in_progress: '■', pending: '□', completed: '✔' };
+    const tasksRows = h('div', { class: 'tasks-rows' });
+    const tasksCount = h('span', { class: 'tasks-count' });
+    const tasksToggle = h('button', { type: 'button', class: 'tasks-head', 'aria-expanded': 'true' }, h('span', { class: 'tasks-title' }, 'Tasks'), tasksCount, h('span', { class: 'tasks-chev', 'aria-hidden': 'true' }, '▾'));
+    const tasksEl = h('div', { class: 'conv-tasks', hidden: true, role: 'region', 'aria-label': 'Tasks' }, tasksToggle, tasksRows);
+    let tasksVersion = null;
+    const readCollapsed = () => { try { return sessionStorage.getItem(TASKS_KEY) === 'collapsed'; } catch { return false; } };
+    function setCollapsed(c) {
+      tasksEl.classList.toggle('collapsed', c);
+      tasksToggle.setAttribute('aria-expanded', String(!c));
+      try { if (c) sessionStorage.setItem(TASKS_KEY, 'collapsed'); else sessionStorage.removeItem(TASKS_KEY); } catch { /* not remembered */ }
+    }
+    tasksToggle.addEventListener('click', () => setCollapsed(!tasksEl.classList.contains('collapsed')));
+    setCollapsed(readCollapsed());
+    function drawTasks(tasks) {
+      const key = tasks.map((t) => `${t.id}\u0000${t.status}\u0000${t.subject}\u0000${t.activeForm || ''}`).join('\u0001');
+      if (key === tasksVersion) return;
+      tasksVersion = key;
+      if (!tasks.length) { tasksEl.hidden = true; tasksRows.replaceChildren(); return; }
+      const done = tasks.filter((t) => t.status === 'completed').length;
+      tasksCount.textContent = ` · ${done} of ${tasks.length} done`;
+      const shown = tasks.slice(0, TASKS_MAX_ROWS);
+      // replaceChildren() would render a null as the text "null": filter first.
+      tasksRows.replaceChildren(...[
+        ...shown.map((t) => h('div', { class: `task-row ${t.status}`, dir: 'auto' },
+          h('span', { class: 'task-glyph', 'aria-hidden': 'true' }, TASK_GLYPH[t.status] || '□'),
+          t.status === 'in_progress' ? spinner() : null,
+          h('span', { class: 'task-text' }, t.status === 'in_progress' && t.activeForm ? t.activeForm : t.subject))),
+        tasks.length > shown.length
+          ? h('button', { type: 'button', class: 'small linkish task-more', onclick: openTerminal }, `+${tasks.length - shown.length} more`)
+          : null,
+      ].filter(Boolean));
+      tasksEl.hidden = false;
+    }
+    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl, tasksEl, thinkEl, askEl));
 
     const banner = h('div', { class: 'conv-banner', hidden: true },
       h('span', {}, 'Claude is waiting for you in the terminal.'),
@@ -693,6 +732,7 @@ export async function render(root, api, bus, me) {
         if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact });
         else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below.'));
         truncNote.hidden = !r.truncated;
+        drawTasks(Array.isArray(r.tasks) ? r.tasks : []);
         composer.picker('model').set(r.model_label ? givenLabel(r.model_label) : modelLabel(r.model));
         const eff = EFFORTS.find(([v]) => v === r.effort);
         composer.picker('effort').set(eff ? eff[1] : 'Effort');

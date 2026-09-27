@@ -56,6 +56,7 @@ import {
   createDefaultsReader,
   resolveDefaults,
 } from './api/claude-conversation.js';
+import { createTaskReader } from './api/claude-tasks.js';
 import { readSkillDir, readSlashCommands } from './api/claude-commands.js';
 import { createChatStore } from './api/chat-store.js';
 import {
@@ -228,6 +229,8 @@ export interface ControlDeps {
   claudeProjectsDir?: string;
   /** Claude Code's settings.json — the model/effort defaults a session starts with. */
   claudeSettingsFile?: string;
+  /** Claude Code's task store (`~/.claude/tasks`): the session's own task list. */
+  claudeTasksDir?: string;
 }
 
 export interface ControlServerOptions {
@@ -566,6 +569,9 @@ export function createControlServer(
     : null;
   const readDefaults = deps.claudeSettingsFile
     ? createDefaultsReader(deps.claudeSettingsFile)
+    : null;
+  const readTasks = deps.claudeTasksDir
+    ? createTaskReader(deps.claudeTasksDir)
     : null;
   const waitingOn = deps.claudeProjectsDir
     ? createWaitingOnReader(deps.claudeProjectsDir)
@@ -2015,7 +2021,11 @@ export function createControlServer(
     // One composed version for the fast path and the body: a transcript
     // change or a settings change each produce a new value.
     const defaults = readDefaults ? readDefaults() : null;
-    const version = `${read.version}|${defaults?.version ?? ''}`;
+    // The session's task list rides along; keyed by the transcript's uuid
+    // (row.session_id), the same id the store is named by.
+    const tasks =
+      readTasks && row?.session_id ? readTasks(row.session_id) : null;
+    const version = `${read.version}|${defaults?.version ?? ''}|${tasks?.version ?? ''}`;
     if (ctx.url.searchParams.get('v') === version)
       return writeJson(ctx.res, 200, { unchanged: true, version });
     const conv = { ...read.conv };
@@ -2025,7 +2035,7 @@ export function createControlServer(
       if (conv.effort === null)
         conv.effort = resolveDefaults(defaults.settings, conv.model).effort;
     }
-    writeJson(ctx.res, 200, { version, ...conv });
+    writeJson(ctx.res, 200, { version, ...conv, tasks: tasks?.tasks ?? [] });
   });
   router.add('GET', '/api/v1/claude/commands', (ctx) => {
     if (deps.readOnly)

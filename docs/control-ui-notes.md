@@ -1565,3 +1565,39 @@ by the drive):
 | After the next reply | the id names the model | "Sonnet 5"; the reply arrived | PASS |
 | Effort with no entry for the model | "Effort" (no guess) | "Effort" | PASS (by design) |
 | Unit | parser (model switch), resolver (two-key live shape, exact id, alias miss, bad level), settings reader (memo, link refused, bad JSON), route (defaults fill, unchanged fast path, settings edit, transcript wins) | 16 + 71 green | PASS |
+
+## Claude tab: the session's own task list (2026-09-27)
+
+The operator pointed at Claude Code's task tree in the terminal (✻ working
+line, `└` rows with `■`/`□`/✔) and asked for "some kind of view of those" in
+the conversation. Claude Code keeps the list in
+`~/.claude/tasks/<session uuid>/<n>.json` (`id`, `subject`, `activeForm`,
+`status`); the conversation route now reads it (`claude-tasks.ts`: the
+session's uuid — the transcript's, `row.session_id`, never the 8-hex id —
+gated by `CLAUDE_SESSION_ID_RE`; a real directory and real files only, ≤ 64
+KiB each, at most 200; memoized on the directory's and files' mtimes with
+the transcript reader's eviction) and sends `tasks` with the messages; its
+version joins the composed `version`, so a status change refreshes the view
+and nothing else re-sends.
+
+The panel mirrors what the operator pointed at — a header "Tasks · 1 of 3
+done" with a chevron, then one row per task: `■` plus the working spinner
+and the task's `activeForm` for in progress, `□` pending, ✔ muted for done;
+in_progress → pending → completed, then by id; ten rows then "+N more"
+(opens the terminal); hidden when there are none; collapsed state kept per
+session in `sessionStorage` (`claude.tasks.<id>`). The counts-card variant
+with a progress bar was considered and set aside: the tree is the thing the
+operator pointed at. One bug caught by the drive's screenshot: a `null`
+handed to `replaceChildren()` renders as the text "null" — rows now go
+through `h()`, which skips it.
+
+Driven on the real-Claude fixture (`tasks.mjs`, a throwaway session that
+creates three tasks and moves two; removed by the drive):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Rows | 3, in progress first with its activeForm and spinner, done last and muted | "■ ✻ Add the images", "□ Publish the page", "✔ Write the intro" — `artifacts/claude-tasks.png` | PASS |
+| Count | "· 1 of 3 done" | as expected | PASS |
+| No stray text | none | none (the "null" row is gone) | PASS |
+| Collapse | rows hidden; still collapsed after reopening the same session; expands again | as expected | PASS |
+| Unit | validator, order + version, reader (links, oversize, memo, bad ids), route (rides along; a status flip is a new version and not `unchanged`) | 4 + 2 green | PASS |

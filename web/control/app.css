@@ -804,3 +804,23 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
   .artifact-pane { position: fixed; inset: 0; z-index: 30; background: var(--bg); padding: 12px var(--gutter) calc(12px + env(safe-area-inset-bottom)); border-left: 0; }
   .artifact-pane .ap-frame { min-height: 0; }
 }
+
+/* The session's own task list under the conversation (views/claude.js drawTasks). */
+.conv-tasks { margin: 6px 0 2px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--surface-2) 60%, transparent); font-size: 14px; }
+.conv-tasks[hidden] { display: none; }
+.tasks-head { display: flex; align-items: center; gap: 4px; width: 100%; padding: 8px 12px; background: none; border: 0; color: var(--text); font: inherit; cursor: pointer; text-align: start; }
+.tasks-title { font-weight: 600; }
+.tasks-count { color: var(--muted); }
+.tasks-chev { margin-inline-start: auto; color: var(--muted); transition: transform var(--dur) var(--ease); }
+.conv-tasks.collapsed .tasks-chev { transform: rotate(-90deg); }
+.conv-tasks.collapsed .tasks-rows { display: none; }
+.tasks-rows { padding: 0 12px 8px; display: grid; gap: 4px; }
+.task-row { display: flex; align-items: baseline; gap: 8px; line-height: 1.4; }
+.task-glyph { font-family: var(--mono); width: 1.2em; text-align: center; color: var(--muted); }
+.task-row.in_progress .task-glyph { color: var(--accent); }
+.task-row.in_progress .task-text { color: var(--text); }
+.task-row.in_progress .spin { color: var(--accent); }
+.task-row.completed { color: var(--muted); }
+.task-row.completed .task-glyph { color: var(--ok); }
+.task-more { margin-top: 2px; justify-self: start; }
+@media (prefers-reduced-motion: reduce) { .tasks-chev { transition: none; } }
