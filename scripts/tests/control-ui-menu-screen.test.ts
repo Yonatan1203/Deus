@@ -1,0 +1,203 @@
+import { describe, expect, it } from 'vitest';
+// @ts-expect-error plain JS browser module
+import {
+  parseAskScreen,
+  parseMenuScreen,
+} from '../../web/control/ask-screen.js';
+
+// Real screens captured 2026-09-27 from Claude Code 2.1.283 (session names
+// and paths replaced), as the terminal buffer holds them; the permission
+// prompt is Claude Code's own wording, typed in by hand (auto mode on this
+// host never showed one).
+const PLAN_APPROVAL = [
+  '',
+  '  ⎿  /plan to preview',
+  '▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔',
+  '',
+  '  ──────────────────────────────────────────────────────────────────────────────────────────────────────────',
+  '   Ready to code?',
+  '',
+  "   Here is Claude's plan:",
+  '  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+  '   create hello.txt containing hello',
+  '  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '  ──────────────────────────────────────────────────────────────────────────────────────────────────────────',
+  '   Claude has written up a plan and is ready to execute. Would you like to proceed?',
+  '',
+  '   ❯ 1. Yes, and use auto mode',
+  '     2. Yes, manually approve edits',
+  '     3. Tell Claude what to change',
+  '        shift+tab to approve with this feedback',
+  '',
+  '   ctrl+g to edit in Vim · ~/.claude/plans/example.md',
+  '',
+];
+const SWITCH_MODEL = [
+  '● OK',
+  '✻ Cogitated for 4s · done 9:25 AM',
+  '▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔',
+  '   Switch model?',
+  '   Your next response will be slower and use more tokens',
+  '   This conversation is cached for the current model. Switching to Sonnet 5 means the full history gets re-read on',
+  '   your next message.',
+  '',
+  '   ❯ 1. Yes, switch to Sonnet 5',
+  '     2. No, go back',
+  '',
+];
+const ASK_WITH_CHAT = [
+  '● Entered plan mode',
+  '  Claude is now exploring and designing an implementation approach.',
+  '',
+  '● Updated plan',
+  '  ⎿  /plan to preview',
+  '  ⎿  Error: PreToolUse:ExitPlanMode hook error: [plan-review-gate] BLOCKED: no plan-reviewer',
+  '     approval marker.',
+  '',
+  '     Run the plan-reviewer Warden for this project and wait for VERDICT: SHIP before exiting',
+  '     plan mode. Then run:',
+  '',
+  '       python3 ~/project/scripts/codex_warden_hooks.py mark plan-reviewed SHIP "reason"',
+  '     --repo-root ~/project',
+  '────────────────────────────────────────────────────────────────────────────────────────────────',
+  'Planning: ~/.claude/plans/example.md',
+  '────────────────────────────────────────────────────────────────────────────────────────────────',
+  ' ☐ Gate block',
+  '',
+  "│ The project's plan-review-gate hook blocked ExitPlanMode: it wants a plan-reviewer SHIP",
+  '│ verdict and a marker file written first. Writing that marker changes files, which you told me',
+  '│ not to do. How should I proceed?',
+  '',
+  '❯ 1. Run plan-reviewer, then exit',
+  '     Send the one-line plan to the plan-reviewer agent. On SHIP, write the .plan-reviewed marker',
+  '     (a state file, not a repo edit) and call ExitPlanMode again. README.md stays untouched.',
+  '  2. Stop here',
+  '     Stay in plan mode and do nothing more. The plan file is at',
+  '     ~/.claude/plans/example.md.',
+  '  3. Type something.',
+  '────────────────────────────────────────────────────────────────────────────────────────────────',
+  '  4. Chat about this',
+  '',
+  'Enter to select · ↑/↓ to navigate · Esc to cancel',
+  '─────────────────────────────────────────────────────────────────────────────── Example session ─',
+  '',
+];
+const PERMISSION = [
+  '  Bash command',
+  '',
+  '  touch /tmp/perm-probe.txt',
+  '  Create the probe file',
+  '',
+  '  Do you want to proceed?',
+  '  ❯ 1. Yes',
+  "    2. Yes, and don't ask again for touch commands in /tmp",
+  '    3. No, and tell Claude what to do differently (esc)',
+  '',
+  '',
+];
+
+describe('parseMenuScreen', () => {
+  it('reads the plan-approval menu: options, the hint under option 3, no esc, a one-row prompt', () => {
+    const st = parseMenuScreen(PLAN_APPROVAL);
+    expect(st).toEqual({
+      kind: 'menu',
+      prompt: [
+        'Claude has written up a plan and is ready to execute. Would you like to proceed?',
+      ],
+      options: [
+        { n: 1, label: 'Yes, and use auto mode' },
+        { n: 2, label: 'Yes, manually approve edits' },
+        {
+          n: 3,
+          label: 'Tell Claude what to change',
+          hint: 'shift+tab to approve with this feedback',
+        },
+      ],
+      selected: 1,
+      esc: false,
+    });
+  });
+  it('reads the switch-model menu: two options, a four-row prompt in reading order, no esc', () => {
+    const st = parseMenuScreen(SWITCH_MODEL);
+    expect(st && st.options).toEqual([
+      { n: 1, label: 'Yes, switch to Sonnet 5' },
+      { n: 2, label: 'No, go back' },
+    ]);
+    expect(st && st.prompt.length).toBe(4);
+    expect(st && st.prompt[0]).toBe('Switch model?');
+    expect(st && st.prompt[3]).toBe('your next message.');
+    expect(st && st.esc).toBe(false);
+    expect(st && st.selected).toBe(1);
+  });
+  it('reads a permission prompt: the (esc) suffix leaves the label and sets esc', () => {
+    const st = parseMenuScreen(PERMISSION);
+    expect(st && st.options.map((o: { label: string }) => o.label)).toEqual([
+      'Yes',
+      "Yes, and don't ask again for touch commands in /tmp",
+      'No, and tell Claude what to do differently',
+    ]);
+    expect(st && st.esc).toBe(true);
+    expect(st && st.prompt).toEqual(['Do you want to proceed?']);
+  });
+  it('leaves AskUserQuestion screens alone: parseAskScreen owns them, and the menu run fails the 1..n check', () => {
+    const ask = parseAskScreen(ASK_WITH_CHAT);
+    expect(ask && ask.kind).toBe('question');
+    expect(ask && ask.kind === 'question' ? ask.options.length : -1).toBe(2);
+    expect(ask && ask.kind === 'question' ? ask.other : -1).toBe(3);
+    expect(JSON.stringify(ask)).not.toContain('Chat about this');
+    expect(parseMenuScreen(ASK_WITH_CHAT)).toBeNull();
+  });
+  it('joins several hint rows with a space and stops the prompt at eight rows', () => {
+    const st = parseMenuScreen([
+      ...Array.from({ length: 12 }, (_, i) => `  prompt row ${i + 1}`),
+      '',
+      '  ❯ 1. First',
+      '       one more thing',
+      '       and another',
+      '    2. Second',
+    ]);
+    expect(st && st.options[0]).toEqual({
+      n: 1,
+      label: 'First',
+      hint: 'one more thing and another',
+    });
+    expect(st && st.prompt.length).toBe(8);
+    expect(st && st.prompt[0]).toBe('prompt row 5'); // the eight nearest rows, in reading order
+    expect(st && st.prompt[7]).toBe('prompt row 12');
+  });
+  it('is null for a numbered list in a reply, a lone prompt, and a run without a cursor', () => {
+    expect(
+      parseMenuScreen([
+        '● Here is the plan:',
+        '  1. foo',
+        '  2. bar',
+        '',
+        '❯ ',
+      ]),
+    ).toBeNull();
+    expect(parseMenuScreen(['❯ '])).toBeNull();
+    expect(parseMenuScreen(['Pick one', '  1. a', '  2. b'])).toBeNull();
+    expect(parseMenuScreen(['Pick one', '❯ 1. a', '❯ 2. b'])).toBeNull();
+    expect(parseMenuScreen(['Pick one', '  2. a', '❯ 3. b'])).toBeNull();
+  });
+});

@@ -118,3 +118,75 @@ export function parseWorking(lines) {
   }
   return null;
 }
+
+// ---- Claude Code's other menus (plan approval, "Switch model?", tool
+// permissions, /model without arguments): a run of numbered rows with one ❯
+// cursor, optional indented hint rows under an option, footer rows below,
+// the prompt text above. Written against captures of 2.1.283 (the fixtures
+// in scripts/tests/control-ui-menu-screen.test.ts). The caller tries
+// parseAskScreen first; an AskUserQuestion screen never reaches this, and
+// would return null anyway (its last numbered row sits under a rule row).
+// Wired into the conversation view by the parity card (#44b); until then it
+// is exercised by its tests only.
+const MENU_NUM_RE = /^(\s*)(❯)?\s*(\d{1,2})\.\s+(.*)$/;
+const MENU_RULE_RE = /^\s*[─╌▔━]/;
+const MENU_BORDER_RE = /^\s*[╭│╰]/;
+const MENU_ESC_RE = /\besc\b/i;
+const PROMPT_MAX = 8;
+export function parseMenuScreen(lines) {
+  const rows = lines.slice(-60);
+  // 1. trailing blank and rule rows are not part of anything
+  let end = rows.length;
+  while (end > 0 && (!rows[end - 1].trim() || MENU_RULE_RE.test(rows[end - 1]))) end--;
+  const buf = rows.slice(0, end);
+  // 2a. the numbered rows; the bottommost is the anchor
+  const numbered = [];
+  buf.forEach((l, i) => { const m = MENU_NUM_RE.exec(l); if (m) numbered.push({ i, m }); });
+  if (numbered.length < 2) return null;
+  const anchor = numbered[numbered.length - 1];
+  const numberCol = anchor.m[1].length + (anchor.m[2] ? 2 : 0);
+  const leading = (l) => l.length - l.trimStart().length;
+  const isCont = (l) => l.trim() !== '' && !MENU_NUM_RE.test(l) && !MENU_RULE_RE.test(l) && !MENU_BORDER_RE.test(l) && leading(l) > numberCol;
+  // 2b. up from the anchor: numbered rows join; indented rows are held and
+  // become the hint of the next numbered row reached (they sit under it)
+  const run = [{ m: anchor.m, hints: [] }];
+  let pending = [];
+  let top = anchor.i;
+  for (let i = anchor.i - 1; i >= 0; i--) {
+    const l = buf[i];
+    const m = MENU_NUM_RE.exec(l);
+    if (m) { run.unshift({ m, hints: pending.reverse() }); pending = []; top = i; }
+    else if (isCont(l)) pending.push(l.trim());
+    else break;
+  }
+  // down from the anchor: its own hints; everything after is footer
+  let below = anchor.i + 1;
+  const own = [];
+  for (; below < buf.length && isCont(buf[below]); below++) own.push(buf[below].trim());
+  run[run.length - 1].hints = own;
+  if (run.some((r, k) => Number(r.m[3]) !== k + 1)) return null;
+  if (run.filter((r) => r.m[2]).length !== 1) return null;
+  // 3. footer: esc offered?
+  let esc = false;
+  for (let i = below; i < buf.length; i++) if (MENU_ESC_RE.test(buf[i])) esc = true;
+  const options = run.map((r) => {
+    let label = r.m[4].trim();
+    if (/\(esc\)$/i.test(label)) { esc = true; label = label.replace(/\s*\(esc\)$/i, ''); }
+    const o = { n: Number(r.m[3]), label: clip(label) };
+    if (r.hints.length) o.hint = clip(r.hints.join(' '));
+    return o;
+  });
+  const selected = Number(run.find((r) => r.m[2]).m[3]);
+  // 4. the prompt: skip blank rows above the run, then collect until a rule,
+  // a blank row or a box border, at most PROMPT_MAX rows, in reading order
+  let i = top - 1;
+  while (i >= 0 && !buf[i].trim()) i--;
+  const prompt = [];
+  while (i >= 0 && prompt.length < PROMPT_MAX) {
+    const l = buf[i];
+    if (!l.trim() || MENU_RULE_RE.test(l) || MENU_BORDER_RE.test(l)) break;
+    prompt.unshift(clip(l));
+    i--;
+  }
+  return { kind: 'menu', prompt, options, selected, esc };
+}
