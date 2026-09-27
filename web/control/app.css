@@ -844,3 +844,20 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 .conv-ask.live[data-sending] .menu-opt, .conv-ask.live[data-sending] .ask-cancel { opacity: 0.6; pointer-events: none; }
 .conv-fallback { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .conv-fallback[hidden] { display: none; }
+
+/* Quality pass A (views/claude.js, conversation.js, markdown.js). */
+.md-table { border-collapse: collapse; margin: 8px 0; font-size: 14px; max-width: 100%; display: block; overflow-x: auto; }
+.md-table th, .md-table td { border: 1px solid var(--line); padding: 4px 8px; text-align: start; vertical-align: top; }
+.md-table th { background: var(--surface-2); font-weight: 600; }
+.md-codewrap { position: relative; }
+.md-copy { position: absolute; top: 6px; inset-inline-end: 6px; opacity: 0.7; }
+.md-copy:hover, .md-copy:focus-visible { opacity: 1; }
+.conv-clipped { margin-top: 6px; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.conv-day { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+.conv-day::before, .conv-day::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.conv-refresh { color: var(--warn); }
+.conv-refresh[hidden] { display: none; }
+.conv-composer { position: relative; }
+.conv-newer { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(100% + 8px); z-index: 5; box-shadow: 0 6px 20px rgba(0,0,0,0.35); }
+.conv-newer[hidden] { display: none; }
+.pill-why { font-size: 12px; margin-inline-start: 6px; }

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error plain JS browser module
-import { renderConversation } from '../../web/control/conversation.js';
+import {
+  dayLabel,
+  daySeparators,
+  renderConversation,
+} from '../../web/control/conversation.js';
 
 // A tiny h(): the shape the real one produces, without a DOM. Children that
 // are null/false are skipped, as dom.js does; the few element methods the
@@ -102,5 +106,54 @@ describe('renderConversation with an artifact card', () => {
     expect(btn).not.toBeNull();
     (btn!.attrs.onclick as () => void)();
     expect(opened).toEqual([{ id: 'art-0123456789ab', local: true }]);
+  });
+});
+
+describe('day separators', () => {
+  const now = Date.parse('2026-09-27T12:00:00.000Z');
+  it('labels today, yesterday and older days', () => {
+    expect(dayLabel('2026-09-27', now)).toBe('Today');
+    expect(dayLabel('2026-09-26', now)).toBe('Yesterday');
+    expect(dayLabel('2026-09-01', now)).toMatch(/2026/);
+  });
+  it('only when the conversation spans more than one day, once per day', () => {
+    const one = [
+      { k: 'user', text: 'a', ts: '2026-09-27T09:00:00Z' },
+      { k: 'assistant', text: 'b', ts: '2026-09-27T09:01:00Z' },
+    ];
+    expect(daySeparators(one, now).size).toBe(0);
+    const two = [
+      { k: 'user', text: 'a', ts: '2026-09-25T09:00:00Z' },
+      { k: 'assistant', text: 'b', ts: '2026-09-25T09:01:00Z' },
+      { k: 'user', text: 'c' },
+      { k: 'user', text: 'd', ts: '2026-09-27T09:00:00Z' },
+    ];
+    const seps = daySeparators(two, now);
+    expect([...seps.entries()]).toEqual([
+      [0, expect.stringMatching(/2026/)],
+      [3, 'Today'],
+    ]);
+    // rendered: a separator node before the first item of each day
+    const el = {
+      last: [] as unknown[],
+      replaceChildren(...nodes: unknown[]) {
+        this.last = nodes;
+      },
+    };
+    renderConversation(el, two, h, { now });
+    expect((el.last[0] as Node).attrs.class).toBe('conv-day');
+    expect(el.last.length).toBe(6);
+    // a run of tool calls that opens a new day keeps that day's separator
+    const tools = [
+      { k: 'user', text: 'a', ts: '2026-09-25T09:00:00Z' },
+      { k: 'tool', tool: 'Bash', summary: 'ls', ts: '2026-09-27T01:00:00Z' },
+      { k: 'tool', tool: 'Bash', summary: 'pwd', ts: '2026-09-27T01:01:00Z' },
+      { k: 'assistant', text: 'b', ts: '2026-09-27T01:02:00Z' },
+    ];
+    renderConversation(el, tools, h, { now });
+    const classes = el.last.map((n) => (n as Node).attrs.class);
+    expect(classes[0]).toBe('conv-day');
+    expect(classes[2]).toBe('conv-day'); // before the tool run, not one item later
+    expect(el.last.length).toBe(5);
   });
 });

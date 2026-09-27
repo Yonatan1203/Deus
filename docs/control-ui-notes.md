@@ -1725,3 +1725,50 @@ The drive's wait for the card's `hidden` attribute timed out while the
 composer had already unlocked (which the same code path sets); the observed
 answer is the file on disk and the unlocked composer, the attribute wait is
 a drive artifact and was not chased.
+
+## Claude tab: conversation view quality pass, part A (2026-09-27)
+
+The operator: "improve the whole conversation option in the Claude tab, it
+needs to be much better." A ux-reviewer audit against the Claude app and
+Claude Code's own terminal produced fifteen items
+(`2026-09-27-conversation-quality-audit.md` in the job's plans); this part
+takes the eleven that need no new data source. Part B — streaming text and
+the running tool read from the terminal screen, and appending to the log
+instead of redrawing it — is planned against this part's shipped DOM.
+
+What changed: markdown tables are real tables (a run of pipe rows with a
+separator row; a stray pipe row stays text, which is a change — every pipe
+row used to become a monospace block); one level of nested lists; every
+block carries `dir="auto"` so a Hebrew paragraph after an English one reads
+its own way; a Copy button on code blocks; a message cut at the server's
+bound (`clipMarked`, only the three `TEXT_MAX` sites) ends with "Clipped —
+the rest is in the Terminal view" and Open terminal; a poll that fails for
+any reason but "no conversation" says "Couldn't refresh the conversation —
+retrying." above the composer and clears on the next good poll; "New
+messages ↓" when content arrives while scrolled up; the draft survives
+leaving and coming back (`sessionStorage`, per session); the pickers' reason
+while Claude works is visible text, once; the empty state says text only;
+items carry their row's time and day separators appear when a conversation
+spans more than one day. Found on the way and hotfixed first (v31): a
+finished Artifact tool call blanked the whole view.
+
+Driven on the real-Claude fixture (`quality.mjs`, a throwaway session that
+replies with a table, a nested list, a code block, an English and a Hebrew
+paragraph; removed by the drive):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Table, nested list, Copy | a `<table>` with 2 rows; `ul ul` with 2 items; Copy puts the code on the clipboard | as expected — `artifacts/claude-quality-markdown.png` | PASS |
+| Direction | every block `dir=auto`; the Hebrew paragraph computes `rtl` | `['ltr', 'rtl']` for the two paragraphs | PASS |
+| Refresh error | the notice while the route returns 500; gone on the next good poll | said; cleared — `claude-quality-refresh.png` | PASS |
+| Draft | restored after leaving the tab and reopening the session | restored | PASS |
+| Picker reason while working | "Wait until Claude finishes" as text | shown (~3 s after send, when the session reports working); the pill screenshot predates the change that shows it once rather than after each pill | PASS |
+| New messages pill | shown when a reply lands while scrolled up; click → bottom, hidden | as expected — `claude-quality-pill.png` | PASS |
+| Clipped marker, day separators, artifact card | rendered from fixture items inside the live page | "September 25, 2026" / "Today"; the marker; "Open beside" — `claude-quality-fixtures.png` | PASS |
+| Unit | parser: clipped + row times (2); markdown: tables, nesting, dir/copy (3); day separators (2); render regression (1) | green | PASS |
+
+Drive lessons, recorded so they are not relearned: a hidden element is
+never "visible" to `waitForSelector` (wait on the property); a send right
+after reopening a session goes nowhere until the live view is attached; the
+pickers' busy state follows the session list, so a one-word reply is done
+before it shows.

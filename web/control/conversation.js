@@ -43,7 +43,7 @@ export function groupItems(items) {
   for (const it of items) {
     if (it.k !== 'tool') { run = null; out.push(it); continue; }
     if (!run) {
-      run = { k: 'tools', label: '', calls: [], files: [], artifacts: [] };
+      run = { k: 'tools', label: '', calls: [], files: [], artifacts: [], ts: it.ts }; // the run's day is its first call's
       out.push(run);
     }
     run.calls.push(it);
@@ -149,18 +149,53 @@ export function fallbackNotice(h, handlers = {}) {
     handlers.openTerminal ? h('button', { type: 'button', class: 'small', onclick: () => handlers.openTerminal() }, 'Open terminal') : null);
 }
 
+// ---- day separators: only when the conversation spans more than one day.
+const dayOf = (ts) => (typeof ts === 'string' && ts.length >= 10 ? ts.slice(0, 10) : null);
+/** "Today", "Yesterday" or the date, for a day key (YYYY-MM-DD) against `now`. */
+export function dayLabel(day, now = Date.now()) {
+  const today = new Date(now).toISOString().slice(0, 10);
+  const yesterday = new Date(now - 86_400_000).toISOString().slice(0, 10);
+  if (day === today) return 'Today';
+  if (day === yesterday) return 'Yesterday';
+  const d = new Date(`${day}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+/** Map of item index → label to show above it; empty when all items share a day. */
+export function daySeparators(items, now = Date.now()) {
+  const out = new Map();
+  const days = new Set(items.map((it) => dayOf(it.ts)).filter(Boolean));
+  if (days.size < 2) return out;
+  let last = null;
+  items.forEach((it, i) => {
+    const d = dayOf(it.ts);
+    if (d && d !== last) { out.set(i, dayLabel(d, now)); last = d; }
+  });
+  return out;
+}
+// A text cut at the server's bound says so; the rest is in the terminal.
+const clippedNote = (h, handlers) => h('div', { class: 'conv-clipped' },
+  h('span', {}, 'Clipped — the rest is in the Terminal view.'),
+  handlers.openTerminal ? h('button', { type: 'button', class: 'small linkish', onclick: () => handlers.openTerminal() }, 'Open terminal') : null);
+
 /**
  * Draws items into `el`. `handlers.openTerminal()` is called by the
  * "Answer in terminal" button on an open question; `handlers.expanded`, a
  * Set, keeps opened folds open across redraws.
  */
 export function renderConversation(el, items, h, handlers = {}) {
-  const nodes = groupItems(items).map((it, i) => {
+  const grouped = groupItems(items);
+  const days = daySeparators(grouped, handlers.now);
+  const nodes = grouped.map((it, i) => {
+    const day = days.get(i);
+    const sep = day ? h('div', { class: 'conv-day', role: 'separator' }, h('span', {}, day)) : null;
+    const node = (() => {
     switch (it.k) {
       // Sent while Claude was working: shown at once, marked until it lands.
       case 'user': return h('div', { class: `conv-user${it.queued ? ' queued' : ''}`, dir: 'auto' }, it.text,
-        it.queued ? h('span', { class: 'conv-queued' }, 'Queued') : null);
-      case 'assistant': return h('div', { class: 'conv-assistant', dir: 'auto' }, ...renderBlocks(parseMarkdown(it.text), h));
+        it.queued ? h('span', { class: 'conv-queued' }, 'Queued') : null,
+        it.clipped ? clippedNote(h, handlers) : null);
+      case 'assistant': return h('div', { class: 'conv-assistant', dir: 'auto' }, ...renderBlocks(parseMarkdown(it.text), h, handlers),
+        it.clipped ? clippedNote(h, handlers) : null);
       case 'tools': return toolsItem(it, h, i, handlers.expanded, handlers);
       case 'command': return h('div', { class: 'conv-command' },
         h('code', {}, [it.name, it.args].filter(Boolean).join(' ')),
@@ -169,6 +204,8 @@ export function renderConversation(el, items, h, handlers = {}) {
       case 'ask': return askCard(it, h, handlers);
       default: return null;
     }
+    })();
+    return sep && node ? [sep, node] : node;
   });
-  el.replaceChildren(...nodes.filter(Boolean));
+  el.replaceChildren(...nodes.flat().filter(Boolean));
 }

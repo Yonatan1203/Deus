@@ -63,12 +63,18 @@ export function parseMarkdown(text) {
     }
     if (!line.trim()) { flush(); continue; }
     if (TABLE_RE.test(line)) {
-      flush();
+      // A real table has a separator row (|---|---|) under its header; a
+      // stray run of pipe rows is a paragraph like any other text.
       const rows = [];
-      while (i < lines.length && TABLE_RE.test(lines[i])) rows.push(lines[i++].trim());
-      i--;
-      blocks.push({ type: 'code', lang: 'table', text: rows.join('\n') });
-      continue;
+      let j = i;
+      while (j < lines.length && TABLE_RE.test(lines[j])) rows.push(lines[j++].trim());
+      const cells = (r) => r.replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+      if (rows.length >= 2 && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?$/.test(rows[1])) {
+        flush();
+        blocks.push({ type: 'table', head: cells(rows[0]).map(parseInline), rows: rows.slice(2).map((r) => cells(r).map(parseInline)) });
+        i = j - 1;
+        continue;
+      }
     }
     if (HR_RE.test(line)) { flush(); blocks.push({ type: 'hr' }); continue; }
     const hd = HEADING_RE.exec(line);
@@ -79,11 +85,22 @@ export function parseMarkdown(text) {
       listed = true;
       flush();
       const items = [];
-      while (i < lines.length && re.test(lines[i])) {
+      const indentOf = (l) => l.length - l.trimStart().length;
+      const base = indentOf(line);
+      while (i < lines.length && re.test(lines[i]) && indentOf(lines[i]) <= base) {
         let item = re.exec(lines[i])[1];
-        // Indented continuation lines belong to the item above.
-        while (i + 1 < lines.length && /^\s{2,}\S/.test(lines[i + 1]) && !UL_RE.test(lines[i + 1]) && !OL_RE.test(lines[i + 1])) item += ` ${lines[++i].trim()}`;
-        items.push(parseInline(item));
+        const sub = { type: null, items: [] };
+        // Indented lines under an item: a deeper list item (one level of
+        // nesting is kept) or a continuation of the item's text.
+        while (i + 1 < lines.length && /^\s{2,}\S/.test(lines[i + 1])) {
+          const next = lines[i + 1];
+          const deeper = indentOf(next) > base;
+          const subRe = UL_RE.test(next) ? UL_RE : OL_RE.test(next) ? OL_RE : null;
+          if (deeper && subRe) { sub.type = sub.type || (subRe === UL_RE ? 'ul' : 'ol'); sub.items.push(parseInline(subRe.exec(next)[1])); i++; continue; }
+          if (subRe) break;
+          item += ` ${next.trim()}`; i++;
+        }
+        items.push(sub.type ? { inline: parseInline(item), sub } : parseInline(item));
         i++;
       }
       i--;
@@ -115,17 +132,29 @@ function renderInline(spans, h) {
   });
 }
 
-/** Builds the blocks with `h()` only. */
-export function renderBlocks(blocks, h) {
+/**
+ * Builds the blocks with `h()` only. Every block carries `dir="auto"` so a
+ * Hebrew paragraph after an English one reads its own way. With
+ * `handlers.copy`, a code block gets a Copy button.
+ */
+export function renderBlocks(blocks, h, handlers = {}) {
+  const li = (it) => (Array.isArray(it)
+    ? h('li', { dir: 'auto' }, ...renderInline(it, h))
+    : h('li', { dir: 'auto' }, ...renderInline(it.inline, h), h(it.sub.type, {}, ...it.sub.items.map((s) => h('li', { dir: 'auto' }, ...renderInline(s, h))))));
   return blocks.map((b) => {
     switch (b.type) {
-      case 'h': return h(`h${b.level + 2}`, { class: 'md-h' }, ...renderInline(b.inline, h));
+      case 'h': return h(`h${b.level + 2}`, { class: 'md-h', dir: 'auto' }, ...renderInline(b.inline, h));
       case 'ul':
-      case 'ol': return h(b.type, {}, ...b.items.map((it) => h('li', {}, ...renderInline(it, h))));
-      case 'code': return h('pre', { class: 'md-code' }, h('code', {}, b.text));
-      case 'quote': return h('blockquote', {}, ...renderInline(b.inline, h));
+      case 'ol': return h(b.type, { dir: 'auto' }, ...b.items.map(li));
+      case 'code': return h('div', { class: 'md-codewrap' },
+        handlers.copy ? h('button', { type: 'button', class: 'small ghost md-copy', 'aria-label': 'Copy the code', onclick: () => handlers.copy(b.text) }, 'Copy') : null,
+        h('pre', { class: 'md-code', dir: 'ltr' }, h('code', {}, b.text)));
+      case 'table': return h('table', { class: 'md-table', dir: 'auto' },
+        h('thead', {}, h('tr', {}, ...b.head.map((c) => h('th', { dir: 'auto' }, ...renderInline(c, h))))),
+        h('tbody', {}, ...b.rows.map((r) => h('tr', {}, ...r.map((c) => h('td', { dir: 'auto' }, ...renderInline(c, h)))))));
+      case 'quote': return h('blockquote', { dir: 'auto' }, ...renderInline(b.inline, h));
       case 'hr': return h('hr', {});
-      default: return h('p', {}, ...renderInline(b.inline, h));
+      default: return h('p', { dir: 'auto' }, ...renderInline(b.inline, h));
     }
   });
 }

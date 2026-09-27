@@ -42,7 +42,8 @@ export function pillMenu(initial, options, onPick, note) {
   return {
     wrap: h('div', { class: 'pill-wrap' }, btn, list),
     set(text) { btn.textContent = `${text} ▾`; },
-    disable(d, title) { btn.disabled = d; btn.title = title || ''; if (d) close(); },
+    // The reason is visible text, not only a hover title: phones have no hover.
+    disable(d, why) { btn.disabled = d; btn.title = why || ''; if (d) close(); if (btn.nextSibling && btn.nextSibling.classList && btn.nextSibling.classList.contains('pill-why')) btn.nextSibling.remove(); if (d && why) btn.after(h('span', { class: 'pill-why muted' }, why)); },
     hide(hidden) { btn.parentElement.hidden = hidden; },
     dispose() { document.removeEventListener('click', close); document.removeEventListener('keydown', onKey); },
   };
@@ -68,6 +69,14 @@ export function autosizeTextarea(el, maxRows = 8) {
 
 export function createComposer(o) {
   const input = h('textarea', { class: 'conv-input', rows: '1', placeholder: o.placeholder, 'aria-label': o.label });
+  // A draft survives switching away and back (sessionStorage, per box).
+  const draft = {
+    read() { try { return o.draftKey ? sessionStorage.getItem(o.draftKey) || '' : ''; } catch { return ''; } },
+    save(v) { try { if (!o.draftKey) return; if (v) sessionStorage.setItem(o.draftKey, v); else sessionStorage.removeItem(o.draftKey); } catch { /* not remembered */ } },
+  };
+  const saved = draft.read();
+  if (saved) input.value = saved;
+  input.addEventListener('input', () => draft.save(input.value));
   const token = h('div', { class: 'conv-token', hidden: true });
   const slash = h('div', { class: 'conv-slash', role: 'listbox', 'aria-label': 'Commands', hidden: true });
   const pickers = new Map((o.pickers || []).map((p) => [p.id, pillMenu(p.initial, p.options, p.onPick, p.note)]));
@@ -114,6 +123,7 @@ export function createComposer(o) {
     if (locked) return;
     const text = cleanInput(input.value);
     if (!text || !o.onSubmit(text)) return;
+    draft.save('');
     input.value = '';
     autosize();
     updateSlash();

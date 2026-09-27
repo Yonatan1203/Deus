@@ -553,6 +553,12 @@ export async function render(root, api, bus, me) {
     // Two browsers on one session (the raw terminal has the same race): the
     // other one's recent typing is said, not hidden. Set on every poll.
     const othersEl = h('div', { class: 'conv-others', role: 'status', hidden: true }, 'Someone else is answering this session from another browser.');
+    // A poll that fails for any reason but "no conversation" is said, not
+    // swallowed; the next successful poll clears it.
+    const refreshEl = h('div', { class: 'conv-banner conv-refresh', role: 'status', hidden: true }, "Couldn't refresh the conversation — retrying.");
+    // New content while scrolled up: a pill, not a jump.
+    const newerBtn = h('button', { type: 'button', class: 'small primary conv-newer', hidden: true, onclick: () => { scroller.scrollTop = scroller.scrollHeight; newerBtn.hidden = true; } }, 'New messages ↓');
+    const copy = (t) => navigator.clipboard.writeText(t).then(() => toast('Copied', 'ok'), () => toast("Couldn't copy — select the text instead.", 'error'));
     // No "waiting for you in the terminal": the cards answer what the
     // terminal shows. Only when the session is blocked and two interval ticks
     // saw a screen no parser knows does this say so (ask-fallback.js).
@@ -566,6 +572,7 @@ export async function render(root, api, bus, me) {
     const composer = createComposer({
       placeholder: 'Message Claude — type / for commands',
       label: 'Message Claude',
+      draftKey: `claude.draft.${s.id}`,
       commands: () => commands,
       // Before anything is typed, your own commands and the built-ins lead.
       rank: { personal: 0, 'built-in': 1, project: 2 },
@@ -578,7 +585,8 @@ export async function render(root, api, bus, me) {
         { id: 'effort', initial: 'Effort', options: EFFORTS, onPick: (v) => sendLine(`/effort ${v}`), note: DEFAULT_NOTE },
       ],
     });
-    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, othersEl, banner, composer.el));
+    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, newerBtn, refreshEl, othersEl, banner, composer.el));
+    scroller.addEventListener('scroll', () => { if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120) newerBtn.hidden = true; }, { passive: true });
 
     const view = () => mine.view;
     function sendText(t) {
@@ -767,12 +775,14 @@ export async function render(root, api, bus, me) {
         const r = await api.get(`/api/v1/claude/live/${view().vid}/conversation?v=${encodeURIComponent(version)}`);
         if (disposed) return;
         othersEl.hidden = !r.others_active;
+        refreshEl.hidden = true; // any successful poll, unchanged or not
         if (r.unchanged) return;
         version = r.version;
         lastItems = r.items;
         const near = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
-        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact });
-        else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below.'));
+        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact, copy });
+        else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below — text only, no attachments.'));
+        if (!first && !near) newerBtn.hidden = false;
         truncNote.hidden = !r.truncated;
         drawTasks(Array.isArray(r.tasks) ? r.tasks : []);
         composer.picker('model').set(r.model_label ? givenLabel(r.model_label) : modelLabel(r.model));
@@ -783,6 +793,7 @@ export async function render(root, api, bus, me) {
         first = false;
         listEl.dataset.loaded = 'true';
       } catch (err) {
+        if (err.status !== 404) refreshEl.hidden = false;
         if (err.status === 404) {
           listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No conversation found for this session yet.'));
           listEl.dataset.loaded = 'true';
@@ -809,8 +820,8 @@ export async function render(root, api, bus, me) {
       // shows as Queued). The box says so, unless a question holds it.
       if (!lockedByAsk) composer.input.placeholder = busy ? 'Message Claude — it will be queued until Claude is ready' : composer.placeholder;
       const why = busy ? 'Wait until Claude finishes' : '';
-      composer.picker('model').disable(busy, why);
-      composer.picker('effort').disable(busy, why);
+      composer.picker('model').disable(busy, why); // the reason shows once, after the first pill
+      composer.picker('effort').disable(busy, '');
     }
     setSession(s);
     return {

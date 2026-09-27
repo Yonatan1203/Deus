@@ -28,7 +28,8 @@ const PERMISSION_MODES = [
 const ARTIFACT_URL_RE =
   /https:\/\/claude\.ai\/[A-Za-z0-9/_-]*artifact[A-Za-z0-9/_-]*/;
 
-export type ConvItem =
+/** Every item may carry the transcript row's time (`ts`, ISO) and a `clipped` mark. */
+export type ConvItem = (
   | { k: 'user'; text: string; queued?: boolean }
   | { k: 'assistant'; text: string }
   | {
@@ -48,7 +49,8 @@ export type ConvItem =
       answer?: string;
     }
   | { k: 'command'; name: string; args: string; output?: string }
-  | { k: 'note'; text: string };
+  | { k: 'note'; text: string }
+) & { ts?: string; clipped?: true };
 
 export interface Conversation {
   items: ConvItem[];
@@ -71,6 +73,18 @@ type Block = {
 };
 
 const clip = (s: string, n: number) => redactSecrets(s).slice(0, n);
+/** The bounded message texts: says when it cut, so the view can show it. */
+const clipMarked = (
+  s: string,
+  n: number,
+): { text: string; clipped: boolean } => {
+  const t = redactSecrets(s);
+  return { text: t.slice(0, n), clipped: t.length > n };
+};
+const marked = <T extends { text: string }>(
+  it: T,
+  cut: boolean,
+): T & { clipped?: true } => (cut ? { ...it, clipped: true as const } : it);
 const lines = (s: unknown) =>
   typeof s === 'string' && s ? s.replace(/\n$/, '').split('\n').length : 0;
 const tag = (s: string, name: string) =>
@@ -256,7 +270,8 @@ export function buildConversation(
       });
     if (s.startsWith('[Request interrupted by user'))
       return void items.push({ k: 'note', text: 'Interrupted' });
-    items.push({ k: 'user', text: clip(unwrapPastes(s), TEXT_MAX) });
+    const m = clipMarked(unwrapPastes(s), TEXT_MAX);
+    items.push(marked({ k: 'user' as const, text: m.text }, m.clipped));
   };
 
   // A message typed while Claude works is a queue-operation row: `enqueue`,
@@ -272,7 +287,19 @@ export function buildConversation(
   const takeQueued = (content: string): ConvItem | undefined =>
     queued.get(content)?.pop();
 
+  // Each row's time rides on the items it produced (the day separators).
+  let mark = 0;
+  let rowTs: string | null = null;
+  const stamp = () => {
+    if (!rowTs) return;
+    for (let i = mark; i < items.length; i++)
+      if (items[i].ts === undefined) items[i].ts = rowTs;
+  };
   for (const e of rows) {
+    stamp();
+    mark = items.length;
+    const ts = (e as { timestamp?: unknown }).timestamp;
+    rowTs = typeof ts === 'string' && /^\d{4}-\d\d-\d\dT/.test(ts) ? ts : null;
     if (e.type === 'permission-mode') {
       const pm = String(e.permissionMode);
       mode = PERMISSION_MODES.includes(pm) ? pm : null;
@@ -284,11 +311,11 @@ export function buildConversation(
         // Harness text is queued like anything else; it is never registered,
         // so its later user/remove rows find nothing and do nothing.
         if (isHarness(e.content.trim())) continue;
-        const it: ConvItem = {
-          k: 'user',
-          text: clip(unwrapPastes(e.content), TEXT_MAX),
-          queued: true,
-        };
+        const m = clipMarked(unwrapPastes(e.content), TEXT_MAX);
+        const it: ConvItem = marked(
+          { k: 'user' as const, text: m.text, queued: true },
+          m.clipped,
+        );
         items.push(it);
         const list = queued.get(e.content) ?? [];
         list.push(it);
@@ -341,7 +368,10 @@ export function buildConversation(
       if (!Array.isArray(content)) continue;
       for (const b of content as Block[]) {
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-          items.push({ k: 'assistant', text: clip(b.text.trim(), TEXT_MAX) });
+          const m = clipMarked(b.text.trim(), TEXT_MAX);
+          items.push(
+            marked({ k: 'assistant' as const, text: m.text }, m.clipped),
+          );
         } else if (b?.type === 'tool_use' && typeof b.name === 'string') {
           const it = b.name === 'AskUserQuestion' ? askItem(b) : toolItem(b);
           if (!it) continue;
@@ -351,6 +381,7 @@ export function buildConversation(
       }
     }
   }
+  stamp();
   const kept = dropped.size ? items.filter((it) => !dropped.has(it)) : items;
   return {
     items: kept.slice(-limit),

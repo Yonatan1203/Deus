@@ -491,3 +491,25 @@ describe('the model switch and the settings defaults', () => {
     }
   });
 });
+
+describe('clipped texts and row times', () => {
+  it('marks a reply cut at TEXT_MAX and leaves short ones unmarked', () => {
+    const long = 'x'.repeat(25_000);
+    const c = buildConversation([user('short'), assistant([text(long)])]);
+    expect(c.items[0]).not.toHaveProperty('clipped');
+    expect(c.items[1]).toMatchObject({ k: 'assistant', clipped: true });
+    expect((c.items[1] as { text: string }).text.length).toBe(20_000);
+  });
+  it('stamps every item with its row time when the row has one', () => {
+    const c = buildConversation([
+      { ...user('one'), timestamp: '2026-09-25T10:00:00.000Z' },
+      { ...assistant([text('two')]), timestamp: '2026-09-26T11:00:00.000Z' },
+      assistant([text('three')]),
+    ]);
+    expect(c.items.map((it) => it.ts)).toEqual([
+      '2026-09-25T10:00:00.000Z',
+      '2026-09-26T11:00:00.000Z',
+      undefined,
+    ]);
+  });
+});
