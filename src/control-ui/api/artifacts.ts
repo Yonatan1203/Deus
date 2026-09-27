@@ -22,6 +22,8 @@ export const REGISTRY_WRITE_MAX = 192 * 1024;
 export const REGISTRY_FILE = 'artifacts.json';
 export const REMOVED_LOG = 'artifacts-removed.jsonl';
 export const REMOVED_LOG_MAX = 1024 * 1024;
+export const COPY_MAX = 4 * 1024 * 1024;
+export const COPY_DIR = 'artifacts';
 export const LOCK_STALE_MS = 5000;
 const TMP_RE = /^artifacts\.json\.tmp-[0-9a-f]{8}$/;
 const TMP_SWEEP_MS = 60 * 60 * 1000;
@@ -31,6 +33,14 @@ export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 export type RegistryReason =
   'unreadable' | 'too-large' | 'not-json' | 'bad-schema';
 
+/** The local copy the dashboard shows beside a conversation (CLI `add --file`). */
+export interface ArtifactLocal {
+  source: string;
+  uid: number;
+  bytes: number;
+  copied_at: string;
+  source_mtime_ms: number;
+}
 export interface ArtifactEntry {
   id: string;
   title: string;
@@ -39,6 +49,7 @@ export interface ArtifactEntry {
   description?: string;
   added_at: string;
   added_by: (typeof ADDED_BY)[number];
+  local?: ArtifactLocal;
 }
 export interface Registry {
   v: 1;
@@ -54,6 +65,8 @@ export interface ArtifactView {
   description?: string;
   added_at: string;
   added_by: string;
+  /** A local copy exists, so the pane can show it; never the path. */
+  local: boolean;
   url?: string | null;
   blocked?: UrlBlock;
 }
@@ -101,8 +114,47 @@ export function validateEntry(raw: unknown): ArtifactEntry | null {
     added_by: added_by as ArtifactEntry['added_by'],
   };
   if (description !== undefined) entry.description = description;
+  const local = validateLocal(raw.local);
+  if (local) entry.local = local;
   return entry;
 }
+
+/** Kept in lockstep with scripts/artifact-registry.mjs. A malformed record is dropped; the entry stays. */
+export function validateLocal(raw: unknown): ArtifactLocal | null {
+  if (!isObj(raw)) return null;
+  const { source, uid, bytes, copied_at, source_mtime_ms } = raw;
+  if (
+    typeof source !== 'string' ||
+    !path.isAbsolute(source) ||
+    source.length > 1024
+  )
+    return null;
+  if (!Number.isInteger(uid) || (uid as number) < 0) return null;
+  if (
+    !Number.isInteger(bytes) ||
+    (bytes as number) < 1 ||
+    (bytes as number) > COPY_MAX
+  )
+    return null;
+  if (!isIso(copied_at)) return null;
+  if (
+    typeof source_mtime_ms !== 'number' ||
+    !Number.isFinite(source_mtime_ms) ||
+    source_mtime_ms < 0
+  )
+    return null;
+  return {
+    source,
+    uid: uid as number,
+    bytes: bytes as number,
+    copied_at: copied_at as string,
+    source_mtime_ms,
+  };
+}
+
+/** Where an artifact's local copy lives. */
+export const copyPath = (dir: string, id: string): string =>
+  path.join(dir, COPY_DIR, `${id}.html`);
 
 /** Fresh literal, closed reason; duplicate ids are a schema failure. */
 export function validateRegistry(
@@ -171,6 +223,7 @@ export function projectEntry(
     hostname: hostOf(e.url),
     added_at: e.added_at,
     added_by: e.added_by,
+    local: e.local !== undefined,
   };
   if (opts.readOnly) return v;
   if (e.description !== undefined) v.description = clean(e.description);
@@ -323,6 +376,198 @@ export function writeRegistry(
       /* already gone */
     }
     return { ok: false, status: 503, error: 'registry unavailable' };
+  }
+}
+
+const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+
+/** The copy the pane frames: its bytes, or why there are none. Never the source. */
+export type CopyRead =
+  | { status: 200; body: Buffer }
+  | { status: 404; error: 'not found' | 'no-local' | 'no-copy' }
+  | { status: 503; error: 'registry unavailable' };
+
+export function readArtifactCopy(dir: string, id: unknown): CopyRead {
+  if (typeof id !== 'string' || !ARTIFACT_ID_RE.test(id))
+    return { status: 404, error: 'not found' };
+  const cur = readRegistry(dir);
+  if (!cur.ok) return { status: 503, error: 'registry unavailable' };
+  const entry = cur.registry.artifacts.find((a) => a.id === id);
+  if (!entry) return { status: 404, error: 'not found' };
+  if (!entry.local) return { status: 404, error: 'no-local' };
+  const body = readBounded(copyPath(dir, id));
+  if (!body) return { status: 404, error: 'no-copy' };
+  return { status: 200, body };
+}
+
+/** A regular file, opened without following a link, at most COPY_MAX bytes. */
+function readBounded(file: string): Buffer | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | NOFOLLOW);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > COPY_MAX) return null;
+    const buf = Buffer.alloc(st.size);
+    const n = fs.readSync(fd, buf, 0, st.size, 0);
+    return buf.subarray(0, n);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+/** The copy's version, what the pane polls: its mtime and size. */
+export function copyVersion(dir: string, id: string): string | null {
+  try {
+    const st = fs.lstatSync(copyPath(dir, id));
+    if (!st.isFile()) return null;
+    return `${Math.trunc(st.mtimeMs)}:${st.size}`;
+  } catch {
+    return null;
+  }
+}
+
+const SOURCE_RE = /\.html?$/i;
+
+type SourceCheck =
+  | { ok: true; changed: false }
+  | { ok: true; changed: true; data: Buffer; mtimeMs: number }
+  | { ok: false };
+
+/**
+ * The source is re-read only here, on the open handle: a real `.html`, not a
+ * link, one link, the uid and realpath recorded at `add`, the fd's dev/ino
+ * equal to a stat taken after the open, within the size bound. Any mismatch
+ * keeps the existing copy.
+ */
+function checkSource(local: ArtifactLocal): SourceCheck {
+  if (!SOURCE_RE.test(local.source)) return { ok: false };
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(local.source, fs.constants.O_RDONLY | NOFOLLOW);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1 || st.uid !== local.uid)
+      return { ok: false };
+    if (st.size < 1 || st.size > COPY_MAX) return { ok: false };
+    if (fs.realpathSync(local.source) !== local.source) return { ok: false };
+    const again = fs.statSync(local.source);
+    if (again.dev !== st.dev || again.ino !== st.ino) return { ok: false };
+    if (st.mtimeMs <= local.source_mtime_ms)
+      return { ok: true, changed: false };
+    const buf = Buffer.alloc(st.size);
+    const n = fs.readSync(fd, buf, 0, st.size, 0);
+    return {
+      ok: true,
+      changed: true,
+      data: buf.subarray(0, n),
+      mtimeMs: st.mtimeMs,
+    };
+  } catch {
+    return { ok: false };
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+export type RefreshResult =
+  | { status: 200; version: string; following: boolean }
+  | { status: 404; error: 'not found' | 'no-local' | 'no-copy' }
+  | { status: 503; error: 'registry unavailable' | 'registry busy' };
+
+/**
+ * The refresh step: re-copies the source (temp + rename, 0600) when it passes
+ * every check and is newer than the copy, and reports the copy's version.
+ * `following` is false when the source is gone or failed a check, and always
+ * on a read-only server, which never writes.
+ */
+export function refreshArtifact(
+  dir: string,
+  id: unknown,
+  opts: { readOnly: boolean; now?: () => number },
+): RefreshResult {
+  const now = opts.now ?? Date.now;
+  if (typeof id !== 'string' || !ARTIFACT_ID_RE.test(id))
+    return { status: 404, error: 'not found' };
+  if (!registryDirOk(dir))
+    return { status: 503, error: 'registry unavailable' };
+  const cur = readRegistry(dir);
+  if (!cur.ok) return { status: 503, error: 'registry unavailable' };
+  const entry = cur.registry.artifacts.find((a) => a.id === id);
+  if (!entry) return { status: 404, error: 'not found' };
+  if (!entry.local) return { status: 404, error: 'no-local' };
+  const version = copyVersion(dir, id);
+  if (!version) return { status: 404, error: 'no-copy' };
+  if (opts.readOnly) return { status: 200, version, following: false };
+  const src = checkSource(entry.local);
+  if (!src.ok) return { status: 200, version, following: false };
+  if (!src.changed) return { status: 200, version, following: true };
+  try {
+    return withLock(
+      dir,
+      (): RefreshResult => {
+        const again = readRegistry(dir);
+        if (!again.ok) return { status: 503, error: 'registry unavailable' };
+        const e = again.registry.artifacts.find((a) => a.id === id);
+        if (!e || !e.local) return { status: 404, error: 'not found' };
+        const file = copyPath(dir, id);
+        const tmp = `${file}.tmp-${crypto.randomBytes(4).toString('hex')}`;
+        const fd = fs.openSync(
+          tmp,
+          fs.constants.O_WRONLY |
+            fs.constants.O_CREAT |
+            fs.constants.O_EXCL |
+            NOFOLLOW,
+          0o600,
+        );
+        try {
+          fs.writeSync(fd, src.data);
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        try {
+          fs.renameSync(tmp, file);
+        } catch (err) {
+          try {
+            fs.unlinkSync(tmp);
+          } catch {
+            /* already gone */
+          }
+          throw err;
+        }
+        const local: ArtifactLocal = {
+          ...e.local,
+          bytes: src.data.length,
+          copied_at: new Date(now()).toISOString(),
+          source_mtime_ms: src.mtimeMs,
+        };
+        // A failed registry write leaves the fresh copy in place; the stale
+        // source_mtime_ms only means the next poll copies once more.
+        writeRegistry(
+          dir,
+          {
+            v: 1,
+            rev: again.registry.rev + 1,
+            artifacts: again.registry.artifacts.map((a) =>
+              a.id === id ? { ...a, local } : a,
+            ),
+          },
+          again.registry.rev,
+          now,
+        );
+        return {
+          status: 200,
+          version: copyVersion(dir, id) ?? version,
+          following: true,
+        };
+      },
+      now,
+    );
+  } catch (err) {
+    if (err instanceof RegistryBusy)
+      return { status: 503, error: 'registry busy' };
+    return { status: 200, version, following: false };
   }
 }
 
@@ -537,6 +782,11 @@ export function removeArtifact(
           opts.by ?? 'dashboard',
           new Date(now()).toISOString(),
         );
+        try {
+          fs.unlinkSync(copyPath(dir, id));
+        } catch {
+          /* no copy */
+        }
         return { status: 204, entry };
       },
       now,

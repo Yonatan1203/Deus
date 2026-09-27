@@ -183,8 +183,13 @@ function showLogin() {
 }
 
 function currentView() {
-  const key = location.hash.replace(/^#\/?/, '').split('/')[0];
+  const key = location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
   return VIEWS[key] ? key : DEFAULT_VIEW;
+}
+/** The part of the hash after `?` (`#/claude?artifact=…`), empty when none. */
+export function hashQuery() {
+  const i = location.hash.indexOf('?');
+  return new URLSearchParams(i === -1 ? '' : location.hash.slice(i + 1));
 }
 
 function link(k) {

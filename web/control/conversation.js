@@ -74,13 +74,20 @@ function toolsItem(g, h, key, expanded) {
     ? h('div', { class: 'conv-files' }, ...g.files.map((f) => h('span', { class: 'conv-file' },
       h('code', {}, f.file), h('span', { class: 'plus' }, `+${f.added}`), h('span', { class: 'minus' }, `-${f.removed}`))))
     : null;
-  const cards = g.artifacts.map((a) => h('div', { class: 'conv-card' },
-    h('span', { class: 'conv-card-title' }, a.summary ? a.summary.split('/').pop() : 'Artifact'),
-    a.url && isClaudeArtifact(a.url)
-      ? h('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, 'Artifact · Open')
-      : h('span', { class: 'muted' }, 'Artifact')));
+  const cards = g.artifacts.map((a) => {
+    const local = a.url && handlers.localArtifact ? handlers.localArtifact(a.url) : null;
+    return h('div', { class: 'conv-card' },
+      h('span', { class: 'conv-card-title' }, a.summary ? a.summary.split('/').pop() : 'Artifact'),
+      a.url && isClaudeArtifact(a.url)
+        ? h('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, 'Artifact · Open')
+        : h('span', { class: 'muted' }, 'Artifact'),
+      local ? h('button', { type: 'button', class: 'small', onclick: () => handlers.openArtifact(local) }, 'Open beside') : null);
+  });
   return h('div', { class: 'conv-tools' }, toggle, list, files, ...cards);
 }
+// `handlers.localArtifact(url)` returns the registry entry when the dashboard
+// holds a local copy of that artifact; `handlers.openArtifact(entry)` opens it
+// beside the conversation.
 
 /**
  * A question from Claude, as the transcript records it — which is only once

@@ -256,8 +256,12 @@ tab. Only on a yes, run:
 
 ```bash
 node scripts/artifact-registry.mjs add --title "Supplier Line" \
-  --url https://claude.ai/artifact/… --kind app|report|preview [--description "…"]
+  --url https://claude.ai/artifact/… --kind app|report|preview [--description "…"] \
+  [--file <the local .html file you published from, not the artifact URL>]
 ```
+
+With `--file`, the dashboard shows the artifact beside the conversation and
+follows your edits to that file.
 
 Never add without asking; never add scratch or one-off artifacts. One
 exception: when the operator started your session from the dashboard's

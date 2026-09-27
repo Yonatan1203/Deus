@@ -43,7 +43,7 @@ describe('creationPrompt', () => {
         'Build it and publish it privately with the Artifact tool (load the artifact-design skill first). If a decision is needed from the operator, ask before publishing. If you cannot publish, or the registry command fails, say why instead of guessing.',
         '',
         'When it is published, register it right away — the operator already approved this from the dashboard, so do not ask again:',
-        'node scripts/artifact-registry.mjs add --title "Posts preview" --url <the artifact url> --kind app --description "<one line about it>"',
+        'node scripts/artifact-registry.mjs add --title "Posts preview" --url <the artifact url> --kind app --description "<one line about it>" --file "<the local .html file you published from, not the artifact URL>"',
         '',
         'Then reply with the link.',
       ].join('\n'),

@@ -22,7 +22,7 @@ const TYPES: Record<string, string> = {
 export const SECURITY_HEADERS: Record<string, string> = {
   'Content-Security-Policy':
     "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; " +
+    "connect-src 'self'; manifest-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; " +
     "frame-ancestors 'none'",
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',

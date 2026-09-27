@@ -263,3 +263,127 @@ describe('scripts/artifact-registry.mjs', () => {
     expect(read().artifacts).toHaveLength(1);
   });
 });
+
+describe('add --file: the local copy', () => {
+  const page = () => {
+    const p = path.join(dir, 'page.html');
+    fs.writeFileSync(
+      p,
+      '<!doctype html><title>Line</title><p>Supplier line</p>',
+    );
+    return p;
+  };
+  it('copies the page 0600 beside the registry and records where it came from', () => {
+    const p = page();
+    const r = run([
+      'add',
+      '--title',
+      'Line',
+      '--url',
+      'https://claude.ai/artifact/abc',
+      '--kind',
+      'app',
+      '--file',
+      p,
+    ]);
+    expect(r.code).toBe(0);
+    const id = r.out;
+    const copy = path.join(dir, 'artifacts', `${id}.html`);
+    expect(fs.readFileSync(copy)).toEqual(fs.readFileSync(p));
+    if (!IS_WINDOWS) expect(fs.statSync(copy).mode & 0o777).toBe(0o600);
+    const entry = read().artifacts[0] as unknown as {
+      local: {
+        source: string;
+        uid: number;
+        bytes: number;
+        copied_at: string;
+        source_mtime_ms: number;
+      };
+    };
+    expect(entry.local.source).toBe(fs.realpathSync(p));
+    expect(entry.local.bytes).toBe(fs.statSync(p).size);
+    expect(entry.local.uid).toBe(fs.statSync(p).uid);
+    expect(entry.local.source_mtime_ms).toBe(fs.statSync(p).mtimeMs);
+    expect(Number.isFinite(Date.parse(entry.local.copied_at))).toBe(true);
+    const log = fs
+      .readFileSync(path.join(dir, 'artifacts-added.jsonl'), 'utf-8')
+      .trim()
+      .split('\n');
+    expect(JSON.parse(log[0])).toMatchObject({
+      id,
+      source: fs.realpathSync(p),
+    });
+  });
+  it('refuses a link, a non-html file and an oversized file, leaving no entry and no copy', () => {
+    const p = page();
+    const link = path.join(dir, 'link.html');
+    fs.symlinkSync(p, link);
+    const txt = path.join(dir, 'notes.txt');
+    fs.writeFileSync(txt, 'x');
+    const big = path.join(dir, 'big.html');
+    fs.writeFileSync(big, Buffer.alloc(4 * 1024 * 1024 + 1, 0x20));
+    for (const f of [link, txt, big, path.join(dir, 'missing.html')]) {
+      const r = run([
+        'add',
+        '--title',
+        'Line',
+        '--url',
+        'https://claude.ai/artifact/abc',
+        '--kind',
+        'app',
+        '--file',
+        f,
+      ]);
+      expect(r.code).toBe(3);
+      expect(r.err).toMatch(/--file/);
+    }
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'artifacts'))).toBe(false);
+  });
+  it('remove deletes the copy', () => {
+    const p = page();
+    const id = run([
+      'add',
+      '--title',
+      'Line',
+      '--url',
+      'https://claude.ai/artifact/abc',
+      '--kind',
+      'app',
+      '--file',
+      p,
+    ]).out;
+    const copy = path.join(dir, 'artifacts', `${id}.html`);
+    expect(fs.existsSync(copy)).toBe(true);
+    expect(run(['remove', id]).code).toBe(0);
+    expect(fs.existsSync(copy)).toBe(false);
+  });
+});
+
+describe('add --file: ownership', () => {
+  it('refuses a file owned by someone else (when the test runs as root)', () => {
+    if (
+      IS_WINDOWS ||
+      typeof process.getuid !== 'function' ||
+      process.getuid() !== 0
+    )
+      return;
+    const p = path.join(dir, 'theirs.html');
+    fs.writeFileSync(p, '<p>x</p>');
+    fs.chownSync(p, 65534, 65534); // nobody
+    const r = run([
+      'add',
+      '--title',
+      'Line',
+      '--url',
+      'https://claude.ai/artifact/abc',
+      '--kind',
+      'app',
+      '--file',
+      p,
+    ]);
+    expect(r.code).toBe(3);
+    expect(r.err).toMatch(/must be a file you own/);
+    expect(fs.existsSync(file)).toBe(false);
+  });
+});

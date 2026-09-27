@@ -1431,3 +1431,88 @@ served `sw.js`:
 
 Fixture rule, again: run any fixture with `CONTROL_UI_TMUX_SOCKET=deus-dash-fixture`
 — without it the server's start-up cleanup kills the live dashboard's tmux views.
+
+## Artifacts beside the conversation (2026-09-27)
+
+The operator asked for the OpenClaw-style two-pane view: the conversation on
+the left, the thing being built on the right. claude.ai refuses to be framed
+(`X-Frame-Options: sameorigin`, verified in Chromium), so the pane shows the
+dashboard's **own local copy** of the page the session published, taken by
+the registry CLI's new `add --file <page.html>` and refreshed by the server
+whenever the session edits that file. Plan and threat model SHIPped before
+code: `docs/superpowers/plans/2026-09-27-artifacts-split-view.md`.
+
+What holds the boundary: the copy is `wx` 0600 in a 0700 dir beside the
+registry; `local` records the source's realpath, uid, size and mtime; the
+page route serves the copy and nothing else, behind a single-use ticket
+(an iframe cannot send the session header), with its own policy — `sandbox
+allow-scripts` (no `allow-same-origin`), `connect-src 'none'`,
+`frame-ancestors 'self'` — and no `X-Frame-Options`; the version route runs
+the refresh step, which re-reads the source only on an `O_NOFOLLOW` handle
+that is a regular `.html`, one link, the recorded uid and realpath, the same
+dev/ino as a stat after the open, ≤ 4 MiB, and newer than the copy; anything
+else keeps the copy and reports `following: false`. A read-only server never
+writes. The list API says only `local: true|false`. Removing an artifact
+(CLI or dashboard) removes the copy.
+
+The pane (`artifact-pane.js`): "Page written by a session", title, kind,
+"Open on claude.ai", Close; a sandboxed frame; a 2 s version poll that
+reloads on a new ticket when the copy changes; a note when the source is no
+longer followed or when the framed page navigated itself. Ways in: "Open
+beside Claude" on an Artifacts-tab card that has a copy, "Open beside" on a
+conversation card whose URL the registry holds a copy of, and
+`#/claude?artifact=<id>`. Desktop ≥ 1100 px: a third column (42 %); below: a
+full-screen sheet with Close. Deviations from the plan, decided during the
+build: the "not followed" note carries no date (the API exposes none, and a
+new field was not worth it); the phone sheet has Close only — a separate
+"Conversation" toggle would do the same thing.
+
+Driven on the real-Claude fixture (3117) with a page registered through the
+real CLI (`--file`), 33 checks:
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Artifacts tab | "Open beside Claude" only on the card with a copy | 1 on the local card, 0 on the remote one | PASS |
+| Pane | third column; `sandbox="allow-scripts"`, `referrerpolicy="no-referrer"`, src `…/page?ticket=` | as specified — `artifacts/artifacts-split-desktop.png` (cropped to the stage and pane) | PASS |
+| Page response | exactly one CSP header, the specified one; no X-Frame-Options | 1 CSP with `sandbox allow-scripts;` and no `allow-same-origin`; XFO absent | PASS |
+| Inside the frame | cookie, parent document and storage unreachable; fetch blocked; opaque origin | all three throw; fetch refused by `connect-src 'none'`; `self.origin` "null"; scripts do run | PASS |
+| Source edited | the frame shows the new text within the poll | "Drive one" → "Drive two" | PASS |
+| Source swapped for a symlink / a file with two links | copy unchanged, note shown | unchanged; "…gone or changed hands, so new edits won't show here." | PASS |
+| One link again, newer | followed, note hidden | "Drive three"; note hidden | PASS |
+| Phone 390 px | a sheet, no horizontal overflow | fixed, x 0, width 390, scrollWidth 390 — `artifacts-split-mobile.png` | PASS |
+| Close | pane hidden, two columns again | hidden; class removed | PASS |
+| Direct links | `?artifact=<id>` opens; an id without a copy is told why; hash cleaned | opened "Drive page"; toast "…no local copy…"; `#/claude` | PASS |
+| Esc, focus | Esc closes the pane (not from the terminal or a text box); the pane holds focus after opening | closed; `document.activeElement` is the pane | PASS |
+| Ticket failure | a persistent note with "Try again"; the version not advanced, so the next poll retries | by code review (round 3) — the ticket route cannot be made to fail on the fixture | reviewed |
+| Unit | registry CLI (18), store (17), server incl. the ticket page + read-only (70+), static CSP, creation prompt; whole control-ui + scripts suites 400 green | green | PASS |
+
+Not testable here, stated: iOS Safari's handling of sandboxed frames on the
+operator's phone — the drive runs desktop Chromium at 390 px.
+
+UX review (advisory) led to: Esc closes the pane (not when typed into the
+terminal or a text box, where Esc means something else), the full title as a
+tooltip when the row clips it, an "Open on claude.ai" link in the not-followed
+note, no white flash before the page paints, focus moved into the pane on
+open. Decided against or deferred: the pane stays open when another session
+is picked — opening a page and then choosing the session to talk about it is
+the intended order; the header cannot name the session that wrote the page
+(the registry records `cli`/`dashboard`, not a session — a later registry
+field); the phone Back gesture does not close the sheet (hash routing would
+re-render the tab; Close and Esc do); cards without a copy carry no hint. From the review's addendum: a failed
+ticket no longer strands the pane — the version is not advanced until the
+frame has a src, the note offers "Try again", and the next poll retries by
+itself; the pane docks as a third column from 1100 px (the tab's own two
+columns start at 900 px — between the two the pane is a sheet, since three
+columns in 900 px would leave the conversation under 300 px).
+
+Threat model, post-implementation (SHIP): `connect-src 'none'` is not a
+promise that nothing leaves the frame — `img-src *` / `media-src *` (image
+beacons) and WebRTC, which CSP does not cover, remain, and were accepted:
+the page runs with the same reach on claude.ai, and the frame holds only the
+page's own bytes and whatever the operator types into it. Two controls taken
+from the review: the CLI refuses a source file the caller does not own, and
+the page route counts against its own limiter (60/min) rather than the
+list's. Stated, not fixed: containers run as the host uid (`--user
+hostUid:hostGid`, root on this VPS), so a container-written HTML in a
+mounted folder would pass the uid check if the operator registered it — the
+sandbox and the "Page written by a session" label are the bound there.

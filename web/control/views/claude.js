@@ -1,6 +1,7 @@
 import { h, clear } from '../dom.js';
 import { icon } from '../icons.js';
-import { header } from '../app.js';
+import { header, hashQuery } from '../app.js';
+import { createArtifactPane } from '../artifact-pane.js';
 import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
 import { parseAskScreen, parseWorking } from '../ask-screen.js';
@@ -266,6 +267,24 @@ export async function render(root, api, bus, me) {
   const summary = h('div', { class: 'running-summary', role: 'status', hidden: true }, spinner(), runningText);
   const side = h('div', { class: 'claude-side' }, summary, list);
   const wrap = h('div', { class: 'claude-layout' }, side, pane);
+  // A page a session published, beside the conversation (artifact-pane.js).
+  // Only artifacts the registry holds a local copy of can open here; the
+  // list is read once per visit and again when the registry changes.
+  const artPane = createArtifactPane(api);
+  let artifactsByUrl = new Map();
+  async function loadArtifacts() {
+    try {
+      const r = await api.get('/api/v1/artifacts');
+      artifactsByUrl = new Map((r.artifacts || []).filter((a) => a.local && typeof a.url === 'string').map((a) => [a.url, a]));
+    } catch { /* the cards just offer no "Open beside" */ }
+  }
+  const localArtifact = (url) => artifactsByUrl.get(url) || null;
+  function openArtifact(a) {
+    if (!a || !a.local) return;
+    if (!artPane.el.isConnected) wrap.append(artPane.el); // attached first, so open() can focus it
+    wrap.classList.add('with-artifact');
+    artPane.open(a, { onClose: () => { wrap.classList.remove('with-artifact'); } });
+  }
   let sessions = [];
   let liveAvailable = false;
   let current = null; // { id, view }
@@ -652,7 +671,7 @@ export async function render(root, api, bus, me) {
         version = r.version;
         lastItems = r.items;
         const near = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
-        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded });
+        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact });
         else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below.'));
         truncNote.hidden = !r.truncated;
         composer.picker('model').set(modelLabel(r.model));
@@ -745,17 +764,26 @@ export async function render(root, api, bus, me) {
   }
   await load();
   // A link like #/claude/<id> (from the Artifacts tab) opens that session.
-  const wantedId = decodeURIComponent(location.hash.replace(/^#\/?/, '').split('/')[1] || '');
+  const wantedId = decodeURIComponent((location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[1]) || '');
+  // `#/claude?artifact=<id>` (from the Artifacts tab) opens that page beside.
+  const wantedArtifact = hashQuery().get('artifact');
+  await loadArtifacts();
   if (wantedId) {
     const s = sessions.find((x) => x.id === wantedId);
     if (s) select(s);
-    history.replaceState(null, '', '#/claude');
   }
+  if (wantedArtifact) {
+    const a = [...artifactsByUrl.values()].find((x) => x.id === wantedArtifact);
+    if (a) openArtifact(a);
+    else toast('That artifact has no local copy to show here.', 'error');
+  }
+  if (wantedId || wantedArtifact) history.replaceState(null, '', '#/claude');
+  bus.addEventListener('artifact', () => loadArtifacts());
   bus.addEventListener('csession', (e) => {
     if (e.detail && e.detail.sessions) { sessions = e.detail.sessions.map((s) => { const o = sessions.find((x) => x.id === s.id) || {}; return { ...s, last_active: o.last_active, pinned: Boolean(o.pinned) }; }); draw(); }
     else load();
   });
   bus.addEventListener('refresh', () => load());
   refreshTimer = setInterval(() => { if (!document.hidden) load(); }, 45_000);
-  bus.addEventListener('view-unmount', () => { clearInterval(refreshTimer); closeCurrent(); }, { once: true });
+  bus.addEventListener('view-unmount', () => { clearInterval(refreshTimer); closeCurrent(); artPane.dispose(); }, { once: true });
 }

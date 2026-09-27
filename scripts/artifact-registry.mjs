@@ -31,9 +31,13 @@ const LOCK_RETRIES = 3;
 const LOCK_RETRY_MS = 200;
 const TMP_SWEEP_MS = 60 * 60 * 1000;
 const URL_MAX = 2048;
+const COPY_MAX = 4 * 1024 * 1024;
+const COPY_DIR = 'artifacts';
+const HTML_RE = /\.html?$/i;
 const FILE = 'artifacts.json';
 const USAGE = `usage: artifact-registry.mjs <add|remove|list|validate> [id|file] [options]
-  add      --title <text> --url <https://claude.ai/…> --kind <app|report|preview> [--description <text>]
+  add      --title <text> --url <https://claude.ai/…> --kind <app|report|preview> [--description <text>] [--file <page.html>]
+           --file copies the HTML you published so the dashboard can show it beside the conversation and follow your edits
   remove   <id>        (prints the removed entry as JSON; it is also appended to artifacts-removed.jsonl)
   list     [--json]
   validate <file>
@@ -64,6 +68,17 @@ export function checkUrl(raw, extraHosts = []) {
   for (const key of url.searchParams.keys()) if (SECRET_QUERY_KEY.test(key)) return { ok: false, shape: false, blocked: 'secret-query' };
   return { ok: true, url: raw, hostname: host };
 }
+// The local copy record; a malformed one is dropped, the entry stays.
+export function validateLocal(raw) {
+  if (!isObj(raw)) return null;
+  const { source, uid, bytes, copied_at, source_mtime_ms } = raw;
+  if (typeof source !== 'string' || !path.isAbsolute(source) || source.length > 1024) return null;
+  if (!Number.isInteger(uid) || uid < 0) return null;
+  if (!Number.isInteger(bytes) || bytes < 1 || bytes > COPY_MAX) return null;
+  if (!isIso(copied_at)) return null;
+  if (typeof source_mtime_ms !== 'number' || !Number.isFinite(source_mtime_ms) || source_mtime_ms < 0) return null;
+  return { source, uid, bytes, copied_at, source_mtime_ms };
+}
 export function validateEntry(raw) {
   if (!isObj(raw)) return null;
   const { id, title, url, kind, description, added_at, added_by } = raw;
@@ -77,6 +92,8 @@ export function validateEntry(raw) {
   if (typeof added_by !== 'string' || !ADDED_BY.includes(added_by)) return null;
   const entry = { id, title, url, kind, added_at, added_by };
   if (description !== undefined) entry.description = description;
+  const local = validateLocal(raw.local);
+  if (local) entry.local = local;
   return entry;
 }
 export function validateRegistry(raw) {
@@ -115,6 +132,60 @@ function readFileConfined(file, maxBytes) {
     return { ok: false, reason: err && err.code === 'ENOENT' ? 'missing' : 'unreadable' };
   } finally {
     if (fd !== null) fs.closeSync(fd);
+  }
+}
+// The published page the operator may want beside the conversation: a real
+// .html file, opened without following links and checked on the open handle
+// (the same checks the dashboard's refresh step repeats before re-copying).
+function readSource(file) {
+  const abs = path.resolve(file);
+  if (!HTML_RE.test(abs)) return { ok: false, reason: 'must be a .html file' };
+  let fd = null;
+  try {
+    fd = fs.openSync(abs, fs.constants.O_RDONLY | O_NOFOLLOW);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { ok: false, reason: 'not a regular file' };
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid())
+      return { ok: false, reason: 'must be a file you own' };
+    if (st.nlink !== 1) return { ok: false, reason: 'has other hard links — publish from a plain file with no other links' };
+    if (st.size < 1 || st.size > COPY_MAX) return { ok: false, reason: `must be 1–${COPY_MAX} bytes` };
+    const source = fs.realpathSync(abs);
+    const rs = fs.statSync(source);
+    if (rs.dev !== st.dev || rs.ino !== st.ino) return { ok: false, reason: 'file changed while reading' };
+    const buf = Buffer.alloc(st.size);
+    const n = fs.readSync(fd, buf, 0, st.size, 0);
+    return { ok: true, source, uid: st.uid, bytes: n, mtimeMs: st.mtimeMs, data: buf.subarray(0, n) };
+  } catch (err) {
+    const code = err && err.code;
+    return { ok: false, reason: code === 'ENOENT' ? 'no such file' : code === 'ELOOP' ? 'is a symlink — pass the real file, not a link to it' : 'unreadable' };
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+const copyPath = (dir, id) => path.join(dir, COPY_DIR, `${id}.html`);
+function writeCopy(dir, id, src) {
+  fs.mkdirSync(path.join(dir, COPY_DIR), { recursive: true, mode: 0o700 });
+  const fd = fs.openSync(copyPath(dir, id), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW, 0o600);
+  try {
+    fs.writeSync(fd, src.data);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { source: src.source, uid: src.uid, bytes: src.bytes, copied_at: new Date().toISOString(), source_mtime_ms: src.mtimeMs };
+}
+function logAdded(dir, id, local) {
+  const log = path.join(dir, 'artifacts-added.jsonl');
+  try {
+    if (fs.lstatSync(log).size > REMOVED_LOG_MAX) fs.renameSync(log, `${log}.1`);
+  } catch {
+    /* no log yet */
+  }
+  const fd = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | O_NOFOLLOW, 0o600);
+  try {
+    fs.writeSync(fd, JSON.stringify({ id, source: local.source, uid: local.uid, bytes: local.bytes, at: local.copied_at }) + '\n');
+  } finally {
+    fs.closeSync(fd);
   }
 }
 function readRegistry(file) {
@@ -235,6 +306,7 @@ function main(argv) {
         url: { type: 'string' },
         kind: { type: 'string' },
         description: { type: 'string' },
+        file: { type: 'string' },
         json: { type: 'boolean' },
       },
     });
@@ -272,11 +344,20 @@ function main(argv) {
       const u = checkUrl(o.url, hosts);
       if (!u.ok) fail(3, u.shape ? '--url: not a valid URL (max 2048 characters)' : `--url not allowed: ${u.blocked} (https://claude.ai/… or a host in CONTROL_UI_PREVIEW_HOSTS)`);
       if (o.description !== undefined && o.description.length > DESCRIPTION_MAX) fail(3, `--description: at most ${DESCRIPTION_MAX} characters`);
+      let src = null;
+      if (o.file !== undefined) {
+        src = readSource(o.file);
+        if (!src.ok) fail(3, `--file: ${src.reason}`);
+      }
       withLock(dir, () => {
         const cur = loaded();
         if (cur.artifacts.length >= ARTIFACTS_MAX) fail(3, 'registry full: remove entries before adding more');
         const entry = { id: `art-${crypto.randomBytes(6).toString('hex')}`, title, url: o.url, kind: o.kind, added_at: new Date().toISOString(), added_by: 'cli' };
         if (o.description) entry.description = o.description;
+        if (src) {
+          entry.local = writeCopy(dir, entry.id, src);
+          logAdded(dir, entry.id, entry.local);
+        }
         writeRegistry(file, { v: 1, rev: cur.rev + 1, artifacts: [...cur.artifacts, entry] }, cur.rev);
         process.stdout.write(entry.id + '\n');
       });
@@ -290,6 +371,11 @@ function main(argv) {
         if (!entry) fail(4, `no artifact ${arg}`);
         writeRegistry(file, { v: 1, rev: cur.rev + 1, artifacts: cur.artifacts.filter((a) => a.id !== arg) }, cur.rev);
         logRemoved(dir, entry);
+        try {
+          fs.unlinkSync(copyPath(dir, arg));
+        } catch {
+          /* no copy */
+        }
         console.log(JSON.stringify(entry));
       });
       return;

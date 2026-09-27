@@ -403,3 +403,77 @@ describe('writers', () => {
     });
   });
 });
+
+describe('local copies', () => {
+  const entryWith = (local: unknown): ArtifactEntry =>
+    ({
+      id: 'art-0123456789ab',
+      title: 'Line',
+      url: 'https://claude.ai/artifact/abc',
+      kind: 'app',
+      added_at: '2026-09-27T08:00:00.000Z',
+      added_by: 'cli',
+      ...(local !== undefined ? { local } : {}),
+    }) as ArtifactEntry;
+  const good = {
+    source: '/tmp/page.html',
+    uid: 0,
+    bytes: 42,
+    copied_at: '2026-09-27T08:00:00.000Z',
+    source_mtime_ms: 1790000000000,
+  };
+  it('keeps a well-formed record and drops a malformed one', () => {
+    const v = validateRegistry({ v: 1, rev: 1, artifacts: [entryWith(good)] });
+    expect(v.ok && v.registry.artifacts[0].local).toEqual(good);
+    const bad = validateRegistry({
+      v: 1,
+      rev: 1,
+      artifacts: [entryWith({ ...good, source: 'relative.html' })],
+    });
+    expect(bad.ok && bad.registry.artifacts[0].local).toBeUndefined();
+    expect(bad.ok && bad.registry.artifacts[0].id).toBe('art-0123456789ab');
+  });
+  it('lists only a boolean, also for read-only viewers, and keeps the record across dashboard writes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'artloc-'));
+    try {
+      expect(
+        writeRegistry(dir, { v: 1, rev: 1, artifacts: [entryWith(good)] }, 0)
+          .ok,
+      ).toBe(true);
+      const l = listArtifacts(dir, { hosts: [], readOnly: true });
+      expect('artifacts' in l && l.artifacts[0]).toMatchObject({ local: true });
+      expect('artifacts' in l && JSON.stringify(l.artifacts[0])).not.toContain(
+        '/tmp/page.html',
+      );
+      const added = addArtifact(
+        dir,
+        {
+          title: 'Other',
+          url: 'https://claude.ai/artifact/def',
+          kind: 'report',
+        },
+        { hosts: [] },
+      );
+      expect(added.status).toBe(201);
+      const after = readRegistry(dir);
+      expect(
+        after.ok &&
+          after.registry.artifacts.find((a) => a.id === 'art-0123456789ab')
+            ?.local,
+      ).toEqual(good);
+      fs.mkdirSync(path.join(dir, 'artifacts'), { mode: 0o700 });
+      fs.writeFileSync(
+        path.join(dir, 'artifacts', 'art-0123456789ab.html'),
+        '<p>x</p>',
+      );
+      expect(
+        removeArtifact(dir, 'art-0123456789ab', 'art-0123456789ab').status,
+      ).toBe(204);
+      expect(
+        fs.existsSync(path.join(dir, 'artifacts', 'art-0123456789ab.html')),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

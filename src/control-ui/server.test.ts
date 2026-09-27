@@ -3820,6 +3820,7 @@ describe('control-ui server — artifacts', () => {
       'hostname',
       'id',
       'kind',
+      'local',
       'title',
     ]);
     const frames = await sse(auth, cookie, () =>
@@ -3863,6 +3864,186 @@ describe('control-ui server — artifacts', () => {
       fs.writeFileSync(path.join(ctlDir, 'claude-started.json'), '[]'),
     );
     expect(frames).toHaveLength(0);
+  });
+
+  it('frames the local copy behind a ticket; only the version route follows the source', async () => {
+    await bootA();
+    const { auth, cookie } = await login();
+    const ticket = async () =>
+      JSON.parse(
+        (
+          await request({
+            method: 'POST',
+            path: '/api/v1/events/ticket',
+            headers: auth,
+          })
+        ).text,
+      ).ticket as string;
+    // A source page and its copy, as the CLI's `add --file` records them.
+    const src = path.join(root, 'page.html');
+    fs.writeFileSync(src, '<p>one</p>');
+    const st = fs.statSync(src);
+    const id = 'art-0123456789ab';
+    const local = {
+      source: fs.realpathSync(src),
+      uid: st.uid,
+      bytes: st.size,
+      copied_at: '2026-09-21T10:00:00.000Z',
+      source_mtime_ms: st.mtimeMs,
+    };
+    const copy = path.join(ctlDir, 'artifacts', `${id}.html`);
+    fs.mkdirSync(path.dirname(copy), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(copy, '<p>one</p>', { mode: 0o600 });
+    plant([art({ local }), art({ id: 'art-ffffffffffff', title: 'Remote' })]);
+    const page = (
+      q: string,
+      headers: Record<string, string> = { Cookie: cookie },
+    ) =>
+      request({
+        method: 'GET',
+        path: `/api/v1/artifacts/${id}/page${q}`,
+        headers,
+      });
+    expect((await page('')).status).toBe(401);
+    const t = await ticket();
+    const r = await page(`?ticket=${t}`);
+    expect(r.status).toBe(200);
+    expect(r.text).toBe('<p>one</p>');
+    expect(r.headers['x-frame-options']).toBeUndefined();
+    const csp = r.headers['content-security-policy'];
+    expect(typeof csp).toBe('string'); // exactly one policy header
+    expect(csp).toContain('sandbox allow-scripts');
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).toContain("connect-src 'none'");
+    expect(csp).not.toContain('allow-same-origin');
+    expect(r.headers['content-type']).toBe('text/html; charset=utf-8');
+    expect(r.headers['cache-control']).toBe('no-store');
+    expect(r.headers['x-content-type-options']).toBe('nosniff');
+    expect((await page(`?ticket=${t}`)).status).toBe(401); // single use
+    const noLocal = await request({
+      method: 'GET',
+      path: `/api/v1/artifacts/art-ffffffffffff/page?ticket=${await ticket()}`,
+      headers: { Cookie: cookie },
+    });
+    expect(noLocal.status).toBe(404);
+    expect(j(noLocal)).toMatchObject({ error: 'no-local' });
+    // The list says only that a copy exists.
+    const list = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    expect(
+      list.artifacts.find((a: { id: string }) => a.id === id),
+    ).toMatchObject({ local: true });
+    expect(
+      list.artifacts.find((a: { id: string }) => a.id !== id),
+    ).toMatchObject({ local: false });
+    expect(JSON.stringify(list)).not.toContain('page.html');
+    // Version: unchanged until the source changes; the page never re-reads the source.
+    const version = () =>
+      request({
+        method: 'GET',
+        path: `/api/v1/artifacts/${id}/version`,
+        headers: auth,
+      });
+    let v = j(await version());
+    expect(v.following).toBe(true);
+    const v0 = v.version;
+    expect(j(await version()).version).toBe(v0);
+    fs.writeFileSync(src, '<p>two, longer</p>');
+    fs.utimesSync(src, new Date(), new Date(st.mtimeMs + 5000));
+    expect((await page(`?ticket=${await ticket()}`)).text).toBe('<p>one</p>'); // the copy, always
+    v = j(await version());
+    expect(v.following).toBe(true);
+    expect(v.version).not.toBe(v0);
+    expect((await page(`?ticket=${await ticket()}`)).text).toBe(
+      '<p>two, longer</p>',
+    );
+    expect(fs.statSync(copy).mode & 0o777).toBe(0o600);
+    expect(
+      JSON.parse(fs.readFileSync(regFile(), 'utf-8')).artifacts[0].local
+        .source_mtime_ms,
+    ).toBe(fs.statSync(src).mtimeMs);
+    // A source that fails a check keeps the copy and is no longer followed.
+    const v1 = j(await version()).version;
+    const other = path.join(root, 'other.html');
+    fs.writeFileSync(other, '<p>three</p>');
+    fs.unlinkSync(src);
+    fs.symlinkSync(other, src);
+    v = j(await version());
+    expect(v.following).toBe(false);
+    expect(v.version).toBe(v1);
+    expect((await page(`?ticket=${await ticket()}`)).text).toBe(
+      '<p>two, longer</p>',
+    );
+    fs.unlinkSync(src);
+    fs.writeFileSync(src, '<p>four</p>');
+    fs.utimesSync(src, new Date(), new Date(Date.now() + 10_000));
+    const twin = path.join(root, 'twin.html');
+    fs.linkSync(src, twin); // two links
+    expect(j(await version()).following).toBe(false);
+    expect((await page(`?ticket=${await ticket()}`)).text).toBe(
+      '<p>two, longer</p>',
+    );
+    fs.unlinkSync(twin); // one link again, and newer: followed
+    expect(j(await version()).following).toBe(true);
+    expect((await page(`?ticket=${await ticket()}`)).text).toBe('<p>four</p>');
+    const txt = path.join(root, 'notes.txt');
+    fs.writeFileSync(txt, '<p>five</p>');
+    fs.unlinkSync(src);
+    fs.renameSync(txt, src); // still .html by name — the recorded path — so the name check holds; a differing realpath is the symlink case above
+    fs.utimesSync(src, new Date(), new Date(Date.now() + 20_000));
+    expect(j(await version()).following).toBe(true);
+    // The copy gone: both routes say so.
+    fs.unlinkSync(copy);
+    expect(j(await version())).toMatchObject({ error: 'no-copy' });
+    expect((await page(`?ticket=${await ticket()}`)).status).toBe(404);
+  });
+  it('a read-only server reports the copy and never refreshes it', async () => {
+    await bootA({ readOnly: true });
+    const { auth } = await login();
+    const src = path.join(root, 'page.html');
+    fs.writeFileSync(src, '<p>one</p>');
+    const st = fs.statSync(src);
+    const id = 'art-0123456789ab';
+    const copy = path.join(ctlDir, 'artifacts', `${id}.html`);
+    fs.mkdirSync(path.dirname(copy), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(copy, '<p>one</p>', { mode: 0o600 });
+    plant([
+      art({
+        local: {
+          source: fs.realpathSync(src),
+          uid: st.uid,
+          bytes: st.size,
+          copied_at: '2026-09-21T10:00:00.000Z',
+          source_mtime_ms: st.mtimeMs,
+        },
+      }),
+    ]);
+    fs.writeFileSync(src, '<p>two, longer</p>');
+    fs.utimesSync(src, new Date(), new Date(st.mtimeMs + 5000));
+    const v = j(
+      await request({
+        method: 'GET',
+        path: `/api/v1/artifacts/${id}/version`,
+        headers: auth,
+      }),
+    );
+    expect(v.following).toBe(false);
+    expect(fs.readFileSync(copy, 'utf-8')).toBe('<p>one</p>');
+    expect(JSON.parse(fs.readFileSync(regFile(), 'utf-8')).rev).toBe(1);
+    const list = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    expect(list.artifacts[0]).toMatchObject({ local: true });
+    expect(list.artifacts[0].url).toBeUndefined();
   });
 });
 

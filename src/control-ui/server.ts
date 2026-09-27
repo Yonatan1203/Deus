@@ -112,6 +112,8 @@ import {
   addArtifact,
   ARTIFACT_ID_RE,
   listArtifacts,
+  readArtifactCopy,
+  refreshArtifact,
   removeArtifact,
   validateAddInput,
 } from './api/artifacts.js';
@@ -289,6 +291,17 @@ const WORKFLOW_ARCHIVE_DAYS = 30;
 const WORKFLOW_WATCH_DEBOUNCE_MS = 500;
 const ARTIFACT_READS_PER_MIN = 60;
 const ARTIFACT_WRITES_PER_MIN = 6;
+const ARTIFACT_VERSION_READS_PER_MIN = 120; // the pane polls; stat-only
+const ARTIFACT_PAGE_READS_PER_MIN = 60; // one per copy change; not shared with the list
+// The framed artifact copy: its own document, never the dashboard's origin
+// (`sandbox` without allow-same-origin), allowed what artifacts are authored
+// with, and framable only by this origin.
+const ARTIFACT_PAGE_CSP =
+  "sandbox allow-scripts; default-src 'none'; " +
+  "script-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; " +
+  "style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; " +
+  "img-src * data: blob:; media-src * data: blob:; connect-src 'none'; " +
+  "frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
 const GMAIL_MUTATIONS_PER_MIN = 6;
 const BROWSER_READS_PER_MIN = 60;
 const BROWSER_MUTATIONS_PER_MIN = 12;
@@ -488,6 +501,14 @@ export function createControlServer(
     60_000,
   );
   const artifactReadLimiter = createRateLimiter(ARTIFACT_READS_PER_MIN, 60_000);
+  const artifactVersionLimiter = createRateLimiter(
+    ARTIFACT_VERSION_READS_PER_MIN,
+    60_000,
+  );
+  const artifactPageLimiter = createRateLimiter(
+    ARTIFACT_PAGE_READS_PER_MIN,
+    60_000,
+  );
   const artifactWriteLimiter = createRateLimiter(
     ARTIFACT_WRITES_PER_MIN,
     60_000,
@@ -2974,6 +2995,50 @@ export function createControlServer(
     );
     writeJson(ctx.res, 201, { id: r.id, rev: r.rev });
   });
+  // The framed page: the local copy, always — the source is re-read only by
+  // the version route's refresh step. A ticket URL (single-use, 60 s, bound
+  // to the login) because an iframe src cannot carry the session header. The
+  // global headers were applied before routing; this response replaces the
+  // policy and drops X-Frame-Options so the dashboard may frame it.
+  router.add(
+    'GET',
+    '/api/v1/artifacts/:id/page',
+    (ctx) => {
+      const id = ctx.params.id;
+      if (!ARTIFACT_ID_RE.test(id))
+        return writeJson(ctx.res, 404, { error: 'not found' });
+      if (artifactPageLimiter.isRateLimited(sid(ctx), now()))
+        return writeJson(ctx.res, 429, { error: 'too many requests' });
+      if (!controlDir)
+        return writeJson(ctx.res, 503, { error: 'registry unavailable' });
+      const r = readArtifactCopy(controlDir, id);
+      if (r.status !== 200)
+        return writeJson(ctx.res, r.status, { error: r.error });
+      ctx.res.removeHeader('X-Frame-Options');
+      ctx.res.setHeader('Content-Security-Policy', ARTIFACT_PAGE_CSP);
+      ctx.res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      ctx.res.setHeader('Cache-Control', 'no-store');
+      ctx.res.setHeader('Content-Length', r.body.length);
+      ctx.res.writeHead(200);
+      ctx.res.end(r.body);
+    },
+    { auth: 'ticket' },
+  );
+  // The copy's version, after the refresh step; the pane reloads when it
+  // changes and says so when the source is no longer followed.
+  router.add('GET', '/api/v1/artifacts/:id/version', (ctx) => {
+    const id = ctx.params.id;
+    if (!ARTIFACT_ID_RE.test(id))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    if (artifactVersionLimiter.isRateLimited(sid(ctx), now()))
+      return writeJson(ctx.res, 429, { error: 'too many requests' });
+    if (!controlDir)
+      return writeJson(ctx.res, 503, { error: 'registry unavailable' });
+    const r = refreshArtifact(controlDir, id, { readOnly: deps.readOnly, now });
+    if (r.status !== 200)
+      return writeJson(ctx.res, r.status, { error: r.error });
+    writeJson(ctx.res, 200, { version: r.version, following: r.following });
+  });
   router.add('DELETE', '/api/v1/artifacts/:id', (ctx) => {
     if (deps.readOnly)
       return writeJson(ctx.res, 403, { error: 'read-only from the dashboard' });
@@ -3180,6 +3245,8 @@ export function createControlServer(
     if (workflowWatcher) workflowWatcher.close();
     if (artifactWatcher) artifactWatcher.close();
     artifactReadLimiter.dispose();
+    artifactVersionLimiter.dispose();
+    artifactPageLimiter.dispose();
     artifactWriteLimiter.dispose();
     gmailLimiter.dispose();
     gmailCallbackLimiter.dispose();
