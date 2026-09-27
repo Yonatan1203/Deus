@@ -19,7 +19,9 @@ import { fileURLToPath } from 'url';
 
 const ID_RE = /^art-[0-9a-f]{12}$/;
 const KINDS = ['app', 'report', 'preview'];
-const ADDED_BY = ['cli', 'dashboard'];
+const ADDED_BY = ['cli', 'dashboard', 'session']; // 'session': captured by the dashboard from a transcript
+const SESSION_ID_RE = /^[0-9a-f]{8}$/;
+const SESSION_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,59}$/u;
 const TITLE_RE = /^[\p{L}\p{N}][^\p{Cc}\p{Cf}]{0,99}$/u;
 const DESCRIPTION_MAX = 300;
 const ARTIFACTS_MAX = 200;
@@ -79,6 +81,14 @@ export function validateLocal(raw) {
   if (typeof source_mtime_ms !== 'number' || !Number.isFinite(source_mtime_ms) || source_mtime_ms < 0) return null;
   return { source, uid, bytes, copied_at, source_mtime_ms };
 }
+/** Kept in lockstep with src/control-ui/api/artifacts.ts validateSession. */
+export function validateSession(raw) {
+  if (!isObj(raw)) return null;
+  const { id, name } = raw;
+  if (typeof id !== 'string' || !SESSION_ID_RE.test(id)) return null;
+  if (typeof name !== 'string' || !SESSION_NAME_RE.test(name)) return null;
+  return { id, name };
+}
 export function validateEntry(raw) {
   if (!isObj(raw)) return null;
   const { id, title, url, kind, description, added_at, added_by } = raw;
@@ -94,6 +104,8 @@ export function validateEntry(raw) {
   if (description !== undefined) entry.description = description;
   const local = validateLocal(raw.local);
   if (local) entry.local = local;
+  const session = validateSession(raw.session);
+  if (session) entry.session = session;
   return entry;
 }
 export function validateRegistry(raw) {

@@ -27,6 +27,7 @@ const PERMISSION_MODES = [
 ];
 const ARTIFACT_URL_RE =
   /https:\/\/claude\.ai\/[A-Za-z0-9/_-]*artifact[A-Za-z0-9/_-]*/;
+const ARTIFACT_URLS_RE = new RegExp(ARTIFACT_URL_RE.source, 'g');
 
 /** Every item may carry the transcript row's time (`ts`, ISO) and a `clipped` mark. */
 export type ConvItem = (
@@ -52,8 +53,17 @@ export type ConvItem = (
   | { k: 'note'; text: string }
 ) & { ts?: string; clipped?: true };
 
+/** A successful `Artifact` publish: the local page and the link it produced. */
+export interface ArtifactCall {
+  file_path: string;
+  url: string;
+}
+export const ARTIFACT_CALLS_MAX = 20;
+
 export interface Conversation {
   items: ConvItem[];
+  /** Raw, bounded, for the auto-capture (artifact-capture.ts); never sent to the browser. */
+  artifactCalls: ArtifactCall[];
   truncated: boolean;
   model: string | null;
   /** Between a `/model` switch and the next reply: the name Claude Code printed. */
@@ -69,6 +79,7 @@ type Block = {
   name?: string;
   input?: Record<string, unknown>;
   tool_use_id?: string;
+  is_error?: boolean;
   content?: unknown;
 };
 
@@ -227,6 +238,10 @@ export function buildConversation(
 ): Conversation {
   const items: ConvItem[] = [];
   const pending = new Map<string, ConvItem>(); // tool_use id → its item
+  // Artifact publishes: the absolute file_path of the tool_use, paired with
+  // its result by id; only a non-error result with exactly one link counts.
+  const artifactFiles = new Map<string, string>();
+  const artifactCalls: ArtifactCall[] = [];
   let model: string | null = null;
   let model_label: string | null = null;
   let effort: string | null = null;
@@ -350,9 +365,18 @@ export function buildConversation(
             const answer = parseAskAnswer(resultText(b.content));
             if (answer) it.answer = answer;
           } else if (it?.k === 'tool' && it.tool === 'Artifact') {
-            const url = ARTIFACT_URL_RE.exec(resultText(b.content))?.[0];
+            const text = resultText(b.content);
+            const url = ARTIFACT_URL_RE.exec(text)?.[0];
             if (url) it.url = url;
+            const file = artifactFiles.get(b.tool_use_id);
+            const links = text.match(ARTIFACT_URLS_RE) ?? [];
+            if (file && url && b.is_error !== true && links.length === 1) {
+              artifactCalls.push({ file_path: file, url });
+              if (artifactCalls.length > ARTIFACT_CALLS_MAX)
+                artifactCalls.shift(); // the newest publishes are the ones to show
+            }
           }
+          artifactFiles.delete(b.tool_use_id);
           pending.delete(b.tool_use_id);
         } else if (b?.type === 'image') {
           items.push({ k: 'note', text: 'Image' });
@@ -376,7 +400,17 @@ export function buildConversation(
           const it = b.name === 'AskUserQuestion' ? askItem(b) : toolItem(b);
           if (!it) continue;
           items.push(it);
-          if (typeof b.id === 'string') pending.set(b.id, it);
+          if (typeof b.id === 'string') {
+            pending.set(b.id, it);
+            const fp = b.input?.file_path;
+            if (
+              b.name === 'Artifact' &&
+              typeof fp === 'string' &&
+              path.isAbsolute(fp) &&
+              fp.length <= 1024
+            )
+              artifactFiles.set(b.id, fp);
+          }
         }
       }
     }
@@ -385,6 +419,7 @@ export function buildConversation(
   const kept = dropped.size ? items.filter((it) => !dropped.has(it)) : items;
   return {
     items: kept.slice(-limit),
+    artifactCalls,
     truncated: kept.length > limit,
     model,
     model_label,

@@ -147,6 +147,46 @@ describe('buildConversation', () => {
     expect(c.items[1]).not.toHaveProperty('url');
   });
 
+  it('artifactCalls: the absolute file_path paired with a non-error result carrying exactly one link', () => {
+    const c = buildConversation([
+      assistant([
+        toolUse('a1', 'Artifact', { file_path: '/t/posts.html' }),
+        toolUse('a2', 'Artifact', { file_path: 'relative.html' }),
+        toolUse('a3', 'Artifact', { file_path: '/t/err.html' }),
+        toolUse('a4', 'Artifact', { file_path: '/t/two.html' }),
+        toolUse('a5', 'Artifact', {
+          url: 'https://claude.ai/artifact/existing',
+        }),
+      ]),
+      toolResult('a1', [
+        text('Published: https://claude.ai/code/artifact/6dcaedd5-7446-4588'),
+      ]),
+      toolResult('a2', [
+        text('Published: https://claude.ai/code/artifact/rel'),
+      ]),
+      user([
+        {
+          type: 'tool_result',
+          tool_use_id: 'a3',
+          is_error: true,
+          content: 'failed https://claude.ai/code/artifact/err',
+        },
+      ]),
+      toolResult(
+        'a4',
+        'https://claude.ai/code/artifact/one and https://claude.ai/code/artifact/two',
+      ),
+      toolResult('a5', 'https://claude.ai/artifact/existing'),
+    ]);
+    expect(c.artifactCalls).toEqual([
+      {
+        file_path: '/t/posts.html',
+        url: 'https://claude.ai/code/artifact/6dcaedd5-7446-4588',
+      },
+    ]);
+    expect(c.items.filter((i) => i.k === 'tool' && i.url).length).toBe(5); // the card link is kept even where the capture is not
+  });
+
   it('shows every question, its kind, and the answer once given', () => {
     const ask = (id: string) =>
       assistant([

@@ -1835,3 +1835,94 @@ never has a blockquote's silhouette; the "…" partial cue sits on the first
 line inside the first block. Not taken: fading the treatment in after a
 delay (a reply that completes within one tick is hidden by the dedupe
 already). `aria-live` off on the bubble was confirmed as the right call.
+
+## Artifacts appear beside the conversation by themselves (2026-09-27)
+
+Asked as "how do I activate the artifacts beside the conversation?" — until
+now a session had to run `artifact-registry.mjs add --file`. Now a page a
+session publishes is captured by the dashboard from the transcript and shown
+beside the conversation without a command from anyone.
+
+**Capture** (`src/control-ui/api/artifact-capture.ts`). The conversation parser
+returns `artifactCalls`: an `Artifact` tool call with an absolute `file_path`,
+paired by `tool_use_id` with a result that is not an error and carries exactly
+one claude.ai link (a `files`/`url` publish, a relative path, an error result
+or a result with two links do not count). The conversation route runs the
+capture once per transcript version for the session on screen; the Artifacts
+tab's list route runs it for the sessions in the creations ledger (at most 10
+per call), so a page built from "Create artifact" registers even when nobody
+opens the conversation. The store's `captureSource` repeats the CLI's checks
+(`.html`, regular, owned by this uid, no other hard links, 1..4 MiB, dev/ino
+re-check) and adds a content sniff (`<!doctype html` / `<html` in the first
+512 bytes) and the `<title>` (first 4 KiB, cleaned, 100 chars; else the file's
+name; else "Artifact"). `addCapturedArtifact` works under the registry lock:
+the URL is checked again, the session sub-quota (100 captured entries) evicts
+the oldest captured entry — never a `cli` or `dashboard` one — the copy is
+written `wx` 0600, the registry with the rev check; a failed write unlinks the
+copy; evicted copies are unlinked only after the write and logged. A URL in
+the removals log (an operator's delete, an eviction) is never captured again;
+a file that fails its checks is not retried on every poll (transient registry
+failures are). A source under a container-writable root — the union from
+`containerWritableRoots()` in `container-mounter.ts`: `groups/`, the group
+sessions and ipc dirs, task worktrees, the vault, writable registered
+projects, rw allow-listed roots — is refused, and the refresh step stops
+following a captured entry whose source later lands there.
+
+**On screen.** The reply's `artifacts: [{ url, id, local, started_here }]`
+changes the conversation version when a capture lands. A new local entry for
+the session on screen opens the pane by itself when the dashboard started
+the session (the creations ledger) and the window is ≥ 1100 px; otherwise a
+notice above the composer — "Published: <title> · Open beside" — opens it on
+tap. Never on the first render of a reopened session. The pane header reads
+"Published by <session>" as a link to that session; the Artifacts tab's card
+foot carries the same link. The session name is reduced to the registry's
+name charset (parentheses drop), the id stands in when nothing is left.
+
+Driven on the real-Claude fixture (`capture.mjs`; a CLI-started throwaway
+session written into the fixture's creations ledger, synthetic paired
+`tool_use`/`tool_result` rows appended to its real transcript, the pages in
+the job's tmp dir; everything removed in `finally`: the entries through the
+registry CLI, the session, the ledger, the files):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Auto-open | the pane opens by itself on the next poll after the publish | opened; header "Published by Capture-delete-me-2"; title from `<title>`; the copy renders in the sandboxed frame — `artifacts/claude-artifact-auto-open.png` | PASS |
+| Registry | `added_by: session`, the session block, a copy on disk | as expected | PASS |
+| Artifacts tab | the card lists the captured page | listed | PASS |
+| Reopened session | no auto-open on the first render | pane closed after 3.5 s | PASS |
+| Narrow screen (1000 px) | the notice names the page; tap opens the pane | "Claude published Second Drive Page"; opened — `claude-artifact-published-notice.png` | PASS |
+| A second publish before the first was opened | the notice queues: names the newest, "and 1 more"; Open beside opens the newest and the older stays; Dismiss clears | as expected | PASS |
+| Phone (390 px) | the notice on screen, no horizontal overflow, a long title clamped | as expected — `claude-artifact-published-phone.png` | PASS |
+| Unit | capture + store (15), parser (1), roots (2), route (1), CLI validator (8 existing) | green | PASS |
+
+Deviation from the plan: the drive removes its entries with the registry
+CLI (`remove --registry`) rather than the dashboard's DELETE — the web `api`
+object is not importable from a drive; the outcome is the same store write
+and removals-log line. Threat round 3's three Low residuals are as recorded
+in the plan (root symlinks resolved and compared with a separator; roots
+built at capture time; the removals log blocks re-publish — noted in
+AGENTS.md).
+
+Review rounds: threat-modeler SHIP with four Low items, all taken — no
+capture at all when the writable-roots dep is not wired (fail closed; the
+fixture had to gain the dep, which is how the drive proved it), the capture
+audit line at `warn` like add/remove, "registry full" treated as transient
+(the file is fine), and the copy unlinked whenever the entry is not
+committed (a throw or a failed registry write) — and its question about the
+20-call bound: the newest publishes are kept, not the earliest. code-reviewer
+REVISE on TS formatting → prettier, SHIP on round 2. Seen in the drive's
+wide screenshot and fixed here: with the pane open at 1440 px the session
+header (name, view toggle, Pin/Details/Stop) overflowed into the pane — the
+bar and its actions now wrap, and the session list column gives way first
+(`minmax(200px, 240px) minmax(380px, 1fr) minmax(340px, 38%)`).
+
+UX advisory (ux-reviewer, NEEDS WORK → taken): the session title keeps a
+200 px flex basis so the view toggle and actions wrap under it instead of
+the name clipping to three letters; a second publish queues on the notice
+("… and 1 more") rather than replacing the unseen one; the copy is a
+sentence, "Claude published <title>"; the title is clamped with an ellipsis
+so Dismiss never leaves a small screen; the list of artifacts is loaded once
+per batch. Not taken: an ambient badge on the Artifacts nav item for a page
+published while the operator is elsewhere (a later item), and auto-dismiss
+(the reviewer's own comparison — Slack's jump-to-latest pill — argues for a
+persistent offer).

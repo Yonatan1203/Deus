@@ -21,13 +21,16 @@ import {
   assertValidGroupFolder,
 } from './group-folder.js';
 import { logger } from './logger.js';
-import { getProjectById } from './db.js';
+import { getAllProjects, getProjectById } from './db.js';
 import { detectAuthMode } from './credential-proxy.js';
 import {
   SENSITIVE_FILE_PATTERNS,
   SENSITIVE_DIR_PATTERNS,
 } from './project-registry.js';
-import { validateAdditionalMounts } from './mount-security.js';
+import {
+  loadMountAllowlist,
+  validateAdditionalMounts,
+} from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 export interface VolumeMount {
@@ -496,4 +499,37 @@ export function buildFanOutMounts(
       readonly: false,
     },
   ];
+}
+
+/**
+ * Every host path a container can be given read-write, across the whole
+ * deployment — the dashboard's artifact auto-capture refuses to copy a page
+ * from under any of these (a container could have written it). The union of
+ * what buildVolumeMounts can mount rw: every group folder, the group session
+ * and IPC dirs, task worktrees, the vault root (control) and `vault/groups`
+ * (others), registered projects (control groups mount them rw unless the
+ * project says readonly; over-refusal is the safe side, so the group type is
+ * not consulted), and every allow-listed root that permits read-write mounts.
+ * Built at call time so a project registered later is covered.
+ */
+export function containerWritableRoots(): string[] {
+  const roots = [
+    GROUPS_DIR,
+    path.join(DATA_DIR, 'sessions'),
+    path.join(DATA_DIR, 'ipc'),
+    path.join(DATA_DIR, 'worktrees'),
+  ];
+  const vaultPath = resolveVaultPath();
+  if (vaultPath) roots.push(vaultPath);
+  for (const p of getAllProjects()) if (!p.readonly) roots.push(p.path);
+  const allow = loadMountAllowlist();
+  if (allow)
+    for (const r of allow.allowedRoots)
+      if (r.allowReadWrite)
+        roots.push(
+          r.path.startsWith('~')
+            ? path.join(HOME_DIR, r.path.slice(1))
+            : r.path,
+        );
+  return roots.map((r) => path.resolve(r));
 }

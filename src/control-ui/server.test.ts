@@ -2303,6 +2303,125 @@ describe('control-ui server — claude sessions', () => {
     );
   const j = (r: { text: string }) => JSON.parse(r.text);
 
+  it('conversation: a page the session published is captured into the registry with a copy, and the reply says so', async () => {
+    const tasksDir = path.join(root, 'tasks');
+    const pageDir = path.join(root, 'pages');
+    fs.mkdirSync(pageDir, { recursive: true });
+    const pageFile = path.join(pageDir, 'supplier-line.html');
+    fs.writeFileSync(
+      pageFile,
+      '<!doctype html><title>Supplier Line</title><p>hi</p>',
+    );
+    const live = fakeLive();
+    await bootC(
+      {
+        claudeTasksDir: tasksDir,
+        containerWritableRoots: () => [path.join(root, 'groups')],
+      },
+      fakeCli(),
+      { liveViews: live },
+    );
+    const url =
+      'https://claude.ai/code/artifact/6dcaedd5-7446-4588-8000-000000000001';
+    fs.appendFileSync(
+      path.join(projects, 'p1', `${SID}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 't1',
+                name: 'Artifact',
+                input: { file_path: pageFile },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 't1',
+                content: `Published: ${url}`,
+              },
+            ],
+          },
+        }),
+      ].join('\n') + '\n',
+    );
+    const { auth } = await login();
+    const { vid } = j(
+      await request({
+        method: 'POST',
+        path: '/api/v1/claude/live',
+        headers: { ...auth, ...H },
+        body: JSON.stringify({ id: 'a1b2c3d4', cols: 80, rows: 24 }),
+      }),
+    );
+    const r = j(
+      await request({
+        method: 'GET',
+        path: `/api/v1/claude/live/${vid}/conversation`,
+        headers: auth,
+      }),
+    );
+    expect(r.artifacts).toHaveLength(1);
+    expect(r.artifacts[0]).toMatchObject({
+      url,
+      local: true,
+      started_here: false,
+    });
+    expect(r.artifacts[0].id).toMatch(/^art-[0-9a-f]{12}$/);
+    expect(r).not.toHaveProperty('artifactCalls');
+    const reg = JSON.parse(
+      fs.readFileSync(
+        path.join(configDir, 'control-ui', 'artifacts.json'),
+        'utf-8',
+      ),
+    );
+    expect(reg.artifacts[0]).toMatchObject({
+      id: r.artifacts[0].id,
+      title: 'Supplier Line',
+      url,
+      added_by: 'session',
+      session: { id: 'a1b2c3d4', name: 'Posts fixture' }, // the name reduced to the registry's charset
+    });
+    expect(
+      fs.existsSync(
+        path.join(
+          configDir,
+          'control-ui',
+          'artifacts',
+          `${r.artifacts[0].id}.html`,
+        ),
+      ),
+    ).toBe(true);
+    expect(ev('control_ui_artifact_capture')).toHaveLength(1); // audited at warn, like add/remove
+    expect(ev('control_ui_artifact_capture')[0][0]).toMatchObject({
+      session: 'a1b2c3d4',
+      source: fs.realpathSync(pageFile),
+    });
+    // the Artifacts tab shows the session on the card's projection
+    const list = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    expect(list.artifacts[0]).toMatchObject({
+      local: true,
+      session: { id: 'a1b2c3d4', name: 'Posts fixture' },
+    });
+    expect(list.artifacts[0]).not.toHaveProperty('local.source');
+  });
+
   it('lists only rows under the repo, with waiting_on and started_here', async () => {
     await bootC();
     const { auth } = await login();

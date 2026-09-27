@@ -122,6 +122,7 @@ import {
   removeArtifact,
   validateAddInput,
 } from './api/artifacts.js';
+import { createArtifactCapture } from './api/artifact-capture.js';
 import {
   CREATIONS_FILE,
   createCreations,
@@ -231,6 +232,8 @@ export interface ControlDeps {
   claudeSettingsFile?: string;
   /** Claude Code's task store (`~/.claude/tasks`): the session's own task list. */
   claudeTasksDir?: string;
+  /** Every host path a container can be given rw (container-mounter.ts); the artifact auto-capture refuses pages from under them. */
+  containerWritableRoots?: () => string[];
 }
 
 export interface ControlServerOptions {
@@ -2019,6 +2022,22 @@ export function createControlServer(
       'control_ui_claude_read',
       ctx.remoteAddr,
     );
+    // Pages this session published are registered by themselves (once per
+    // transcript version); the reply says what the registry holds for each,
+    // and a capture landing changes the version so the body is sent.
+    const { artifactCalls, ...convRead } = read.conv;
+    if (artifactCapture && row)
+      artifactCapture.capture({
+        key: row.session_id as string,
+        version: read.version,
+        calls: artifactCalls,
+        session: { id: m.claudeId, name: row.name },
+        readOnly: deps.readOnly,
+        sid: ctx.session.shortId,
+      });
+    const artifacts = (
+      artifactCapture ? artifactCapture.lookup(artifactCalls) : []
+    ).map((a) => ({ ...a, started_here: startedHere(m.claudeId) }));
     // One composed version for the fast path and the body: a transcript
     // change or a settings change each produce a new value.
     const defaults = readDefaults ? readDefaults() : null;
@@ -2026,7 +2045,7 @@ export function createControlServer(
     // (row.session_id), the same id the store is named by.
     const tasks =
       readTasks && row?.session_id ? readTasks(row.session_id) : null;
-    const version = `${read.version}|${defaults?.version ?? ''}|${tasks?.version ?? ''}`;
+    const version = `${read.version}|${defaults?.version ?? ''}|${tasks?.version ?? ''}|${artifacts.map((a) => a.id ?? '').join(',')}`;
     // Two browsers on one session: the other one's recent typing is shown as
     // a notice, on every poll, so it rides on the unchanged reply too.
     const others_active = lv.othersActive(ctx.params.vid, OTHERS_ACTIVE_MS);
@@ -2036,7 +2055,7 @@ export function createControlServer(
         version,
         others_active,
       });
-    const conv = { ...read.conv };
+    const conv = { ...convRead };
     if (defaults) {
       if (conv.model === null && conv.model_label === null)
         conv.model_label = resolveDefaults(defaults.settings, null).model;
@@ -2048,6 +2067,7 @@ export function createControlServer(
       ...conv,
       tasks: tasks?.tasks ?? [],
       others_active,
+      artifacts,
     });
   });
   router.add('GET', '/api/v1/claude/commands', (ctx) => {
@@ -2884,6 +2904,43 @@ export function createControlServer(
   const creations = controlDir
     ? createCreations(path.join(controlDir, CREATIONS_FILE))
     : null;
+  // The auto-capture (artifact-capture.ts). Declared after the conversation
+  // route that uses it; that route only runs on requests, after this
+  // function returned, so the binding is initialised by then.
+  // Without the writable-roots dep the refusal would be empty — so no
+  // capture at all (fail closed), never a capture without the check.
+  const artifactCapture =
+    controlDir && deps.containerWritableRoots
+      ? createArtifactCapture(controlDir, {
+          hosts: previewHosts,
+          roots: deps.containerWritableRoots,
+          now,
+          log: logger,
+        })
+      : null;
+  const startedHere = (claudeId: string): boolean =>
+    Boolean(creations && creations.list().some((c) => c.id === claudeId));
+  // A page built from "Create artifact" registers even if nobody opened the
+  // conversation: the ledger's sessions are walked here, at most 10 per call.
+  const captureCreations = async () => {
+    if (!artifactCapture || !creations || !readConversation || deps.readOnly)
+      return;
+    const listed = await claudeList(false);
+    if (!('sessions' in listed)) return;
+    for (const c of creations.list().slice(-10)) {
+      const row = listed.sessions.find((x) => x.id === c.id);
+      if (!row?.session_id) continue;
+      const read = readConversation(row.session_id);
+      if (!read || !read.conv.artifactCalls.length) continue;
+      artifactCapture.capture({
+        key: row.session_id,
+        version: read.version,
+        calls: read.conv.artifactCalls,
+        session: { id: row.id, name: row.name },
+        readOnly: deps.readOnly,
+      });
+    }
+  };
   // Artifacts being created by a session the dashboard started, with the
   // session's state; records fall away once the title is registered.
   const creatingList = async () => {
@@ -2922,6 +2979,7 @@ export function createControlServer(
   router.add('GET', '/api/v1/artifacts', async (ctx) => {
     if (artifactReadLimiter.isRateLimited(sid(ctx), now()))
       return writeJson(ctx.res, 429, { error: 'too many requests' });
+    await captureCreations();
     const r = artifactList();
     if ('error' in r) return writeJson(ctx.res, 503, { error: r.error });
     writeJson(ctx.res, 200, { ...r, creating: await creatingList() });
@@ -3074,7 +3132,11 @@ export function createControlServer(
       return writeJson(ctx.res, 429, { error: 'too many requests' });
     if (!controlDir)
       return writeJson(ctx.res, 503, { error: 'registry unavailable' });
-    const r = refreshArtifact(controlDir, id, { readOnly: deps.readOnly, now });
+    const r = refreshArtifact(controlDir, id, {
+      readOnly: deps.readOnly,
+      now,
+      refuseUnder: deps.containerWritableRoots,
+    });
     if (r.status !== 200)
       return writeJson(ctx.res, r.status, { error: r.error });
     writeJson(ctx.res, 200, { version: r.version, following: r.following });

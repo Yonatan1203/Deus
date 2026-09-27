@@ -263,6 +263,14 @@ node scripts/artifact-registry.mjs add --title "Supplier Line" \
 With `--file`, the dashboard shows the artifact beside the conversation and
 follows your edits to that file.
 
+The dashboard also registers what you publish by itself: when your `Artifact`
+call names a local `.html` file (`file_path`) and returns a claude.ai link, the
+page is captured with a copy and shown beside the conversation, labelled
+"Published by <your session>". So the ask above is only for links you did not
+author here (a `files`/`url` publish, or a page from a folder a container can
+write to — those are never captured automatically). A page the operator removed
+from the Artifacts tab is not captured again; use `add` to re-register it.
+
 Never add without asking; never add scratch or one-off artifacts. One
 exception: when the operator started your session from the dashboard's
 **Create artifact** form (the prompt says so), that click is the approval —

@@ -20,6 +20,9 @@ export function createArtifactPane(api) {
   let expectLoad = false;
   let disposed = false;
   const title = h('span', { class: 'ap-title', dir: 'auto' });
+  // "Published by <session>" when the registry knows which session's
+  // transcript proved the publish (a captured entry); else the generic line.
+  const what = h('div', { class: 'ap-what muted' }, 'Page written by a Claude session');
   const kind = h('span', { class: 'chip' });
   const link = h('a', { target: '_blank', rel: 'noopener noreferrer', class: 'small linkish', hidden: true }, icon('external', { size: 14 }), 'Open on claude.ai');
   const closeBtn = h('button', { type: 'button', class: 'small ghost', 'aria-label': 'Close the artifact pane' }, icon('x', { size: 14 }), 'Close');
@@ -27,7 +30,7 @@ export function createArtifactPane(api) {
   const note = h('div', { class: 'ap-note', role: 'status', hidden: true });
   const el = h('aside', { class: 'artifact-pane', 'aria-label': 'Artifact', hidden: true, tabindex: '-1' },
     h('div', { class: 'ap-head' },
-      h('div', { class: 'ap-what muted' }, 'Page written by a Claude session'),
+      what,
       h('div', { class: 'ap-row' }, title, kind),
       h('div', { class: 'ap-actions' }, link, closeBtn)),
     frame, note);
@@ -99,6 +102,9 @@ export function createArtifactPane(api) {
     title.title = artifact.title; // the full title when the row clips it
     kind.textContent = artifact.kind;
     frame.title = artifact.title;
+    if (artifact.session && artifact.session.id && artifact.session.name) {
+      what.replaceChildren('Published by ', h('a', { href: `#/claude/${artifact.session.id}`, class: 'ap-by', dir: 'auto' }, artifact.session.name));
+    } else what.replaceChildren('Page written by a Claude session');
     if (current.url) { link.href = current.url; link.hidden = false; } else { link.hidden = true; link.removeAttribute('href'); }
     note.hidden = true; delete note.dataset.copy;
     version = '';

@@ -572,6 +572,44 @@ export async function render(root, api, bus, me) {
     // Two browsers on one session (the raw terminal has the same race): the
     // other one's recent typing is said, not hidden. Set on every poll.
     const othersEl = h('div', { class: 'conv-others', role: 'status', hidden: true }, 'Someone else is answering this session from another browser.');
+    // A page this session published lands beside the conversation by itself
+    // when the dashboard started the session and the screen is wide enough
+    // for two panes; otherwise a notice offers "Open beside". Never on the
+    // first render of a reopened session — only on a change while watching.
+    // Pages not yet opened queue up (a second publish never replaces the first
+    // unseen): the notice names the newest and counts the rest; "Open beside"
+    // opens the newest and leaves the others on the notice; Dismiss clears all.
+    const cpTitle = h('span', { class: 'cp-title', dir: 'auto' });
+    const cpMore = h('span', { class: 'muted' });
+    const cpBtn = h('button', { type: 'button', class: 'small primary' }, 'Open beside');
+    const publishedEl = h('div', { class: 'conv-published', role: 'status', hidden: true }, 'Claude published ', cpTitle, cpMore, cpBtn,
+      h('button', { type: 'button', class: 'small ghost', onclick: () => { published.length = 0; publishedEl.hidden = true; } }, 'Dismiss'));
+    const published = []; // newest last
+    function drawPublished() {
+      if (!published.length) { publishedEl.hidden = true; return; }
+      const art = published[published.length - 1];
+      cpTitle.textContent = art.title;
+      cpMore.textContent = published.length > 1 ? ` and ${published.length - 1} more` : '';
+      cpBtn.onclick = () => { published.pop(); drawPublished(); openArtifact(art); };
+      publishedEl.hidden = false;
+    }
+    const knownArtifacts = new Set();
+    async function onArtifacts(list) {
+      const fresh = (list || []).filter((a) => a.local && a.id);
+      if (first) { fresh.forEach((a) => knownArtifacts.add(a.id)); return; }
+      const arrived = fresh.filter((a) => !knownArtifacts.has(a.id));
+      if (!arrived.length) return;
+      arrived.forEach((a) => knownArtifacts.add(a.id));
+      await loadArtifacts(); // once for the batch
+      if (disposed) return;
+      for (const a of arrived) {
+        const art = artifactsByUrl.get(a.url);
+        if (!art) continue;
+        if (a.started_here && window.innerWidth >= 1100) { openArtifact(art); continue; }
+        published.push(art);
+      }
+      drawPublished();
+    }
     // A poll that fails for any reason but "no conversation" is said, not
     // swallowed; the next successful poll clears it.
     const refreshEl = h('div', { class: 'conv-banner conv-refresh', role: 'status', hidden: true }, "Couldn't refresh the conversation — retrying.");
@@ -604,7 +642,7 @@ export async function render(root, api, bus, me) {
         { id: 'effort', initial: 'Effort', options: EFFORTS, onPick: (v) => sendLine(`/effort ${v}`), note: DEFAULT_NOTE },
       ],
     });
-    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, newerBtn, refreshEl, othersEl, banner, composer.el));
+    const el = h('div', { class: 'conv' }, scroller, h('div', { class: 'conv-composer' }, newerBtn, refreshEl, othersEl, publishedEl, banner, composer.el));
     scroller.addEventListener('scroll', () => { if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120) newerBtn.hidden = true; }, { passive: true });
 
     const view = () => mine.view;
@@ -812,6 +850,7 @@ export async function render(root, api, bus, me) {
         if (!first && !near) newerBtn.hidden = false;
         truncNote.hidden = !r.truncated;
         drawTasks(Array.isArray(r.tasks) ? r.tasks : []);
+        void onArtifacts(r.artifacts);
         composer.picker('model').set(r.model_label ? givenLabel(r.model_label) : modelLabel(r.model));
         const eff = EFFORTS.find(([v]) => v === r.effort);
         composer.picker('effort').set(eff ? eff[1] : 'Effort');

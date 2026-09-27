@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { checkUrl, type UrlBlock } from './allowed-url.js';
 import { redactSecrets } from './logs.js';
 import { readRecordFile } from './workflows.js';
+import { CLAUDE_JOB_ID_RE, CLAUDE_NAME_RE } from './claude-sessions.js';
 
 // The artifacts registry: one file, `CONFIG_DIR/control-ui/artifacts.json`,
 // `{ v: 1, rev, artifacts: [...] }`, curated by the operator through
@@ -13,7 +14,11 @@ import { readRecordFile } from './workflows.js';
 // write-time check only keeps unshowable links out.
 export const ARTIFACT_ID_RE = /^art-[0-9a-f]{12}$/;
 export const ARTIFACT_KINDS = ['app', 'report', 'preview'] as const;
-export const ADDED_BY = ['cli', 'dashboard'] as const;
+export const ADDED_BY = ['cli', 'dashboard', 'session'] as const;
+/** Entries the dashboard captured from a session's transcript are capped on their own. */
+export const SESSION_MAX = 100;
+export const SNIFF_BYTES = 512;
+export const TITLE_SCAN_BYTES = 4096;
 export const TITLE_RE = /^[\p{L}\p{N}][^\p{Cc}\p{Cf}]{0,99}$/u;
 export const DESCRIPTION_MAX = 300;
 export const ARTIFACTS_MAX = 200;
@@ -41,6 +46,11 @@ export interface ArtifactLocal {
   copied_at: string;
   source_mtime_ms: number;
 }
+/** The session whose transcript proved the publish (captured entries only). */
+export interface ArtifactSession {
+  id: string;
+  name: string;
+}
 export interface ArtifactEntry {
   id: string;
   title: string;
@@ -50,6 +60,7 @@ export interface ArtifactEntry {
   added_at: string;
   added_by: (typeof ADDED_BY)[number];
   local?: ArtifactLocal;
+  session?: ArtifactSession;
 }
 export interface Registry {
   v: 1;
@@ -67,6 +78,7 @@ export interface ArtifactView {
   added_by: string;
   /** A local copy exists, so the pane can show it; never the path. */
   local: boolean;
+  session?: ArtifactSession;
   url?: string | null;
   blocked?: UrlBlock;
 }
@@ -116,7 +128,18 @@ export function validateEntry(raw: unknown): ArtifactEntry | null {
   if (description !== undefined) entry.description = description;
   const local = validateLocal(raw.local);
   if (local) entry.local = local;
+  const session = validateSession(raw.session);
+  if (session) entry.session = session;
   return entry;
+}
+
+/** Kept in lockstep with scripts/artifact-registry.mjs. A malformed record is dropped; the entry stays. */
+export function validateSession(raw: unknown): ArtifactSession | null {
+  if (!isObj(raw)) return null;
+  const { id, name } = raw;
+  if (typeof id !== 'string' || !CLAUDE_JOB_ID_RE.test(id)) return null;
+  if (typeof name !== 'string' || !CLAUDE_NAME_RE.test(name)) return null;
+  return { id, name };
 }
 
 /** Kept in lockstep with scripts/artifact-registry.mjs. A malformed record is dropped; the entry stays. */
@@ -225,6 +248,7 @@ export function projectEntry(
     added_by: e.added_by,
     local: e.local !== undefined,
   };
+  if (e.session) v.session = { id: e.session.id, name: clean(e.session.name) };
   if (opts.readOnly) return v;
   if (e.description !== undefined) v.description = clean(e.description);
   const c = checkUrl(e.url, opts.hosts);
@@ -481,10 +505,33 @@ export type RefreshResult =
  * `following` is false when the source is gone or failed a check, and always
  * on a read-only server, which never writes.
  */
+/**
+ * Path containment for the container-writable roots: the source's realpath
+ * equals a root or lies below it (separator-aware); roots that exist are
+ * resolved through realpath first so a symlinked root still matches.
+ */
+export function isUnderAny(real: string, roots: string[]): boolean {
+  for (const r of roots) {
+    let root = path.resolve(r);
+    try {
+      root = fs.realpathSync(root);
+    } catch {
+      /* an absent root is compared as given */
+    }
+    if (real === root || real.startsWith(root + path.sep)) return true;
+  }
+  return false;
+}
+
 export function refreshArtifact(
   dir: string,
   id: unknown,
-  opts: { readOnly: boolean; now?: () => number },
+  opts: {
+    readOnly: boolean;
+    now?: () => number;
+    /** Captured entries (`added_by: 'session'`) stop following a source under one of these. */
+    refuseUnder?: () => string[];
+  },
 ): RefreshResult {
   const now = opts.now ?? Date.now;
   if (typeof id !== 'string' || !ARTIFACT_ID_RE.test(id))
@@ -499,6 +546,12 @@ export function refreshArtifact(
   const version = copyVersion(dir, id);
   if (!version) return { status: 404, error: 'no-copy' };
   if (opts.readOnly) return { status: 200, version, following: false };
+  if (
+    entry.added_by === 'session' &&
+    opts.refuseUnder &&
+    isUnderAny(entry.local.source, opts.refuseUnder())
+  )
+    return { status: 200, version, following: false };
   const src = checkSource(entry.local);
   if (!src.ok) return { status: 200, version, following: false };
   if (!src.changed) return { status: 200, version, following: true };
@@ -598,6 +651,294 @@ export function logRemoved(
     );
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+/**
+ * The URLs in the removals log, so an operator's delete (or an eviction)
+ * holds across restarts and polls: re-read only when the log's size or
+ * mtime changed, else served from memory.
+ */
+export function createRemovedUrls(dir: string) {
+  let memo: { version: string; urls: Set<string> } | null = null;
+  const parse = (file: string, into: Set<string>) => {
+    let text: string;
+    try {
+      const st = fs.lstatSync(file);
+      if (!st.isFile() || st.size > REMOVED_LOG_MAX * 2) return;
+      text = fs.readFileSync(file, 'utf-8');
+    } catch {
+      return;
+    }
+    for (const line of text.split('\n')) {
+      if (!line) continue;
+      try {
+        const rec = JSON.parse(line) as { entry?: { url?: unknown } };
+        if (typeof rec?.entry?.url === 'string') into.add(rec.entry.url);
+      } catch {
+        /* a torn line */
+      }
+    }
+  };
+  return (): Set<string> => {
+    const file = path.join(dir, REMOVED_LOG);
+    let version = 'none';
+    try {
+      const st = fs.lstatSync(file);
+      version = `${Math.trunc(st.mtimeMs)}:${st.size}`;
+    } catch {
+      /* no log yet */
+    }
+    if (memo && memo.version === version) return memo.urls;
+    const urls = new Set<string>();
+    parse(`${file}.1`, urls);
+    parse(file, urls);
+    memo = { version, urls };
+    return urls;
+  };
+}
+
+export type CaptureSource =
+  | {
+      ok: true;
+      source: string;
+      uid: number;
+      bytes: number;
+      mtimeMs: number;
+      data: Buffer;
+      /** From the page's `<title>` when there is one, cleaned; else null. */
+      title: string | null;
+    }
+  | { ok: false; reason: string };
+
+const HTML_START_RE = /<!doctype\s+html|<html[\s>]/i;
+const TITLE_TAG_RE = /<title[^>]*>([^<]{1,400})<\/title>/i;
+
+/**
+ * The checks `scripts/artifact-registry.mjs add --file` makes, plus a content
+ * sniff: a real `.html` the caller owns, not a link, no other hard links,
+ * 1..COPY_MAX bytes, dev/ino equal to a stat after the open, and the bytes
+ * start with `<!doctype html` or `<html` within the first 512. Absolute
+ * paths only. Nothing is copied here.
+ */
+export function captureSource(file: unknown): CaptureSource {
+  if (typeof file !== 'string' || !path.isAbsolute(file) || file.length > 1024)
+    return { ok: false, reason: 'not an absolute path' };
+  if (!SOURCE_RE.test(file)) return { ok: false, reason: 'not an .html file' };
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | NOFOLLOW);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { ok: false, reason: 'not a regular file' };
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid())
+      return { ok: false, reason: 'not owned by this user' };
+    if (st.nlink !== 1) return { ok: false, reason: 'has other hard links' };
+    if (st.size < 1 || st.size > COPY_MAX)
+      return { ok: false, reason: `not within 1-${COPY_MAX} bytes` };
+    const source = fs.realpathSync(file);
+    const rs = fs.statSync(source);
+    if (rs.dev !== st.dev || rs.ino !== st.ino)
+      return { ok: false, reason: 'changed while reading' };
+    const buf = Buffer.alloc(st.size);
+    const n = fs.readSync(fd, buf, 0, st.size, 0);
+    const data = buf.subarray(0, n);
+    if (!HTML_START_RE.test(data.subarray(0, SNIFF_BYTES).toString('utf-8')))
+      return { ok: false, reason: 'not an HTML document' };
+    const head = data.subarray(0, TITLE_SCAN_BYTES).toString('utf-8');
+    const t = TITLE_TAG_RE.exec(head)?.[1];
+    const title = t ? cleanTitle(t) : null;
+    return {
+      ok: true,
+      source,
+      uid: st.uid,
+      bytes: n,
+      mtimeMs: st.mtimeMs,
+      data,
+      title,
+    };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return {
+      ok: false,
+      reason:
+        code === 'ENOENT'
+          ? 'no such file'
+          : code === 'ELOOP'
+            ? 'is a symlink'
+            : 'unreadable',
+    };
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+/** Control characters stripped, HTML entities for the common few, trimmed, clamped to 100; null when TITLE_RE still fails. */
+export function cleanTitle(raw: string): string | null {
+  const t = raw
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(STRIP_RE, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+  return TITLE_RE.test(t) ? t : null;
+}
+
+/** `{ id, name }` the registry accepts, or null when the id itself is wrong. */
+export function sessionForEntry(raw: ArtifactSession): ArtifactSession | null {
+  if (typeof raw.id !== 'string' || !CLAUDE_JOB_ID_RE.test(raw.id)) return null;
+  const name =
+    typeof raw.name === 'string'
+      ? raw.name
+          .replace(STRIP_RE, '')
+          .replace(/[^\p{L}\p{N} ._-]+/gu, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 60)
+      : '';
+  return { id: raw.id, name: CLAUDE_NAME_RE.test(name) ? name : raw.id };
+}
+
+export type CapturedAdd =
+  | { status: 201; id: string; rev: number; evicted: ArtifactEntry[] }
+  | { status: 200; id: string; existing: true }
+  | { status: 400 | 409 | 503; error: string; transient: boolean };
+
+/**
+ * The write path the auto-capture uses (the dashboard's `addArtifact` never
+ * copies): under the registry lock the URL is checked again, the session
+ * sub-quota evicts the oldest captured entry, the copy is written `wx` 0600,
+ * the registry is written with the rev check — and on a failed write the copy
+ * just written is unlinked. Evicted copies are unlinked only after the
+ * registry write succeeded; each eviction goes to the removals log.
+ */
+export function addCapturedArtifact(
+  dir: string,
+  input: {
+    title: string | null;
+    url: string;
+    kind: ArtifactKind;
+    source: Extract<CaptureSource, { ok: true }>;
+    session: ArtifactSession;
+  },
+  opts: { hosts: string[]; now?: () => number },
+): CapturedAdd {
+  const now = opts.now ?? Date.now;
+  const fallback = path.basename(input.source.source).replace(/\.html?$/i, '');
+  const title = input.title ?? cleanTitle(fallback) ?? 'Artifact';
+  const checked = validateAddInput(
+    { title, url: input.url, kind: input.kind },
+    opts.hosts,
+  );
+  if (!checked.ok)
+    return { status: 400, error: checked.error, transient: false };
+  const { title: entryTitle, url, kind } = checked; // narrowed once; the nested commit() cannot see the guard
+  // The session's name comes from the CLI's list and may carry characters the
+  // registry's name rule does not (parentheses, say): it is reduced to that
+  // charset, and the id stands in when nothing usable is left.
+  const sessionOrNull = sessionForEntry(input.session);
+  if (!sessionOrNull)
+    return { status: 400, error: 'session invalid', transient: false };
+  const session: ArtifactSession = sessionOrNull;
+  if (!registryDirOk(dir))
+    return { status: 503, error: 'registry unavailable', transient: true };
+  try {
+    return withLock(
+      dir,
+      (): CapturedAdd => {
+        const cur = readRegistry(dir);
+        if (!cur.ok)
+          return { status: 503, error: 'registry unreadable', transient: true };
+        const dup = cur.registry.artifacts.find((a) => a.url === url);
+        if (dup) return { status: 200, id: dup.id, existing: true };
+        let kept = cur.registry.artifacts;
+        const evicted: ArtifactEntry[] = [];
+        const captured = kept
+          .filter((a) => a.added_by === 'session')
+          .sort((a, b) => a.added_at.localeCompare(b.added_at));
+        for (let i = 0; captured.length - i >= SESSION_MAX; i++)
+          evicted.push(captured[i]);
+        if (evicted.length) kept = kept.filter((a) => !evicted.includes(a));
+        // Full is a state of the registry, not of the file: retried next time.
+        if (kept.length >= ARTIFACTS_MAX)
+          return { status: 409, error: 'registry full', transient: true };
+        const id = `art-${crypto.randomBytes(6).toString('hex')}`;
+        fs.mkdirSync(path.join(dir, COPY_DIR), {
+          recursive: true,
+          mode: 0o700,
+        });
+        const file = copyPath(dir, id);
+        const fd = fs.openSync(
+          file,
+          fs.constants.O_WRONLY |
+            fs.constants.O_CREAT |
+            fs.constants.O_EXCL |
+            NOFOLLOW,
+          0o600,
+        );
+        // From here a throw (ENOSPC, say) or a failed registry write must not
+        // leave the copy behind.
+        let committed = false;
+        try {
+          try {
+            fs.writeSync(fd, input.source.data);
+            fs.fsyncSync(fd);
+          } finally {
+            fs.closeSync(fd);
+          }
+          const at = new Date(now()).toISOString();
+          const entry: ArtifactEntry = {
+            id,
+            title: entryTitle,
+            url,
+            kind,
+            added_at: at,
+            added_by: 'session',
+            local: {
+              source: input.source.source,
+              uid: input.source.uid,
+              bytes: input.source.bytes,
+              copied_at: at,
+              source_mtime_ms: input.source.mtimeMs,
+            },
+            session,
+          };
+          const w = writeRegistry(
+            dir,
+            { v: 1, rev: cur.registry.rev + 1, artifacts: [...kept, entry] },
+            cur.registry.rev,
+            now,
+          );
+          if (!w.ok)
+            return { status: w.status, error: w.error, transient: true };
+          committed = true;
+          for (const e of evicted) {
+            logRemoved(dir, e, 'session-quota', at);
+            try {
+              fs.unlinkSync(copyPath(dir, e.id));
+            } catch {
+              /* no copy */
+            }
+          }
+          return { status: 201, id, rev: w.rev, evicted };
+        } finally {
+          if (!committed)
+            try {
+              fs.unlinkSync(file);
+            } catch {
+              /* already gone */
+            }
+        }
+      },
+      now,
+    );
+  } catch (err) {
+    if (err instanceof RegistryBusy)
+      return { status: 409, error: 'registry busy', transient: true };
+    return { status: 503, error: 'registry unavailable', transient: true };
   }
 }
 

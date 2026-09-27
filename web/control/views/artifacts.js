@@ -92,7 +92,8 @@ export async function render(root, api, bus, me) {
     return h('div', { class: 'card art-card', 'data-id': a.id },
       h('div', { class: 'title' }, titleNode(a)),
       a.description ? h('p', {}, a.description) : null,
-      h('div', { class: 'wf-foot muted' }, h('span', {}, `added ${fmtTime(a.added_at)} · ${a.added_by}`),
+      h('div', { class: 'wf-foot muted' }, h('span', {}, `added ${fmtTime(a.added_at)} · ${a.added_by}`,
+        ...(a.session && a.session.id && a.session.name ? [' · published by ', h('a', { href: `#/claude/${a.session.id}`, dir: 'auto' }, a.session.name)] : [])),
         a.local ? h('a', { href: `#/claude?artifact=${encodeURIComponent(a.id)}`, class: 'small linkish' }, 'Open beside Claude') : null, remove));
   }
   function creatingCard(c) {

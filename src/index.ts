@@ -101,6 +101,7 @@ import { logReactionSignal } from './evolution-client.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { resolveVaultPath } from './solutions/store.js';
+import { containerWritableRoots } from './container-mounter.js';
 import { processImage } from './image.js';
 import {
   createAudioResolver,
@@ -598,6 +599,7 @@ async function main(): Promise<void> {
     claudeProjectsDir: path.join(homeDir, '.claude', 'projects'),
     claudeSettingsFile: path.join(homeDir, '.claude', 'settings.json'),
     claudeTasksDir: path.join(homeDir, '.claude', 'tasks'),
+    containerWritableRoots,
     vaultPath: resolveVaultPath(),
     // Resolved so a relative WHATSAPP_AUTH_DIR cannot differ from the adapter's view.
     whatsappAuthDir: path.resolve(
