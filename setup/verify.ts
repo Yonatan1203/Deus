@@ -18,7 +18,7 @@ import {
   getPlatform,
   getServiceManager,
   hasSystemd,
-  isRoot,
+  getSystemdServiceStatus,
 } from './platform.js';
 import { emitStatus } from './status.js';
 
@@ -46,22 +46,7 @@ export async function run(_args: string[]): Promise<void> {
       // launchctl not available
     }
   } else if (mgr === 'systemd') {
-    const prefix = isRoot() ? 'systemctl' : 'systemctl --user';
-    try {
-      execSync(`${prefix} is-active deus`, { stdio: 'ignore' });
-      service = 'running';
-    } catch {
-      try {
-        const output = execSync(`${prefix} list-unit-files`, {
-          encoding: 'utf-8',
-        });
-        if (output.includes('deus')) {
-          service = 'stopped';
-        }
-      } catch {
-        // systemctl not available
-      }
-    }
+    service = getSystemdServiceStatus(projectRoot);
   } else if (mgr === 'nssm') {
     try {
       const out = execSync('nssm status deus', {

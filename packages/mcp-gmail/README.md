@@ -50,7 +50,9 @@ The server automatically refreshes expired access tokens and persists updated to
 
 ## Incoming Messages
 
-Emails are polled every 60 seconds (configurable). New unread emails from the Primary category are delivered as MCP logging notifications with `logger: "incoming_message"`. For clients that don't support notifications, use the `get_new_messages` polling tool.
+Emails are polled every 60 seconds (configurable). New unread emails from the Primary category (`is:unread category:personal`) are delivered as MCP logging notifications with `logger: "incoming_message"`. For clients that don't support notifications, use the `get_new_messages` polling tool.
+
+Read state is left alone. Each handled email (delivered or skipped, e.g. self-sent) is tagged with a hidden `deus-processed` label so it is never delivered twice, even across restarts. The first time the label is created, emails already unread in Primary are tagged without being delivered, so a new install does not replay the backlog. Deleting the label in Gmail resets this.
 
 ## Environment Variables
 
