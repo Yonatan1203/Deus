@@ -1657,3 +1657,15 @@ session removed by the drive):
 | Answered card (rendered from the transcript's answered call) | "You answered: Blue · Apple, Cherry" | as expected | PASS |
 | Transcript regex in the drive | the answer row within 1.5 s | not matched in time (the card above is built from the same transcript row, so the answer is recorded) | timing only |
 | Unit | `backKeys(times)` incl. bounds; the ✔-suffix parse | 5 + 10 green | PASS |
+
+## Hotfix: a conversation with an artifact card went blank (2026-09-27)
+
+Found by the plan-reviewer for the quality pass, not by a drive: the "Open
+beside" button added to the conversation's artifact cards (2026-09-27, split
+view) read `handlers` inside `toolsItem`, which only ever received
+`handlers.expanded` — so a transcript with a finished Artifact tool call threw
+`ReferenceError` inside `renderConversation` and the whole conversation view
+stayed blank for that session (the split-view drive used a registered page,
+never a session that had *published* one). `handlers` is now passed into
+`toolsItem`; a DOM-stub test renders an artifact-bearing tool run with and
+without a local copy. Shell cache v31.

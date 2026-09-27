@@ -60,7 +60,7 @@ export function groupItems(items) {
 
 const isClaudeArtifact = (u) => { try { const x = new URL(u); return x.protocol === 'https:' && x.hostname === 'claude.ai'; } catch { return false; } };
 
-function toolsItem(g, h, key, expanded) {
+function toolsItem(g, h, key, expanded, handlers = {}) {
   const open = Boolean(expanded && expanded.has(key));
   const list = h('ul', { class: 'conv-calls', hidden: !open },
     ...g.calls.map((c) => h('li', {}, h('span', { class: 'conv-tool' }, c.tool), c.summary ? ` ${c.summary}` : '')));
@@ -120,7 +120,7 @@ export function renderConversation(el, items, h, handlers = {}) {
       case 'user': return h('div', { class: `conv-user${it.queued ? ' queued' : ''}`, dir: 'auto' }, it.text,
         it.queued ? h('span', { class: 'conv-queued' }, 'Queued') : null);
       case 'assistant': return h('div', { class: 'conv-assistant', dir: 'auto' }, ...renderBlocks(parseMarkdown(it.text), h));
-      case 'tools': return toolsItem(it, h, i, handlers.expanded);
+      case 'tools': return toolsItem(it, h, i, handlers.expanded, handlers);
       case 'command': return h('div', { class: 'conv-command' },
         h('code', {}, [it.name, it.args].filter(Boolean).join(' ')),
         it.output ? h('span', { class: 'muted' }, it.output) : null);
