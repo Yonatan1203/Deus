@@ -1332,6 +1332,36 @@ regex widened; deviation recorded).
 | Pastes | inner text only, separators kept | unit cases: whole message, text around, two blocks (space / newline), attributed closing tag | PASS |
 | Suite | green | parser 13; control-ui + scripts green; tsc, eslint clean | PASS |
 
+## Claude tab: the live working line, and the terminal font (2026-09-26)
+
+Operator request: "a live visual for Claude's thinking loop like in all
+Claude apps", and the terminal in "Cascadia Mono NF" at 14. Plan-reviewer
+SHIP for each (two rounds; the font went through its own round — one concern
+per plan — and its fallback order was corrected there: only the NF family is
+prepended, so the bundled Geist Mono keeps covering Claude Code's symbols
+wherever the NF font is absent).
+
+The line is Claude Code's own status row — `✻ Spinning… (14s · ↓ 103
+tokens)`: a spinner frame, its verb, elapsed seconds, sometimes tokens — read
+from the terminal screen on every poll tick (`parseWorking` in
+`ask-screen.js`, called before the question card's unchanged-screen memo so
+it never freezes) and shown under the last message with the verb shimmering
+like the Claude app's status text; hidden when idle, when a question card is
+open, or when the session is not working. Design note: the Chat tab keeps its
+bouncing dots — that is the messaging idiom for "Amos is typing" and carries
+no words; this line carries Claude Code's verb and time, so text shimmer is
+the fitting treatment. Reduced motion: no shimmer.
+
+Driven on the real-Claude fixture, two throwaway sessions running a 40 s
+command:
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Line while working | `✻ <Verb>… <N>s`, updating | "✻ Composing… 3s · 2 tokens" (run 1), "✻ Embellishing… 4s · 18 tokens" → "8s · 109 tokens" 4.5 s later (run 2) — `artifacts/claude-thinking.png` | PASS |
+| Hidden when done | `hidden` once the session is done | hidden | PASS |
+| Terminal font | Cascadia Mono NF, 14 | the served `views/claude.js` carries `"Cascadia Mono NF"` first and `fontSize: 14`; xterm reads both at open (canvas renderer — no DOM element carries the font to read back, and the VPS has no Cascadia font, so the fixture shows the Geist Mono fallback by design; the NF font applies on the operator's own devices) | PASS (source) |
+| Suite | green | screen parser 9 (2 for the working line); control-ui + scripts green; syntax, eslint clean | PASS |
+
 - Review round: code-reviewer SHIP; copy-writer and ux-reviewer (advisory)
   led to: "Back" instead of "Change answers" (it steps one question back),
   "Review answers" instead of "Done"/"Next" when no question follows, a hint

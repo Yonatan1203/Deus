@@ -3,7 +3,7 @@ import { icon } from '../icons.js';
 import { header } from '../app.js';
 import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
-import { parseAskScreen } from '../ask-screen.js';
+import { parseAskScreen, parseWorking } from '../ask-screen.js';
 import { backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
 import { renderConversation } from '../conversation.js';
 import { autosizeTextarea, createComposer } from '../composer.js';
@@ -99,8 +99,8 @@ async function openLive(api, host, session, onEnd) {
   const term = new window.Terminal({
     // Claude Code draws symbols (⏵, ✻, ●) the dashboard's font lacks; the
     // fallbacks cover them on Windows, macOS and Linux.
-    fontFamily: '"Geist Mono", ui-monospace, "Cascadia Mono", Consolas, SFMono-Regular, Menlo, "DejaVu Sans Mono", "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols 2", monospace',
-    fontSize: 13, lineHeight: 1.15, cursorBlink: true, scrollback: 5000,
+    fontFamily: '"Cascadia Mono NF", "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, SFMono-Regular, Menlo, "DejaVu Sans Mono", "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols 2", monospace',
+    fontSize: 14, lineHeight: 1.15, cursorBlink: true, scrollback: 5000,
     allowProposedApi: false,
     theme: { background: cssVar('--surface') || '#131316', foreground: cssVar('--text') || '#ededef', cursor: cssVar('--text') || '#ededef', selectionBackground: '#3a3a44' },
     // Only real web links, opened without handing this page to the target.
@@ -471,7 +471,20 @@ export async function render(root, api, bus, me) {
     const truncNote = h('div', { class: 'conv-note', hidden: true }, 'Earlier messages are in the Terminal view.');
     // The open question, built from the terminal screen (see readScreen).
     const askEl = h('div', { class: 'conv-ask live', hidden: true, 'aria-live': 'polite' });
-    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl, askEl));
+    // Claude's own working line ("✻ Thinking… 14s"), read from the screen
+    // on every poll tick and updated in place; hidden when idle or asking.
+    const thinkVerb = h('span', { class: 'think-verb' });
+    const thinkMeta = h('span', { class: 'think-meta' });
+    const thinkEl = h('div', { class: 'conv-thinking', hidden: true, role: 'status', 'aria-live': 'polite' }, spinner(), thinkVerb, thinkMeta);
+    function updateThinking(w) {
+      if (!w) { thinkEl.hidden = true; return; }
+      const verb = `${w.verb}…`;
+      const meta = `${w.seconds}s${w.tokens ? ` · ${w.tokens} tokens` : ''}`;
+      if (thinkVerb.textContent !== verb) thinkVerb.textContent = verb;
+      if (thinkMeta.textContent !== meta) thinkMeta.textContent = meta;
+      thinkEl.hidden = false;
+    }
+    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl, thinkEl, askEl));
 
     const banner = h('div', { class: 'conv-banner', hidden: true },
       h('span', {}, 'Claude is waiting for you in the terminal.'),
@@ -557,7 +570,10 @@ export async function render(root, api, bus, me) {
     function readScreen() {
       if (disposed || askSending) return;
       const v = view();
-      const st = v ? parseAskScreen(v.screenLines()) : null;
+      const lines = v ? v.screenLines() : [];
+      const st = v ? parseAskScreen(lines) : null;
+      // Before the memo below: the working line changes every tick.
+      updateThinking(v && !st && stateOf(row)[0] === 'working' ? parseWorking(lines) : null);
       const key = JSON.stringify(st);
       if (key === askState) return;
       askState = key;
@@ -668,6 +684,7 @@ export async function render(root, api, bus, me) {
       const busy = label === 'working';
       banner.hidden = label !== 'needs you' || !askEl.hidden;
       composer.setBusy(busy);
+      if (!busy) updateThinking(null);
       // Typing while Claude works is fine — Claude queues it (the bubble
       // shows as Queued). The box says so, unless a question holds it.
       if (!lockedByAsk) composer.input.placeholder = busy ? 'Message Claude — it will be queued until Claude is ready' : composer.placeholder;

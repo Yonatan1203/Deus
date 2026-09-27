@@ -102,3 +102,17 @@ function question(lines, foot) {
   if (tabRow >= 0) for (const t of lines[tabRow].matchAll(TAB_RE)) { if (tabs.length >= TABS_MAX) break; tabs.push({ label: clip(t[2]), done: t[1] === '☒' }); }
   return { kind: 'question', question: questionText, tabs, multi, options, other, cursor };
 }
+
+// Claude Code's status line while it works — `✻ Spinning… (14s · ↓ 103 tokens)`:
+// one of its spinner frames, its own verb, elapsed seconds, sometimes tokens.
+// The bottom-most such row is the live one (captured 2026-09-26).
+const WORKING_RE = /^\s*[·✢✳✶✻✽]\s+([A-Z][A-Za-z' -]{1,40})…\s*\((\d{1,6})s(?:\s*·\s*[↑↓]\s*([\d.]+k?)\s*tokens)?\)/;
+
+/** `{ verb, seconds, tokens }` while Claude works, else null. */
+export function parseWorking(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = WORKING_RE.exec(lines[i]);
+    if (m) return { verb: m[1].trim(), seconds: Number(m[2]), tokens: m[3] || '' };
+  }
+  return null;
+}

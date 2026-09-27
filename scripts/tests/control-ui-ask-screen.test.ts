@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error plain JS browser module
-import { parseAskScreen } from '../../web/control/ask-screen.js';
+import { parseAskScreen, parseWorking } from '../../web/control/ask-screen.js';
 
 // Real screens from the 2026-09-26 spike (Claude Code 2.1.283), as the
 // terminal buffer holds them: a blank row between the tab row, the
@@ -78,6 +78,51 @@ const NARROW = [
   '',
   '──────────────────────── Ask-delete-me ─',
 ];
+
+// Claude Code's status line while working, captured at 6 s and 14 s.
+const WORKING = [
+  '❯ Run this command',
+  '',
+  '✽ Spinning… (4s · ↓ 28 tokens)',
+  '                                        ● high · /effort',
+  RULE,
+  '❯ ',
+  RULE,
+  '  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt',
+];
+
+describe('parseWorking', () => {
+  it('reads the verb, the seconds and the tokens', () => {
+    expect(parseWorking(WORKING)).toEqual({
+      verb: 'Spinning',
+      seconds: 4,
+      tokens: '28',
+    });
+    expect(
+      parseWorking(
+        WORKING.map((l) =>
+          l.replace(
+            '✽ Spinning… (4s · ↓ 28 tokens)',
+            '✻ Spinning… (14s · ↓ 103 tokens)',
+          ),
+        ),
+      ),
+    ).toEqual({
+      verb: 'Spinning',
+      seconds: 14,
+      tokens: '103',
+    });
+  });
+  it('reads a line without tokens and returns null on an idle prompt', () => {
+    expect(parseWorking(['✻ Thinking… (2s)', RULE, '❯ '])).toEqual({
+      verb: 'Thinking',
+      seconds: 2,
+      tokens: '',
+    });
+    expect(parseWorking(PROMPT)).toBeNull();
+    expect(parseWorking([])).toBeNull();
+  });
+});
 
 describe('parseAskScreen', () => {
   it('reads a single-choice question', () => {
