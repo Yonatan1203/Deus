@@ -2064,7 +2064,9 @@ describe.skipIf(onWindows)('OpenAI backend container env', () => {
         backend,
         groupFolder: group.folder,
         chatJid: 'x@g.us',
-        isControlGroup: true,
+        // Follow the group: a publicIngress group is never a control group
+        // (buildVolumeMounts refuses the combination).
+        isControlGroup: group.isControlGroup ?? true,
       },
       () => {},
     );

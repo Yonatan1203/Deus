@@ -136,3 +136,81 @@ export function buildAllowedTools(opts: AllowedToolsOpts): string[] {
     ...(hasLinearMcp ? ['mcp__linear__*'] : []),
   ];
 }
+
+// Removed from the model's context for webhook runs even if another option
+// would have offered them (defence in depth under `tools`).
+const WEBHOOK_DENY = [
+  'Bash',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  'WebFetch',
+  'Task',
+  'KillShell',
+];
+
+/**
+ * SDK query options that make the webhook (publicIngress) profile real.
+ * `allowedTools` alone only pre-approves tools; under bypassPermissions every
+ * other tool stays callable. For webhook runs: `tools` limits the built-ins,
+ * no MCP servers, `dontAsk` denies anything not pre-approved, and no settings
+ * files are loaded. Spread LAST into the query options. Full profile → `{}`.
+ */
+export function webhookQueryRestrictions(
+  profile: 'full' | 'webhook',
+  allowedTools: string[],
+): {
+  tools?: string[];
+  disallowedTools?: string[];
+  mcpServers?: Record<string, never>;
+  permissionMode?: 'dontAsk';
+  allowDangerouslySkipPermissions?: false;
+  settingSources?: [];
+  strictMcpConfig?: true;
+} {
+  if (profile !== 'webhook') return {};
+  return {
+    tools: [...allowedTools],
+    disallowedTools: WEBHOOK_DENY.filter((t) => !allowedTools.includes(t)),
+    mcpServers: {},
+    permissionMode: 'dontAsk',
+    allowDangerouslySkipPermissions: false,
+    settingSources: [],
+    strictMcpConfig: true,
+  };
+}
+
+/**
+ * Session slash commands run a separate query without the webhook
+ * restrictions, so a webhook run must never take that path.
+ */
+export function refuseSessionCommand(
+  profile: 'full' | 'webhook',
+  isSessionCommand: boolean,
+): boolean {
+  return profile === 'webhook' && isSessionCommand;
+}
+
+/**
+ * Fail-closed check on the SDK's init message for a webhook run: the tools
+ * actually offered must be within the manifest, with no MCP servers or
+ * plugins. Throws with the offending names only.
+ */
+export function assertWebhookInit(
+  init: { tools: string[]; mcp_servers: unknown[]; plugins?: unknown[] },
+  manifest: string[],
+): void {
+  const extra = init.tools.filter(
+    (t) => t.startsWith('mcp__') || !manifest.includes(t),
+  );
+  const problems: string[] = [];
+  if (extra.length > 0) problems.push(`tools: ${extra.join(', ')}`);
+  if (init.mcp_servers.length > 0)
+    problems.push(`mcp_servers: ${init.mcp_servers.length}`);
+  if ((init.plugins ?? []).length > 0)
+    problems.push(`plugins: ${(init.plugins ?? []).length}`);
+  if (problems.length > 0) {
+    throw new Error(`webhook run refused: ${problems.join('; ')}`);
+  }
+}

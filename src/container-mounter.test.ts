@@ -5,7 +5,7 @@
  * symlink defense, sensitive file/dir shadowing, vault mounting, and
  * per-group IPC namespace isolation.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'os';
 import path from 'path';
 
@@ -80,6 +80,7 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       cpSync: vi.fn(),
+      rmSync: vi.fn(),
     },
   };
 });
@@ -922,4 +923,121 @@ describe('buildVolumeMounts: per-run IPC isolation (LIA-211)', () => {
     expect(ipcMount).toBeDefined();
     expect(ipcMount!.hostPath).toBe(path.join(DATA_DIR, 'ipc', 'family-chat'));
   });
+});
+
+// ── publicIngress isolation (LIA-315) ───────────────────────────────────
+
+describe('buildVolumeMounts: publicIngress isolation', () => {
+  const ingress = (overrides: Partial<RegisteredGroup> = {}) =>
+    makeGroup({
+      folder: 'gmail-triage',
+      containerConfig: { publicIngress: true },
+      ...overrides,
+    });
+  const sessionsDir = path.join(
+    DATA_DIR,
+    'sessions',
+    'gmail-triage',
+    '.claude',
+  );
+  let originalVault: string | undefined;
+
+  beforeEach(() => {
+    originalVault = process.env.DEUS_VAULT_PATH;
+    process.env.DEUS_VAULT_PATH = path.join(HOME_BASE, 'vault');
+    // Vault, global dir, skills and the session dir all exist.
+    mockExistsSync.mockReturnValue(true);
+    mockReaddirSync.mockReturnValue(['some-skill'] as never);
+    mockStatSync.mockReturnValue({ isDirectory: () => true } as never);
+  });
+
+  afterEach(() => {
+    if (originalVault !== undefined)
+      process.env.DEUS_VAULT_PATH = originalVault;
+    else delete process.env.DEUS_VAULT_PATH;
+  });
+
+  it('mounts no vault and no global dir', () => {
+    const mounts = buildVolumeMounts(ingress(), false);
+    expect(findMount(mounts, '/workspace/global')).toBeUndefined();
+    expect(findMount(mounts, '/workspace/vault')).toBeUndefined();
+    expect(findMount(mounts, '/workspace/vault/group')).toBeUndefined();
+    expect(findMount(mounts, '/workspace/vault/shared')).toBeUndefined();
+    expect(findMount(mounts, '/workspace/group')).toBeDefined();
+  });
+
+  it('a normal non-control group still gets vault and global', () => {
+    const mounts = buildVolumeMounts(makeGroup({ folder: 'other' }), false);
+    expect(findMount(mounts, '/workspace/global')).toBeDefined();
+    expect(findMount(mounts, '/workspace/vault/shared')).toBeDefined();
+  });
+
+  it('recreates .claude from empty and writes canonical settings every run', () => {
+    buildVolumeMounts(ingress(), false);
+    expect(fs.rmSync).toHaveBeenCalledWith(sessionsDir, {
+      recursive: true,
+      force: true,
+    });
+    const settingsWrite = mockWriteFileSync.mock.calls.find(
+      ([p]) => String(p) === path.join(sessionsDir, 'settings.json'),
+    );
+    expect(settingsWrite).toBeDefined();
+    expect(JSON.parse(String(settingsWrite![1]))).toEqual({
+      env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
+    });
+  });
+
+  it('a normal group keeps its existing .claude and settings.json', () => {
+    buildVolumeMounts(makeGroup({ folder: 'other' }), false);
+    expect(fs.rmSync).not.toHaveBeenCalled();
+    const settingsWrite = mockWriteFileSync.mock.calls.find(([p]) =>
+      String(p).endsWith('settings.json'),
+    );
+    expect(settingsWrite).toBeUndefined(); // exists → write-if-absent skips
+  });
+
+  it('copies no skills', () => {
+    buildVolumeMounts(ingress(), false);
+    const skillCopies = mockCpSync.mock.calls.filter(([, dst]) =>
+      String(dst).includes(path.join('.claude', 'skills')),
+    );
+    expect(skillCopies).toHaveLength(0);
+  });
+
+  it('omits the user:mcp_servers scope from placeholder credentials', () => {
+    mockDetectAuthMode.mockReturnValue('oauth');
+    buildVolumeMounts(ingress(), false);
+    const creds = mockWriteFileSync.mock.calls.find(([p]) =>
+      String(p).endsWith('.credentials.json'),
+    );
+    const scopes = JSON.parse(String(creds![1])).claudeAiOauth.scopes;
+    expect(scopes).not.toContain('user:mcp_servers');
+    expect(scopes).toContain('user:inference');
+  });
+
+  it.each([
+    ['control group (arg)', { isControlGroup: undefined }, true, undefined],
+    ['control group (flag)', { isControlGroup: true }, false, undefined],
+    ['projectId', { projectId: 'p1' }, false, undefined],
+    [
+      'additionalMounts',
+      {
+        containerConfig: {
+          publicIngress: true,
+          additionalMounts: [{ hostPath: '/x', containerPath: 'x' }],
+        },
+      },
+      false,
+      undefined,
+    ],
+    ['worktreePath', {}, false, '/tmp/wt'],
+  ] as const)(
+    'refuses a publicIngress group with %s',
+    (_label, overrides, isControl, wt) => {
+      const group = ingress(overrides as Partial<RegisteredGroup>);
+      expect(() => buildVolumeMounts(group, isControl, wt)).toThrow(
+        /publicIngress group "gmail-triage" refused/,
+      );
+    },
+  );
 });

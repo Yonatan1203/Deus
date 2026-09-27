@@ -120,6 +120,14 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     const backend = resolvedBackend.name();
     let sessionRef = state.getSession(group.folder, backend);
 
+    // publicIngress runs are independent untrusted events: never resume the
+    // previous event's session, so one event's content can't reach the next.
+    if (group.containerConfig?.publicIngress === true && sessionRef) {
+      clearSession(group.folder, backend);
+      state.clearSession(group.folder, backend);
+      sessionRef = undefined;
+    }
+
     // Idle session reset: per-group setting takes precedence over global default.
     const effectiveIdleHours =
       group.containerConfig?.sessionIdleResetHours !== undefined

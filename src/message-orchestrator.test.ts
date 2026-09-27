@@ -35,6 +35,7 @@ vi.mock('./config.js', () => ({
     logOnly: true,
   },
   CONTEXT_NOTIFY: false,
+  INGRESS_WEBHOOK_RUN_COST: 1,
 }));
 
 vi.mock('./guardrails/injection-scanner.js', () => ({
@@ -159,6 +160,7 @@ import {
   getMessagesSince,
   getNewMessages,
   clearSession,
+  getSessionLastUsedAt,
   setSession,
 } from './db.js';
 import { findChannel } from './router.js';
@@ -170,6 +172,7 @@ import { scanForInjection } from './guardrails/injection-scanner.js';
 import type { Channel, RegisteredGroup } from './types.js';
 import type { RouterState } from './router-state.js';
 import type { GroupQueue } from './group-queue.js';
+import type { IngressCaps } from './ingress/caps.js';
 import { RuntimeRegistry } from './agent-runtimes/registry.js';
 
 const mockScanForInjection = vi.mocked(scanForInjection);
@@ -1567,5 +1570,66 @@ describe('multi-agent warm-path routing (startMessageLoop)', () => {
     expect(queue.closeStdin).not.toHaveBeenCalled();
     expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
     expect(queue.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+// LIA-315: publicIngress runs are independent untrusted events — each one
+// starts a fresh session so one event's content can't reach the next.
+describe('publicIngress fresh session per run', () => {
+  const OLD_REF = { backend: 'claude' as const, session_id: 'old-sess' };
+  const INGRESS_GROUP: RegisteredGroup = {
+    name: 'Inbox',
+    folder: 'gmail-triage',
+    trigger: 'always',
+    added_at: '2024-01-01T00:00:00.000Z',
+    requiresTrigger: false,
+    containerConfig: { publicIngress: true },
+  };
+  const caps = {
+    tryAdmit: vi.fn(async () => ({ ok: true as const })),
+    release: vi.fn(),
+    recordSpend: vi.fn(),
+  };
+
+  async function runOnce(group: RegisteredGroup) {
+    const state = makeState(group, 'ts-prev');
+    state.getSession.mockReturnValue(OLD_REF as unknown as string);
+    // Recently used, so the idle-reset path does not clear it on its own.
+    vi.mocked(getSessionLastUsedAt).mockReturnValue(new Date().toISOString());
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+    vi.mocked(clearSession).mockClear();
+    const seen: Array<string | undefined> = [];
+    activeRunTurn = async (ctx, session, sink) => {
+      seen.push((session as { session_id?: string } | undefined)?.session_id);
+      return defaultRunTurn(ctx, session, sink);
+    };
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+      ingressCaps: caps as unknown as IngressCaps,
+    });
+    await orchestrator.processGroupMessages('group@g.us');
+    return { state, seen };
+  }
+
+  it('does not resume the stored session and clears it', async () => {
+    const { state, seen } = await runOnce(INGRESS_GROUP);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toBe('old-sess');
+    expect(clearSession).toHaveBeenCalledWith('gmail-triage', 'claude');
+    expect(state.clearSession).toHaveBeenCalledWith('gmail-triage', 'claude');
+  });
+
+  it('a normal group still resumes its stored session', async () => {
+    const { state, seen } = await runOnce({
+      ...NON_MAIN_GROUP,
+      requiresTrigger: false,
+    });
+    expect(seen).toEqual(['old-sess']);
+    expect(state.clearSession).not.toHaveBeenCalled();
   });
 });
