@@ -831,3 +831,16 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 /* Another browser is typing into this session (views/claude.js poll). */
 .conv-others { font-size: 13px; color: var(--warn); padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--warn) 10%, var(--bg)); margin-bottom: 8px; }
 .conv-others[hidden] { display: none; }
+
+/* A Claude Code menu answered from the conversation (conversation.js menuCard). */
+.conv-ask.live[data-kind="menu"] .ask-prompt { display: grid; gap: 2px; margin: 6px 0 10px; }
+.menu-opts { display: grid; gap: 6px; }
+.menu-opt { display: grid; gap: 2px; text-align: start; }
+.menu-opt.menu-primary { border-color: var(--accent); }
+.menu-opt.menu-decline { color: var(--muted); }
+.menu-opt[data-cursor="true"] .menu-label::before { content: "❯ "; color: var(--muted); }
+.fallback-glyph { display: inline-block; width: 1.4em; height: 1.4em; line-height: 1.4em; text-align: center; border-radius: 50%; background: color-mix(in srgb, var(--warn) 30%, transparent); margin-inline-end: 8px; font-weight: 600; }
+.menu-hint { font-size: 12px; }
+.conv-ask.live[data-sending] .menu-opt, .conv-ask.live[data-sending] .ask-cancel { opacity: 0.6; pointer-events: none; }
+.conv-fallback { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.conv-fallback[hidden] { display: none; }

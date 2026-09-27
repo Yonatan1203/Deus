@@ -1669,3 +1669,59 @@ stayed blank for that session (the split-view drive used a registered page,
 never a session that had *published* one). `handlers` is now passed into
 `toolsItem`; a DOM-stub test renders an artifact-bearing tool run with and
 without a local copy. Shell cache v31.
+
+## Claude tab: any menu Claude shows is answered from the conversation (2026-09-27)
+
+The operator's directive: remove "Claude is waiting for you in the
+terminal"; nothing the terminal can do that the conversation can't. After
+the question card (#33) the terminal still owned every other **select
+menu** Claude Code draws — tool permissions, the plan approval, "Switch
+model?", `/model` without arguments. Captured from real sessions (2.1.283),
+they share one shape: a run of numbered rows with one `❯`, hint rows under
+an option, the prompt above, `esc` in the footer or as a `(esc)` suffix.
+
+`parseMenuScreen` (`ask-screen.js`; its own plan, three review rounds,
+fixtures in `control-ui-menu-screen.test.ts`) reads that shape; the
+conversation view tries the question parser first and this one second, and
+draws `menuCard` (`conversation.js`): the prompt rows, one button per option
+with its hint, Cancel when Esc is offered. A pick sends the digit and reads
+the screen back 350 ms later; if the same menu is still up with the cursor
+on the pick, Enter follows. Observed on 2.1.283's permission prompt: **the
+digit alone submits** (the drive prints which branch fired). The banner is
+gone; what remains is a narrow notice — "Claude is asking something this
+view can't show yet." with Open terminal — shown only when the session is
+blocked (Claude Code's own state) and two consecutive interval ticks saw a
+screen neither parser knows (`ask-fallback.js`, DOM-free, tested: a read
+between ticks neither counts nor resets). Recorded decision: parity is
+reached for every shape the view knows; the one honest gap stays visible,
+not silent.
+
+Driven on the real-Claude fixture (`parity.mjs`; the permission session is
+started with `--permission-mode default` because `--bg` sessions on this
+host run in auto mode and never prompt; removed by the drive):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| A real permission prompt | the card, prompt "Do you want to proceed?", Yes first (primary) / No last (decline), cursor on 1, no Cancel beside No, no banner, composer locked with the menu wording | as expected; 2.1.283 shows four options (Yes / Yes, always allow … / Yes, and switch to auto mode / No) — `artifacts/claude-menu-permission.png` | PASS |
+| Yes | the command runs; composer unlocked | the probe file exists; unlocked; send branch "digit alone" | PASS |
+| Plan-approval card | rendered from the captured screen inside the live page | three options, the hint under option 3 — `claude-menu-plan.png` | PASS |
+| Fallback notice | rendered; Open terminal calls the handler | `claude-fallback-notice.png`; handler called | PASS |
+| Live fallback end to end | not reproducible on demand (a blocked session with an unknown screen) | residual, accepted; the glue is one conditional on a tested counter | stated |
+| Unit | menu parser 6, question parser 10, miss counter 3, render regression 1 | green | PASS |
+
+Reviews (advisory): the first option reads as primary (Claude Code's
+default) and a "No…" option as the decline, never accent-coloured; the
+terminal's cursor is a `❯` glyph, not an `aria-current` selection; the lock
+message says "Answer the prompt above first" for a menu; Cancel (Esc) is
+shown only on menus without a "No…" option, so it never duplicates one;
+hints that name a key chord ("shift+tab to …") are the terminal's and are
+not shown; the fallback notice carries a "?" glyph so it is not mistaken for
+the "someone else is answering" bar. Decided against: a per-type header
+("Claude is asking" stays shared — the prompt names the ask), middle-
+truncating path labels (the label wraps; the whole path is the point of
+"always allow access to …").
+
+The drive's wait for the card's `hidden` attribute timed out while the
+composer had already unlocked (which the same code path sets); the observed
+answer is the file on disk and the unlocked composer, the attribute wait is
+a drive artifact and was not chased.

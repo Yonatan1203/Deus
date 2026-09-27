@@ -4,9 +4,10 @@ import { header, hashQuery } from '../app.js';
 import { createArtifactPane } from '../artifact-pane.js';
 import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
-import { parseAskScreen, parseWorking } from '../ask-screen.js';
+import { parseAskScreen, parseMenuScreen, parseWorking } from '../ask-screen.js';
+import { createMissCounter } from '../ask-fallback.js';
 import { BACK_MAX, backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
-import { renderConversation } from '../conversation.js';
+import { fallbackNotice, menuCard, renderConversation } from '../conversation.js';
 import { autosizeTextarea, createComposer } from '../composer.js';
 
 // The Claude tab: your sessions, and each one live — the same `claude attach`
@@ -552,9 +553,12 @@ export async function render(root, api, bus, me) {
     // Two browsers on one session (the raw terminal has the same race): the
     // other one's recent typing is said, not hidden. Set on every poll.
     const othersEl = h('div', { class: 'conv-others', role: 'status', hidden: true }, 'Someone else is answering this session from another browser.');
-    const banner = h('div', { class: 'conv-banner', hidden: true },
-      h('span', {}, 'Claude is waiting for you in the terminal.'),
-      h('button', { type: 'button', class: 'small', onclick: openTerminal }, 'Open terminal'));
+    // No "waiting for you in the terminal": the cards answer what the
+    // terminal shows. Only when the session is blocked and two interval ticks
+    // saw a screen no parser knows does this say so (ask-fallback.js).
+    const banner = fallbackNotice(h, { openTerminal });
+    banner.hidden = true;
+    const missCounter = createMissCounter(2);
     const modeEl = h('span', { class: 'conv-mode' });
     // Claude Code saves either choice as the default for new sessions, exactly
     // as /model and /effort do in the terminal; the menus say so.
@@ -647,11 +651,12 @@ export async function render(root, api, bus, me) {
       await later(250);
       readScreen();
     }
-    function readScreen() {
+    function readScreen(fromTick = false) {
       if (disposed || askSending) return;
       const v = view();
       const lines = v ? v.screenLines() : [];
-      const st = v ? parseAskScreen(lines) : null;
+      const st = v ? parseAskScreen(lines) || parseMenuScreen(lines) : null;
+      banner.hidden = !missCounter.tick({ fromTick, blocked: stateOf(row)[0] === 'needs you', matched: !!st });
       // Before the memo below: the working line changes every tick.
       updateThinking(v && !st && stateOf(row)[0] === 'working' ? parseWorking(lines) : null);
       const key = JSON.stringify(st);
@@ -663,11 +668,38 @@ export async function render(root, api, bus, me) {
         setSession(row);
         return;
       }
-      drawAsk(st);
+      if (st.kind === 'menu') drawMenu(st); else drawAsk(st);
       askEl.hidden = false;
-      if (!lockedByAsk) { composer.lock('Answer the question above first'); lockedByAsk = true; }
+      if (!lockedByAsk) { composer.lock(st.kind === 'menu' ? 'Answer the prompt above first' : 'Answer the question above first'); lockedByAsk = true; }
       setSession(row);
       if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 200) scroller.scrollTop = scroller.scrollHeight;
+    }
+    // A digit selects on every Claude Code menu; some also confirm on it,
+    // others wait for Enter. Read the screen back: if the same menu still
+    // shows with the cursor on the pick, send Enter.
+    async function sendPick(n) {
+      if (disposed || askSending || !view()) return;
+      askSending = true; askEl.dataset.sending = 'true';
+      try {
+        view().send(String(n), { focus: false });
+        await later(350);
+        // `lastMenu.options[0]` exists: a pick comes from a drawn button.
+        const again = view() ? parseMenuScreen(view().screenLines()) : null;
+        if (again && again.selected === n && again.options.length === lastMenu.options.length && again.options[0].label === lastMenu.options[0].label) {
+          view().send('\r', { focus: false });
+          menuSend = 'digit then Enter';
+        } else menuSend = 'digit alone';
+        askEl.dataset.send = menuSend; // observed, for the record (drive reads it)
+      } finally { askSending = false; delete askEl.dataset.sending; }
+      await later(250);
+      readScreen();
+    }
+    let lastMenu = null;
+    let menuSend = '';
+    function drawMenu(st) {
+      lastMenu = st;
+      askEl.dataset.kind = 'menu';
+      askEl.replaceChildren(menuCard(st, h, { pick: sendPick, cancel: () => sendKeys(['\x1b']), openTerminal }));
     }
     function drawAsk(st) {
       askEl.dataset.kind = st.kind;
@@ -725,11 +757,11 @@ export async function render(root, api, bus, me) {
       if (input) input.focus();
     }
     const visible = () => !document.hidden && isShown(el);
-    async function poll() {
+    async function poll(fromTick = false) {
       if (disposed || !visible()) return;
       // No network: the terminal buffer is local. Runs before the view check
       // so a card is cleared, and the composer unlocked, once the view ends.
-      readScreen();
+      readScreen(fromTick);
       if (!view()) return;
       try {
         const r = await api.get(`/api/v1/claude/live/${view().vid}/conversation?v=${encodeURIComponent(version)}`);
@@ -759,7 +791,7 @@ export async function render(root, api, bus, me) {
     }
     let soon = null;
     const pollSoon = () => { clearTimeout(soon); soon = setTimeout(poll, 400); };
-    const timer = setInterval(poll, 1500);
+    const timer = setInterval(() => poll(true), 1500);
     const onVisible = () => { if (!document.hidden) poll(); };
     document.addEventListener('visibilitychange', onVisible);
 
@@ -770,7 +802,7 @@ export async function render(root, api, bus, me) {
       row = next;
       const [label] = stateOf(row);
       const busy = label === 'working';
-      banner.hidden = label !== 'needs you' || !askEl.hidden;
+      // the fallback notice is the miss counter's to show (readScreen)
       composer.setBusy(busy);
       if (!busy) updateThinking(null);
       // Typing while Claude works is fine — Claude queues it (the bubble

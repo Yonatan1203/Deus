@@ -109,6 +109,47 @@ function askCard(it, h, handlers) {
 }
 
 /**
+ * The live card for one of Claude Code's other menus (plan approval, "Switch
+ * model?", a tool permission — parseMenuScreen in ask-screen.js): the prompt
+ * rows as text, one button per option with its hint, Cancel when Esc is
+ * offered. `handlers.pick(n)` sends the choice, `handlers.cancel()` Esc,
+ * `handlers.openTerminal()` opens the terminal view.
+ */
+// A hint that names a key chord is the terminal's; on a touch screen it promises nothing.
+const KEY_HINT_RE = /\b(shift|ctrl|alt|cmd)\s*\+/i;
+export function menuCard(st, h, handlers = {}) {
+  const prompt = st.prompt.length ? h('div', { class: 'ask-prompt', dir: 'auto' }, ...st.prompt.map((l) => h('div', {}, l))) : null;
+  // The first option is Claude Code's default and reads as primary; a "No…"
+  // option reads as the decline; the terminal's cursor is a styling cue only
+  // (clicking any option is equally valid), never a selection announced to AT.
+  const kindOf = (o, i) => (/^no\b/i.test(o.label) ? 'decline' : i === 0 ? 'primary' : 'neutral');
+  const opts = st.options.map((o, i) => h('button', {
+    type: 'button', class: `conv-opt menu-opt menu-${kindOf(o, i)}`, 'data-n': String(o.n), 'data-cursor': o.n === st.selected ? 'true' : null, dir: 'auto',
+    onclick: () => handlers.pick && handlers.pick(o.n),
+  }, h('span', { class: 'menu-label' }, o.label), o.hint && !KEY_HINT_RE.test(o.hint) ? h('span', { class: 'muted menu-hint' }, o.hint) : null));
+  // Esc is a second way to decline; when a "No…" option is on the card it
+  // would only duplicate it, so Cancel shows on menus without one.
+  const hasDecline = st.options.some((o, i) => kindOf(o, i) === 'decline');
+  const cancel = st.esc && !hasDecline && handlers.cancel ? h('button', { type: 'button', class: 'small ghost ask-cancel', onclick: () => handlers.cancel() }, 'Cancel') : null;
+  const term = handlers.openTerminal ? h('button', { type: 'button', class: 'small ask-term', onclick: () => handlers.openTerminal() }, 'Answer in terminal') : null;
+  return h('div', { class: 'ask-menu' },
+    h('div', {}, h('strong', {}, 'Claude is asking')),
+    prompt,
+    h('div', { class: 'conv-opts menu-opts' }, ...opts),
+    h('div', { class: 'ask-foot' }, cancel, term));
+}
+
+/**
+ * When the session is blocked but the screen matches no card the view knows
+ * (ask-fallback.js decides when): said, not hidden, with the way to answer.
+ */
+export function fallbackNotice(h, handlers = {}) {
+  return h('div', { class: 'conv-banner conv-fallback' },
+    h('span', {}, h('span', { class: 'fallback-glyph', 'aria-hidden': 'true' }, '?'), "Claude is asking something this view can't show yet."),
+    handlers.openTerminal ? h('button', { type: 'button', class: 'small', onclick: () => handlers.openTerminal() }, 'Open terminal') : null);
+}
+
+/**
  * Draws items into `el`. `handlers.openTerminal()` is called by the
  * "Answer in terminal" button on an open question; `handlers.expanded`, a
  * Set, keeps opened folds open across redraws.
