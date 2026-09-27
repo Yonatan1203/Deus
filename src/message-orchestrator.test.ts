@@ -1624,6 +1624,95 @@ describe('publicIngress fresh session per run', () => {
     expect(state.clearSession).toHaveBeenCalledWith('gmail-triage', 'claude');
   });
 
+  async function runIngress(opts: {
+    turn?: RunTurnFn;
+    withEventOutput?: boolean;
+    admit?: { ok: true } | { ok: false; reason: string };
+  }) {
+    const state = makeState(INGRESS_GROUP, 'ts-prev');
+    const channel = makeChannel() as ReturnType<typeof makeChannel> & {
+      sendEventOutput?: ReturnType<typeof vi.fn>;
+      onEventDropped?: ReturnType<typeof vi.fn>;
+    };
+    if (opts.withEventOutput) channel.sendEventOutput = vi.fn(async () => {});
+    channel.onEventDropped = vi.fn(async () => {});
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    const event = makeMsg({ timestamp: 'ts-1' });
+    mockGetMessagesSince.mockReturnValue([event]);
+    activeRunTurn = opts.turn ?? defaultRunTurn;
+    const localCaps = {
+      tryAdmit: vi.fn(async () => opts.admit ?? { ok: true as const }),
+      release: vi.fn(),
+      recordSpend: vi.fn(),
+    };
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+      ingressCaps: localCaps as unknown as IngressCaps,
+    });
+    await orchestrator.processGroupMessages('group@g.us');
+    return { channel, event };
+  }
+
+  it('delivers the whole answer once through sendEventOutput with the event', async () => {
+    const { channel, event } = await runIngress({
+      withEventOutput: true,
+      turn: async (_ctx, _s, sink) => {
+        await sink({ type: 'output_text', text: 'gmail-label: abcdef12 | X' });
+        await sink({
+          type: 'output_text',
+          text: 'Important <internal>why</internal>',
+        });
+        await sink({ type: 'turn_complete' });
+        return { status: 'success', result: null };
+      },
+    });
+    expect(channel.sendEventOutput).toHaveBeenCalledTimes(1);
+    expect(channel.sendEventOutput).toHaveBeenCalledWith(
+      event,
+      'gmail-label: abcdef12 | X\nImportant',
+    );
+    expect(channel.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('falls back to sendMessage for channels without sendEventOutput', async () => {
+    const { channel } = await runIngress({});
+    expect(channel.sendMessage).toHaveBeenCalledTimes(1);
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      'Agent response',
+    );
+  });
+
+  it('sends nothing when the answer is internal only', async () => {
+    const { channel } = await runIngress({
+      withEventOutput: true,
+      turn: async (_ctx, _s, sink) => {
+        await sink({
+          type: 'output_text',
+          text: '<internal>not important</internal>',
+        });
+        await sink({ type: 'turn_complete' });
+        return { status: 'success', result: null };
+      },
+    });
+    expect(channel.sendEventOutput).not.toHaveBeenCalled();
+    expect(channel.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('tells the channel when the caps drop an event', async () => {
+    const { channel, event } = await runIngress({
+      admit: { ok: false, reason: 'spend-limit' },
+    });
+    expect(channel.onEventDropped).toHaveBeenCalledWith(
+      event.id,
+      'spend-limit',
+    );
+    expect(channel.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('a normal group still resumes its stored session', async () => {
     const { state, seen } = await runOnce({
       ...NON_MAIN_GROUP,

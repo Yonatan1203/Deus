@@ -72,6 +72,8 @@ import { createMessageOrchestrator } from './message-orchestrator.js';
 import { startOdysseusServer } from './odysseus-server.js';
 import { readPackageVersion, startControlServer } from './control-ui/server.js';
 import { findChannel, formatOutbound } from './router.js';
+import { createTriageChannel, mirrorToTriage } from './gmail-triage.js';
+import { McpChannelAdapter } from './channels/mcp-adapter.js';
 import {
   restoreRemoteControl,
   startRemoteControl,
@@ -368,6 +370,11 @@ async function main(): Promise<void> {
       }
 
       storeMessage(msg);
+      mirrorToTriage(msg, {
+        registeredGroups: () => state.registeredGroups,
+        storeChatMetadata,
+        storeMessage,
+      });
     },
     onReaction: (chatJid: string, reaction: NewReaction) => {
       const group = state.registeredGroups[chatJid];
@@ -468,33 +475,56 @@ async function main(): Promise<void> {
     );
   }
 
-  // LIA-315 Phase 4: build the ONE shared R5/R6 caps facade for webhook
-  // (publicIngress) runs. Undefined unless the webhook path is enabled, in which
-  // case a publicIngress group fails closed in the orchestrator. The audit writer
-  // appends to INGRESS_AUDIT_DIR (off any container's writable path — R6).
-  let ingressCaps: IngressCaps | undefined;
-  if (INGRESS_WEBHOOK_ENABLED) {
-    if (!INGRESS_GATEWAY_ENABLED) {
-      // Fail-safe: never silently expose an inert webhook path. The channel still
-      // provisions groups but its route is never registered (gateway off), so no
-      // dispatch can occur — warn loudly so the misconfig is visible.
-      logger.warn(
-        'webhook: INGRESS_WEBHOOK_ENABLED set but INGRESS_GATEWAY_ENABLED off — no public route; webhook dispatch inert',
-      );
-    }
-    ingressCaps = createIngressCaps(
-      {
-        maxInflight: INGRESS_MAX_INFLIGHT,
-        rateCapacity: INGRESS_SOURCE_RATE_CAPACITY,
-        rateRefillMs: INGRESS_SOURCE_RATE_REFILL_MS,
-        dailySpendLimit: INGRESS_DAILY_SPEND_LIMIT,
+  // Gmail triage: owns the synthetic TRIAGE_JID chat (never a gmail: chat, so
+  // agent output can't become an email). Inert until that group is registered.
+  channels.push(
+    createTriageChannel({
+      registeredGroups: () => state.registeredGroups,
+      allowedLabels: () =>
+        (readEnvFile(['GMAIL_TRIAGE_LABELS']).GMAIL_TRIAGE_LABELS ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      labelThread: async (threadId, label) => {
+        const gmail = channels.find((c) => c.name === 'gmail');
+        if (!(gmail instanceof McpChannelAdapter)) {
+          throw new Error('gmail channel not connected');
+        }
+        await gmail.callTool('label_thread', { thread_id: threadId, label });
       },
-      {
-        append: (event) =>
-          appendAuditEvent(event, { auditDir: INGRESS_AUDIT_DIR }),
+      sendToJid: async (jid, text) => {
+        const target = findChannel(channels, jid);
+        if (!target) throw new Error('no channel for control group');
+        await target.sendMessage(jid, text);
       },
+    }),
+  );
+
+  // LIA-315 Phase 4: build the ONE shared R5/R6 caps facade for publicIngress
+  // runs (webhook sources and Gmail triage). Always built: it adds no listener
+  // — the public route stays gated by INGRESS_GATEWAY_ENABLED and the webhook
+  // channel by INGRESS_WEBHOOK_ENABLED. The audit writer appends to
+  // INGRESS_AUDIT_DIR (off any container's writable path — R6).
+  if (INGRESS_WEBHOOK_ENABLED && !INGRESS_GATEWAY_ENABLED) {
+    // Fail-safe: never silently expose an inert webhook path. The channel still
+    // provisions groups but its route is never registered (gateway off), so no
+    // dispatch can occur — warn loudly so the misconfig is visible.
+    logger.warn(
+      'webhook: INGRESS_WEBHOOK_ENABLED set but INGRESS_GATEWAY_ENABLED off — no public route; webhook dispatch inert',
     );
   }
+  const ingressCaps: IngressCaps = createIngressCaps(
+    {
+      maxInflight: INGRESS_MAX_INFLIGHT,
+      rateCapacity: INGRESS_SOURCE_RATE_CAPACITY,
+      rateRefillMs: INGRESS_SOURCE_RATE_REFILL_MS,
+      dailySpendLimit: INGRESS_DAILY_SPEND_LIMIT,
+    },
+    {
+      append: (event) =>
+        appendAuditEvent(event, { auditDir: INGRESS_AUDIT_DIR }),
+    },
+  );
 
   const orchestrator = createMessageOrchestrator({
     state,

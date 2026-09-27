@@ -378,8 +378,21 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           );
           state.setLastAgentTimestamp(chatJid, msg.timestamp);
           state.save();
+          try {
+            await channel.onEventDropped?.(msg.id, admit.reason);
+          } catch (err) {
+            logger.warn({ chatJid, err }, 'onEventDropped failed');
+          }
           continue;
         }
+
+        // Collect this event's whole output and deliver it once, so the owning
+        // channel sees every line of one answer together (webhook channels
+        // ignore it: their sendMessage is a no-op).
+        const parts: string[] = [];
+        const collect = async (output: ContainerOutput) => {
+          if (typeof output.result === 'string') parts.push(output.result);
+        };
 
         // runAgent never throws (it catches internally and returns 'error'); the
         // try/finally guarantees release+recordSpend. The already-injection-framed
@@ -387,7 +400,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         // via formatMessages, which would XML-escape + nest it and dilute the
         // sentinel from being the outermost instruction boundary.
         try {
-          await runAgent(group, msg.content, chatJid, []);
+          await runAgent(group, msg.content, chatJid, [], collect);
         } finally {
           ingressCaps.release();
           // v1 charges a FIXED per-run budget unit (real per-run token usage is
@@ -395,6 +408,26 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           // a follow-up will thread real usage through RunResult). The daily
           // ceiling thus bounds runs/day.
           ingressCaps.recordSpend(INGRESS_WEBHOOK_RUN_COST, now);
+        }
+
+        // Same inline strip as the single-agent output path below.
+        const text = parts
+          .join('\n')
+          .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+          .trim();
+        if (text) {
+          try {
+            if (channel.sendEventOutput) {
+              await channel.sendEventOutput(msg, text);
+            } else {
+              await channel.sendMessage(chatJid, text);
+            }
+          } catch (err) {
+            logger.warn(
+              { chatJid, err },
+              'publicIngress output delivery failed',
+            );
+          }
         }
 
         // At-most-once: advance past this event regardless of run outcome (a

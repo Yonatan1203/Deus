@@ -31,6 +31,18 @@ const POLL_INTERVAL_MS = parseInt(
 );
 const MAX_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
 const PROCESSED_LABEL = 'deus-processed'; // hidden Gmail label on handled mail
+// Gmail's system labels: never applied through labelThread.
+const SYSTEM_LABELS = new Set([
+  'INBOX',
+  'UNREAD',
+  'SPAM',
+  'TRASH',
+  'STARRED',
+  'IMPORTANT',
+  'SENT',
+  'DRAFT',
+  'CHAT',
+]);
 
 // Use stderr for logging (stdout is reserved for MCP JSON-RPC)
 const logger = pino(
@@ -54,6 +66,7 @@ export class GmailProvider implements ChannelProvider {
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private processedIds = new Set<string>();
   private processedLabelId = '';
+  private userLabelIds = new Map<string, string>();
   private threadMeta = new Map<string, ThreadMeta>();
   private knownChats = new Map<string, { name: string; isGroup: boolean }>();
   private consecutiveErrors = 0;
@@ -319,6 +332,53 @@ export class GmailProvider implements ChannelProvider {
       requestBody: { raw: encodedMessage },
     });
     logger.info({ to, subject }, 'Email sent');
+  }
+
+  /**
+   * Add a user label to a thread, creating a visible label if none has that
+   * exact name. System labels (and the hidden processed label) are refused so
+   * a caller can't trash, spam, archive or un-read mail through this.
+   */
+  async labelThread(threadId: string, name: string): Promise<void> {
+    if (!this.gmail) throw new Error('Gmail not connected');
+    const upper = name.trim().toUpperCase();
+    if (
+      !name.trim() ||
+      name === PROCESSED_LABEL ||
+      SYSTEM_LABELS.has(upper) ||
+      upper.startsWith('CATEGORY_')
+    ) {
+      throw new Error(`label not allowed: ${name}`);
+    }
+
+    let labelId = this.userLabelIds.get(name);
+    if (!labelId) {
+      const res = await this.gmail.users.labels.list({ userId: 'me' });
+      const existing = (res.data.labels || []).find(
+        (l) => l.type === 'user' && l.name === name,
+      );
+      if (existing?.id) {
+        labelId = existing.id;
+      } else {
+        const created = await this.gmail.users.labels.create({
+          userId: 'me',
+          requestBody: {
+            name,
+            labelListVisibility: 'labelShow',
+            messageListVisibility: 'show',
+          },
+        });
+        if (!created.data.id) throw new Error('label create returned no id');
+        labelId = created.data.id;
+      }
+      this.userLabelIds.set(name, labelId);
+    }
+
+    await this.gmail.users.threads.modify({
+      userId: 'me',
+      id: threadId,
+      requestBody: { addLabelIds: [labelId] },
+    });
   }
 
   /** Create a draft email. */

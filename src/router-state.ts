@@ -13,6 +13,8 @@
 import fs from 'fs';
 import path from 'path';
 
+import { isGmailJid } from './gmail-jid.js';
+
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -48,6 +50,16 @@ export class RouterState {
     }
     this._sessions = getAllBackendSessions();
     this._registeredGroups = getAllRegisteredGroups();
+    for (const jid of Object.keys(this._registeredGroups)) {
+      if (isGmailJid(jid)) {
+        // Agent output here would be emailed out; never route it.
+        logger.error(
+          { jid },
+          'Ignoring registered group on a Gmail chat (would send email)',
+        );
+        delete this._registeredGroups[jid];
+      }
+    }
     logger.info(
       { groupCount: Object.keys(this._registeredGroups).length },
       'State loaded',
@@ -132,6 +144,13 @@ export class RouterState {
   }
 
   registerGroup(jid: string, group: RegisteredGroup): void {
+    if (isGmailJid(jid)) {
+      logger.error(
+        { jid, folder: group.folder },
+        'Rejecting group registration on a Gmail chat (would send email)',
+      );
+      return;
+    }
     let groupDir: string;
     try {
       groupDir = resolveGroupFolderPath(group.folder);

@@ -133,6 +133,27 @@ server.tool(
   },
 );
 
+server.tool(
+  'label_thread',
+  'Add a user label to a thread (created if missing). System labels are refused.',
+  {
+    thread_id: z.string(),
+    label: z.string(),
+  },
+  async (args) => {
+    try {
+      await provider.labelThread(args.thread_id, args.label);
+      return mcpResponse({ ok: true });
+    } catch (err: unknown) {
+      return mcpError(
+        McpErrorCode.API_ERROR,
+        err instanceof Error ? err.message : String(err),
+        'gmail.label_thread',
+      );
+    }
+  },
+);
+
 // ── Auto-connect if credentials exist ────────────────────────────────
 
 if (provider.hasCredentials()) {

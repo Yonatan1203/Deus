@@ -311,6 +311,78 @@ describe('GmailProvider', () => {
       expect(calls[1][0].requestBody.ids).toHaveLength(500);
     });
 
+    describe('labelThread', () => {
+      function labelGmail(
+        labels: Array<{ id: string; name: string; type: string }>,
+      ) {
+        return {
+          users: {
+            labels: {
+              list: vi.fn().mockResolvedValue({ data: { labels } }),
+              create: vi.fn().mockResolvedValue({ data: { id: 'Label_new' } }),
+            },
+            threads: { modify: vi.fn().mockResolvedValue({}) },
+          },
+        };
+      }
+
+      it('creates a missing visible label once and applies it to the thread', async () => {
+        const g = labelGmail([]);
+        (provider as any).gmail = g;
+
+        await provider.labelThread('t1', 'Suppliers');
+        await provider.labelThread('t2', 'Suppliers');
+
+        expect(g.users.labels.create).toHaveBeenCalledTimes(1);
+        expect(g.users.labels.create).toHaveBeenCalledWith({
+          userId: 'me',
+          requestBody: {
+            name: 'Suppliers',
+            labelListVisibility: 'labelShow',
+            messageListVisibility: 'show',
+          },
+        });
+        expect(g.users.threads.modify).toHaveBeenCalledWith({
+          userId: 'me',
+          id: 't2',
+          requestBody: { addLabelIds: ['Label_new'] },
+        });
+      });
+
+      it('reuses an existing user label', async () => {
+        const g = labelGmail([
+          { id: 'Label_7', name: 'Suppliers', type: 'user' },
+        ]);
+        (provider as any).gmail = g;
+
+        await provider.labelThread('t1', 'Suppliers');
+
+        expect(g.users.labels.create).not.toHaveBeenCalled();
+        expect(g.users.threads.modify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            requestBody: { addLabelIds: ['Label_7'] },
+          }),
+        );
+      });
+
+      it.each([
+        'TRASH',
+        'spam',
+        'INBOX',
+        'UNREAD',
+        'CATEGORY_PROMOTIONS',
+        'deus-processed',
+        ' ',
+      ])('refuses %s', async (name) => {
+        const g = labelGmail([]);
+        (provider as any).gmail = g;
+        await expect(provider.labelThread('t1', name)).rejects.toThrow(
+          'label not allowed',
+        );
+        expect(g.users.threads.modify).not.toHaveBeenCalled();
+      });
+    });
+
     it('fails connect() with a named cause when label setup fails', async () => {
       const fs = await import('fs');
       const exists = vi.spyOn(fs.default, 'existsSync').mockReturnValue(true);
