@@ -108,7 +108,8 @@ function question(lines, foot) {
 // Claude Code's status line while it works — `✻ Spinning… (14s · ↓ 103 tokens)`:
 // one of its spinner frames, its own verb, elapsed seconds, sometimes tokens.
 // The bottom-most such row is the live one (captured 2026-09-26).
-const WORKING_RE = /^\s*[·✢✳✶✻✽]\s+([A-Z][A-Za-z' -]{1,40})…\s*\((\d{1,6})s(?:\s*·\s*[↑↓]\s*([\d.]+k?)\s*tokens)?\)/;
+// 2.1.283 adds segments such as `· thinking with medium effort` before the `)`.
+const WORKING_RE = /^\s*[·✢✳✶✻✽]\s+([A-Z][A-Za-z' -]{1,40})…\s*\((\d{1,6})s(?:\s*·\s*[↑↓]\s*([\d.]+k?)\s*tokens)?(?:\s*·[^)]*)?\)/;
 
 /** `{ verb, seconds, tokens }` while Claude works, else null. */
 export function parseWorking(lines) {
@@ -189,4 +190,74 @@ export function parseMenuScreen(lines) {
     i--;
   }
   return { kind: 'menu', prompt, options, selected, esc };
+}
+
+// ---- the reply as it is written, and the running tool (quality pass B).
+// Claude Code streams the reply to the screen: a `● ` start row, two-space
+// continuation rows, blank rows between paragraphs, then blank rows and the
+// working line. Tool headers share the `● ` marker; they are matched
+// strictly so a reply that merely begins with "Searched…" stays a reply.
+const TOOL_HEAD_RES = [/^● [A-Z][A-Za-z]*\(/, /^● Running \d+ /, /^● Ran \d+ /, /^● Searched \d+ /, /^● Read \d+ (file|line)/, /^● (Updated plan|Entered plan mode|Compacted)\b/];
+const isToolHead = (l) => TOOL_HEAD_RES.some((re) => re.test(l));
+const HINT_ROW_RE = /^\s*\((ctrl|shift|alt|cmd)\+/i;
+const CONT_RE = /^ {2}(?! ?⎿)\S/;
+const workingIndex = (rows) => { for (let i = rows.length - 1; i >= 0; i--) if (WORKING_RE.test(rows[i])) return i; return -1; };
+
+/** `{ text, partial }` for the reply under way, or null. */
+export function parseLiveReply(lines) {
+  const rows = lines.slice(-60);
+  const w = workingIndex(rows);
+  if (w < 0) return null;
+  let i = w - 1;
+  while (i >= 0 && !rows[i].trim()) i--;
+  const out = [];
+  let partial = true;
+  for (; i >= 0; i--) {
+    const l = rows[i];
+    if (!l.trim()) {
+      // a paragraph break only when a reply row sits above it
+      const above = i > 0 ? rows[i - 1] : '';
+      const aboveIsReply = CONT_RE.test(above) || (above.startsWith('● ') && !isToolHead(above));
+      if (!aboveIsReply) break;
+      if (out.length && out[0] !== '') out.unshift('');
+      continue;
+    }
+    if (RULE_RE.test(l) || HINT_ROW_RE.test(l) || /^\s*⎿/.test(l) || l.startsWith('❯') || TAB_RE.test(l)) break;
+    if (l.startsWith('● ')) {
+      if (isToolHead(l)) break;
+      out.unshift(l.slice(2));
+      partial = false;
+      break;
+    }
+    if (CONT_RE.test(l)) { out.unshift(l.slice(2)); continue; }
+    break;
+  }
+  while (out.length && out[0] === '') out.shift();
+  if (!out.some((l) => l.trim())) return null;
+  const text = out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]+$/gm, '').trim();
+  return { text, partial };
+}
+
+const TOOL_LABEL_MAX = 60; // a long command must not push the working line past a phone's width
+const clipTool = (s) => { const t = s.trim(); return t.length > TOOL_LABEL_MAX ? `${t.slice(0, TOOL_LABEL_MAX - 1)}…` : t; };
+/** `{ label }` for a tool still running above the working line, or null. */
+export function parseRunningTool(lines) {
+  const rows = lines.slice(-60);
+  const w = workingIndex(rows);
+  if (w < 0) return null;
+  for (let i = w - 1; i >= 0; i--) {
+    const l = rows[i];
+    if (!l.trim() || HINT_ROW_RE.test(l) || /^\s*⎿/.test(l)) continue; // the gap, hints and the tool's own rows
+    if (l.startsWith('● ') && isToolHead(l)) {
+      const child = rows.slice(i + 1, w).find((r) => /^\s*⎿/.test(r)) || '';
+      const cmd = /⎿\s*\$\s*(.+?)(?:\s*\((\d+)s\))?\s*$/.exec(child);
+      if (cmd) return { label: `$ ${clipTool(cmd[1])}${cmd[2] ? ` · ${cmd[2]}s` : ''}` };
+      if (/⎿\s*Running/.test(child)) return { label: clipTool(l.slice(2).replace(/…$/, '')) };
+      const m = /^● (Running \d+ [^·…]+)/.exec(l);
+      if (m) return { label: clipTool(m[1]) };
+      return null;
+    }
+    if (l.startsWith('● ')) return null; // a reply row: nothing is running
+  }
+  return null;
 }

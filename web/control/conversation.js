@@ -182,6 +182,17 @@ const clippedNote = (h, handlers) => h('div', { class: 'conv-clipped' },
  * "Answer in terminal" button on an open question; `handlers.expanded`, a
  * Set, keeps opened folds open across redraws.
  */
+// What the renderer reads of an item, so an unchanged prefix can be kept.
+const itemKey = (it) => {
+  switch (it.k) {
+    case 'user': return `user:${it.queued ? 'q' : ''}${it.clipped ? 'c' : ''}:${it.text}`;
+    case 'assistant': return `assistant:${it.clipped ? 'c' : ''}:${it.text}`;
+    case 'tools': return `tools:${it.label}:${it.calls.length}:${it.files.map((f) => `${f.file}${f.added}${f.removed}`).join(',')}:${it.artifacts.map((a) => a.url || a.summary).join(',')}`;
+    case 'command': return `command:${it.name}:${it.args || ''}:${it.output || ''}`;
+    case 'ask': return `ask:${it.id}:${it.answered ? 'a' : ''}:${JSON.stringify(it.answer || null)}`;
+    default: return `${it.k}:${it.text || ''}`;
+  }
+};
 export function renderConversation(el, items, h, handlers = {}) {
   const grouped = groupItems(items);
   const days = daySeparators(grouped, handlers.now);
@@ -205,7 +216,21 @@ export function renderConversation(el, items, h, handlers = {}) {
       default: return null;
     }
     })();
-    return sep && node ? [sep, node] : node;
-  });
-  el.replaceChildren(...nodes.flat().filter(Boolean));
+    if (!node) return [];
+    const key = itemKey(it);
+    return sep ? [{ key: `day:${day}`, node: sep }, { key, node }] : [{ key, node }];
+  }).flat();
+  // Append only when the list merely grew (the common case: a new message) and
+  // the day has not turned — a changed earlier item (a queued bubble landing),
+  // a shrunk list or a new day redraw everything, so the `role="log"` region is
+  // not re-announced on every poll.
+  const state = handlers.state;
+  const dayKey = new Date(handlers.now ?? Date.now()).toISOString().slice(0, 10);
+  const keys = nodes.map((n) => n.key);
+  if (state && state.keys && state.day === dayKey && keys.length >= state.keys.length && state.keys.every((k, i) => k === keys[i])) {
+    if (keys.length > state.keys.length) el.append(...nodes.slice(state.keys.length).map((n) => n.node));
+  } else {
+    el.replaceChildren(...nodes.map((n) => n.node));
+  }
+  if (state) { state.keys = keys; state.day = dayKey; }
 }

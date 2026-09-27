@@ -1772,3 +1772,66 @@ never "visible" to `waitForSelector` (wait on the property); a send right
 after reopening a session goes nowhere until the live view is attached; the
 pickers' busy state follows the session list, so a one-word reply is done
 before it shows.
+
+## Claude tab: conversation view quality pass, part B (2026-09-27)
+
+The three items part A left: the reply appears as it is written, the running
+tool is visible, and a poll appends instead of redrawing the list.
+
+**The reply as it is written.** Claude Code streams the reply on the terminal
+screen (a `● ` start row, two-space continuation rows, a blank row per
+paragraph, the working line below). `parseLiveReply(lines)` in
+`ask-screen.js` walks up from the working line, skips the blank gap, and
+collects reply rows until the `● ` start row (or the screen top, which marks
+the text `partial` with a leading "…"). Tool headers share the `● ` marker
+and are excluded by strict patterns (`Bash(`, `Running 1 shell command`,
+`Ran 2 …`, `Searched 3 …`, `Read 10 lines`, `Updated plan` …) — a reply that
+merely begins "Searched through my notes" is a reply. The view shows the text
+in a live bubble (`.conv-assistant.live`, `aria-live` off so a screen reader
+is not read half-sentences) below the list while the session works; it hides
+when the session stops, when a card is up, or when the transcript's newest
+assistant item already contains the live text's first 60 characters. The
+look was chosen from three throwaway treatments rendered side by side
+(`artifacts/claude-live-taste.png`): a faint left rule with a blinking caret
+— it reads as "being written" without dimming the text the operator is
+reading; the muted variant was rejected for that reason, the plain one gave
+no cue at all. Reduced motion stops the caret.
+
+**The running tool.** `parseRunningTool(lines)` finds the tool header above
+the working line whose child row is `⎿  $ cmd (Ns)` or `⎿  Running…`, and the
+working line's meta reads "Running $ sleep 9 · 4s" while it runs.
+
+**Append, not redraw.** `renderConversation` takes `handlers.state`; each
+node gets a key from the fields the renderer reads. When the new key list
+starts with the previous one, only the new nodes are appended; a changed
+earlier item (a queued bubble landing), a shorter list, or a different day
+(the "Today"/"Yesterday" labels) falls back to a full replace. A fresh state
+object per opened session.
+
+Driven on the real-Claude fixture (`stream.mjs`; the session is started from
+the CLI because the dashboard's start limiter is 3 per 10 minutes, opened
+from the list, and removed by the drive):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Running tool | the working line reads "Running $ sleep 9 · Ns" while the command runs | shown | PASS |
+| Live reply | the bubble's word count grows between two readings 1.7 s apart | 17 → 111 words — `artifacts/claude-live-reply.png` | PASS |
+| Landing | the transcript item replaces the bubble, no duplicate | one item with the text, bubble hidden | PASS |
+| Append | a `data-stamp` on the first node survives the next reply | survived | PASS |
+| Unit | live-screen parsers (7); render append/replace (4) | green | PASS |
+
+Drive lessons: a reply that follows a short tool call lands within about
+one poll interval, so a drive that waits for the bubble after a tool sees
+it only sometimes — ask for the tool first, then for the long reply as its
+own message. The first drive runs showed no bubble at all because the
+working line carried `· thinking with medium effort` inside its
+parentheses and `WORKING_RE` rejected it; the regex now allows a `·`
+suffix and a test pins it.
+
+UX advisory (ux-reviewer, ACCEPTABLE): taken — the running command is
+clipped to 60 characters before it reaches the working line and the line
+wraps with an ellipsized meta at phone width; the live rule is dashed so it
+never has a blockquote's silhouette; the "…" partial cue sits on the first
+line inside the first block. Not taken: fading the treatment in after a
+delay (a reply that completes within one tick is hidden by the dedupe
+already). `aria-live` off on the bubble was confirmed as the right call.

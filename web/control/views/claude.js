@@ -4,10 +4,11 @@ import { header, hashQuery } from '../app.js';
 import { createArtifactPane } from '../artifact-pane.js';
 import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
-import { parseAskScreen, parseMenuScreen, parseWorking } from '../ask-screen.js';
+import { parseAskScreen, parseLiveReply, parseMenuScreen, parseRunningTool, parseWorking } from '../ask-screen.js';
 import { createMissCounter } from '../ask-fallback.js';
 import { BACK_MAX, backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
 import { fallbackNotice, menuCard, renderConversation } from '../conversation.js';
+import { parseMarkdown, renderBlocks } from '../markdown.js';
 import { autosizeTextarea, createComposer } from '../composer.js';
 
 // The Claude tab: your sessions, and each one live — the same `claude attach`
@@ -504,7 +505,7 @@ export async function render(root, api, bus, me) {
     function updateThinking(w) {
       if (!w) { thinkEl.hidden = true; return; }
       const verb = `${w.verb}…`;
-      const meta = `${w.seconds}s${w.tokens ? ` · ${w.tokens} tokens` : ''}`;
+      const meta = `${w.seconds}s${w.tokens ? ` · ${w.tokens} tokens` : ''}${w.tool ? ` · Running ${w.tool}` : ''}`;
       if (thinkVerb.textContent !== verb) thinkVerb.textContent = verb;
       if (thinkMeta.textContent !== meta) thinkMeta.textContent = meta;
       thinkEl.hidden = false;
@@ -548,7 +549,25 @@ export async function render(root, api, bus, me) {
       ].filter(Boolean));
       tasksEl.hidden = false;
     }
-    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl, tasksEl, thinkEl, askEl));
+    // The reply as it is written, read from the terminal screen while Claude
+    // works; replaced by the transcript's item when the reply lands.
+    const liveEl = h('div', { class: 'conv-assistant live', dir: 'auto', 'aria-live': 'off', hidden: true });
+    let liveText = null;
+    let lastAssistantText = '';
+    const renderState = {};
+    function updateLive(r) {
+      if (!r) { if (!liveEl.hidden) { liveEl.hidden = true; liveEl.replaceChildren(); } liveText = null; return; }
+      if (r.text === liveText) return;
+      liveText = r.text;
+      const near = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
+      const blocks = renderBlocks(parseMarkdown(r.text), h);
+      // the "…" cue (the start scrolled off the screen) sits on the first line, inside the first block
+      if (r.partial && blocks[0]) blocks[0].prepend(h('span', { class: 'muted' }, '… '));
+      liveEl.replaceChildren(...blocks);
+      liveEl.hidden = false;
+      if (near) scroller.scrollTop = scroller.scrollHeight;
+    }
+    const scroller = h('div', { class: 'conv-scroll' }, h('div', { class: 'conv-col' }, truncNote, listEl, liveEl, tasksEl, thinkEl, askEl));
 
     // Two browsers on one session (the raw terminal has the same race): the
     // other one's recent typing is said, not hidden. Set on every poll.
@@ -666,7 +685,12 @@ export async function render(root, api, bus, me) {
       const st = v ? parseAskScreen(lines) || parseMenuScreen(lines) : null;
       banner.hidden = !missCounter.tick({ fromTick, blocked: stateOf(row)[0] === 'needs you', matched: !!st });
       // Before the memo below: the working line changes every tick.
-      updateThinking(v && !st && stateOf(row)[0] === 'working' ? parseWorking(lines) : null);
+      const working = v && !st && stateOf(row)[0] === 'working' ? parseWorking(lines) : null;
+      if (working) { const t = parseRunningTool(lines); if (t) working.tool = t.label; }
+      updateThinking(working);
+      // The reply under way; hidden once the transcript carries the same text.
+      const live = working ? parseLiveReply(lines) : null;
+      updateLive(live && !(lastAssistantText && lastAssistantText.includes(live.text.slice(0, 60))) ? live : null);
       const key = JSON.stringify(st);
       if (key === askState) return;
       askState = key;
@@ -780,7 +804,10 @@ export async function render(root, api, bus, me) {
         version = r.version;
         lastItems = r.items;
         const near = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
-        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact, copy });
+        const lastA = [...r.items].reverse().find((it) => it.k === 'assistant');
+        lastAssistantText = lastA ? lastA.text : '';
+        if (liveText && lastAssistantText.includes(liveText.slice(0, 60))) updateLive(null);
+        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact, copy, state: renderState });
         else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below — text only, no attachments.'));
         if (!first && !near) newerBtn.hidden = false;
         truncNote.hidden = !r.truncated;

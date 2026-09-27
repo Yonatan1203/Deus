@@ -679,9 +679,9 @@ table.kv input { min-height: 36px; }
 .ask-answer { color: var(--text); font-weight: 500; }
 .ask-foot { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 /* Claude's working line: the verb shimmers like the Claude app's status. */
-.conv-thinking { display: flex; gap: 8px; align-items: baseline; padding: 6px 2px; color: var(--muted); font-size: 14px; }
+.conv-thinking { display: flex; gap: 8px; align-items: baseline; padding: 6px 2px; color: var(--muted); font-size: 14px; flex-wrap: wrap; }
 .think-verb { background: linear-gradient(90deg, var(--muted) 0%, var(--text) 50%, var(--muted) 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
-.think-meta { font-size: 12px; }
+.think-meta { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .think-verb { animation: none; background: none; color: var(--text); } }
 .conv-composer { padding: 10px 16px 0; display: grid; gap: 8px; max-width: 812px; width: 100%; margin: 0 auto; }
@@ -861,3 +861,10 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 .conv-newer { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(100% + 8px); z-index: 5; box-shadow: 0 6px 20px rgba(0,0,0,0.35); }
 .conv-newer[hidden] { display: none; }
 .pill-why { font-size: 12px; margin-inline-start: 6px; }
+
+/* The reply as it is written (views/claude.js updateLive): a faint rule and a caret. */
+.conv-assistant.live { border-inline-start: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent); padding-inline-start: 12px; } /* dashed: never the silhouette of a blockquote */
+.conv-assistant.live[hidden] { display: none; }
+.conv-assistant.live > :last-child::after { content: "▍"; margin-inline-start: 2px; color: var(--accent); animation: live-caret 1s steps(2) infinite; }
+@keyframes live-caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .conv-assistant.live > :last-child::after { animation: none; } }

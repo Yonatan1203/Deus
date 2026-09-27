@@ -157,3 +157,61 @@ describe('day separators', () => {
     expect(el.last.length).toBe(5);
   });
 });
+
+describe('append instead of redraw', () => {
+  const mk = () => ({
+    replaced: 0,
+    appended: 0,
+    last: [] as unknown[],
+    replaceChildren(...n: unknown[]) {
+      this.replaced++;
+      this.last = n;
+    },
+    append(...n: unknown[]) {
+      this.appended++;
+      this.last = [...this.last, ...n];
+    },
+  });
+  const now = Date.parse('2026-09-27T12:00:00.000Z');
+  it('appends when the list only grew, redraws when an earlier item changed, shrank, or the day turned', () => {
+    const el = mk();
+    const state: Record<string, unknown> = {};
+    const a = [
+      { k: 'user', text: 'a' },
+      { k: 'user', text: 'b', queued: true },
+    ];
+    renderConversation(el, a, h, { state, now });
+    expect([el.replaced, el.appended]).toEqual([1, 0]);
+    renderConversation(el, [...a, { k: 'assistant', text: 'c' }], h, {
+      state,
+      now,
+    });
+    expect([el.replaced, el.appended, el.last.length]).toEqual([1, 1, 3]);
+    // the queued bubble landed: an earlier key changed → full redraw
+    renderConversation(
+      el,
+      [
+        { k: 'user', text: 'a' },
+        { k: 'user', text: 'b' },
+        { k: 'assistant', text: 'c' },
+      ],
+      h,
+      { state, now },
+    );
+    expect([el.replaced, el.appended]).toEqual([2, 1]);
+    renderConversation(el, [{ k: 'user', text: 'a' }], h, { state, now });
+    expect(el.replaced).toBe(3);
+    renderConversation(
+      el,
+      [
+        { k: 'user', text: 'a' },
+        { k: 'user', text: 'z' },
+      ],
+      h,
+      { state, now: now + 86_400_000 },
+    );
+    expect([el.replaced, el.appended]).toEqual([4, 1]); // a new day: redraw, not append
+    renderConversation(el, [{ k: 'user', text: 'a' }], h, { now }); // no state: always a redraw
+    expect(el.replaced).toBe(5);
+  });
+});
