@@ -215,3 +215,21 @@ describe('parseAskScreen', () => {
     expect(parseAskScreen([])).toBeNull();
   });
 });
+
+describe('back on an answered question', () => {
+  it('reads the trailing ✔ Claude Code puts on the earlier answer as the selected option', () => {
+    const lines = SINGLE.map((l) => (l === '  3. Blue' ? '  3. Blue ✔' : l));
+    const st = parseAskScreen(lines);
+    expect(st && st.kind).toBe('question');
+    const blue =
+      st && st.kind === 'question'
+        ? st.options.find((o) => o.n === 3)
+        : undefined;
+    expect(blue).toMatchObject({ label: 'Blue', on: true });
+    expect(
+      st && st.kind === 'question'
+        ? st.options.find((o) => o.n === 1)?.on
+        : null,
+    ).toBe(false);
+  });
+});

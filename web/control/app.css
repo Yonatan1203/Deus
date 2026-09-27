@@ -668,7 +668,10 @@ table.kv input { min-height: 36px; }
 .conv-ask.live .conv-opt { cursor: pointer; background: var(--surface); color: var(--text); min-height: 36px; padding: 6px 14px; font: inherit; font-size: 14px; }
 .conv-ask.live .conv-opt:hover { border-color: var(--primary); }
 .conv-ask.live .conv-opt.on { background: color-mix(in srgb, var(--primary) 18%, var(--surface)); border-color: var(--primary); color: var(--accent-text); }
-.conv-ask.live[data-sending] .conv-opt, .conv-ask.live[data-sending] .ask-send, .conv-ask.live[data-sending] .ask-submit, .conv-ask.live[data-sending] .ask-back, .conv-ask.live[data-sending] .ask-next, .conv-ask.live[data-sending] .ask-term { opacity: 0.6; pointer-events: none; }
+.conv-ask.live[data-sending] .conv-opt, .conv-ask.live[data-sending] .ask-send, .conv-ask.live[data-sending] .ask-submit, .conv-ask.live[data-sending] .ask-back, .conv-ask.live[data-sending] .ask-next, .conv-ask.live[data-sending] .ask-term, .conv-ask.live[data-sending] .ask-change { opacity: 0.6; pointer-events: none; }
+.conv-ask .ask-q.ask-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.ask-row > div { min-width: 0; }
+.ask-change { flex: none; }
 .ask-tabs .chip[data-done="true"] { color: var(--accent-text); border-color: var(--primary); }
 .ask-q { display: grid; gap: 8px; }
 .ask-q .chip { justify-self: start; }

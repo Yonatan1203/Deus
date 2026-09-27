@@ -5,7 +5,7 @@ import { createArtifactPane } from '../artifact-pane.js';
 import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
 import { parseAskScreen, parseWorking } from '../ask-screen.js';
-import { backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
+import { BACK_MAX, backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
 import { renderConversation } from '../conversation.js';
 import { autosizeTextarea, createComposer } from '../composer.js';
 
@@ -675,8 +675,13 @@ export async function render(root, api, bus, me) {
       if (st.kind === 'review') {
         askEl.replaceChildren(
           h('div', {}, h('strong', {}, 'Review your answers')),
-          ...st.answers.map((a) => h('div', { class: 'ask-q', dir: 'auto' },
-            a.question ? h('div', { class: 'muted' }, a.question) : null, h('div', {}, a.answer))),
+          // ← from the review opens the last question and each further ← one
+          // back, so question i of n is n-i presses away (bounded by backKeys).
+          ...st.answers.map((a, i) => h('div', { class: 'ask-q ask-row', dir: 'auto' },
+            h('div', {}, a.question ? h('div', { class: 'muted' }, a.question) : null, h('div', {}, a.answer)),
+            st.answers.length - i <= BACK_MAX
+              ? h('button', { type: 'button', class: 'small ghost ask-change', 'aria-label': `Change the answer to: ${a.question || `question ${i + 1}`}`, onclick: () => sendKeys(backKeys(st.answers.length - i)) }, 'Change')
+              : null)),
           h('div', { class: 'ask-foot' },
             h('div', { class: 'conv-opts' },
               h('button', { type: 'button', class: 'small primary ask-submit', onclick: () => sendKeys(submitKeys()) }, 'Submit answers'),

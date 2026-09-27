@@ -65,7 +65,9 @@ function question(lines, foot) {
     const m = OPT_RE.exec(l);
     if (m) {
       const described = rows.length ? rows[rows.length - 1].descriptionOf === top : false;
-      rows.push({ n: Number(m[2]), label: clip(m[4]), on: m[3] === '✔' || m[3] === 'x', cursor: !!m[1], described, descriptionOf: -1 });
+      // Back on an answered question, Claude Code marks the earlier answer with a trailing ✔.
+      const label = m[4].replace(/\s*✔\s*$/, '');
+      rows.push({ n: Number(m[2]), label: clip(label), on: m[3] === '✔' || m[3] === 'x' || label !== m[4], cursor: !!m[1], described, descriptionOf: -1 });
       if (m[3] !== undefined) multi = true;
       if (rows.length > OPTIONS_MAX + 1) return null;
       continue;

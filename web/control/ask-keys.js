@@ -28,7 +28,17 @@ const number = (n) => {
 
 export const pickKeys = (n) => [number(n)];
 export const nextKeys = () => [RIGHT];
-export const backKeys = () => [LEFT];
+/**
+ * The most ← presses a jump may take: headroom over the six tabs the screen
+ * parser reads (TABS_MAX in ask-screen.js), so a longer set still fails
+ * loudly here rather than typing arrows into Claude.
+ */
+export const BACK_MAX = 8;
+/** ← from the review screen opens the last question; each further ← one back. */
+export const backKeys = (times = 1) => {
+  if (!Number.isInteger(times) || times < 1 || times > BACK_MAX) throw new Error('bad back count');
+  return Array.from({ length: times }, () => LEFT);
+};
 export const submitKeys = () => [ENTER];
 
 /**

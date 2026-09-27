@@ -17,6 +17,10 @@ describe('ask keys', () => {
     expect(pickKeys(2)).toEqual(['2']);
     expect(nextKeys()).toEqual(['\x1b[C']);
     expect(backKeys()).toEqual(['\x1b[D']);
+    expect(backKeys(3)).toEqual(['\x1b[D', '\x1b[D', '\x1b[D']); // review → question n-2
+    expect(() => backKeys(0)).toThrow('bad back count');
+    expect(() => backKeys(9)).toThrow('bad back count');
+    expect(() => backKeys(1.5)).toThrow('bad back count');
     expect(submitKeys()).toEqual(['\r']);
   });
 

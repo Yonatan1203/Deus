@@ -1631,3 +1631,29 @@ removed by the drive):
 | Browser 1 sends a message | browser 2 told within a poll; browser 1 sees nothing | notice in 2 — `artifacts/claude-others.png`; hidden in 1 | PASS |
 | Quiet again | the notice goes after the window | hidden | PASS |
 | Unit | `isTerminalReply` (replies vs typing), `othersActive` (same session, own view, other session, window, closed), route field on both reply shapes | 18 + 3 green | PASS |
+
+## Claude tab: change any answer from the review card (2026-09-27)
+
+Deferred from the question card's first round: the "Review your answers"
+screen only offered Back (one question) and Submit. Claude Code's own ←
+from the review opens the last question, and each further ← one more back,
+so each row on the review card now carries a "Change" button that sends
+`n − i` ← presses (`backKeys(times)`, bounded at 8 as Claude Code's tab row
+is) and the card is read back from the screen as always. Back on an
+answered question, Claude Code marks the earlier answer with a trailing ✔
+on the option row; the parser strips it from the label and reads it as the
+selected option, so the card shows the earlier answer marked and the label
+clean.
+
+Driven on the real-Claude fixture (`jump.mjs`, a two-question set, the
+session removed by the drive):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Review card | a Change button per row, rows laid out question/answer left, button right | 2 buttons — `artifacts/claude-ask-review-change.png` | PASS |
+| Change on question 1 of 2 | two ← presses; question 1 shows with "Green" marked, label clean | "Which colour?", `.on` = Green, label "Green" | PASS |
+| Re-answer, continue | Blue; question 2 still Apple, Cherry; review reads Blue / Apple, Cherry | as expected | PASS |
+| Change on the last question | one ← press; question 2; Next back to review; Submit | as expected | PASS |
+| Answered card (rendered from the transcript's answered call) | "You answered: Blue · Apple, Cherry" | as expected | PASS |
+| Transcript regex in the drive | the answer row within 1.5 s | not matched in time (the card above is built from the same transcript row, so the answer is recorded) | timing only |
+| Unit | `backKeys(times)` incl. bounds; the ✔-suffix parse | 5 + 10 green | PASS |
