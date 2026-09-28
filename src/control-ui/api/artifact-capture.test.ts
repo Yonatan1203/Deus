@@ -6,6 +6,7 @@ import { createArtifactCapture } from './artifact-capture.js';
 import {
   addCapturedArtifact,
   captureSource,
+  startsAsHtml,
   copyPath,
   createRemovedUrls,
   isUnderAny,
@@ -93,6 +94,46 @@ describe('captureSource', () => {
     ).toBe('A & B');
     expect(good(page('b.html', '<html><title>   </title>')).title).toBeNull();
     expect(good(page('c.html', '<html><body>no title')).title).toBeNull();
+  });
+});
+
+describe('startsAsHtml (#53)', () => {
+  const ok = (t: string | Buffer) =>
+    startsAsHtml(Buffer.isBuffer(t) ? t : Buffer.from(t, 'utf-8'));
+  it('accepts documents and the fragments Artifact pages are', () => {
+    expect(ok('<!doctype html><title>x</title>')).toBe(true);
+    expect(ok('<html lang="en">')).toBe(true);
+    expect(
+      ok('<title>Newly Story Bank</title>\n<link rel="stylesheet" href="x">'),
+    ).toBe(true);
+    expect(ok('<style>body{}</style>')).toBe(true);
+    expect(ok('\uFEFF<!-- note -->\n  <div class="x">')).toBe(true);
+    expect(ok('<!----><div>')).toBe(true);
+    expect(ok('<p>hi</p>')).toBe(true);
+    expect(ok('<H1>Title</H1>')).toBe(true);
+  });
+  it('refuses secrets and other formats', () => {
+    for (const t of [
+      'KEY=value',
+      '{"a":1}',
+      '-----BEGIN PRIVATE KEY-----',
+      '<?xml version="1.0"?>',
+      '<foo>',
+      'plain text',
+      '',
+      '<!DOCTYPE plist>',
+      '<pre>x</pre>',
+      '<param>',
+      '<headx>',
+      '<svgx>',
+      '<!-- never closed <div>',
+    ])
+      expect([t, ok(t)]).toEqual([t, false]);
+  });
+  it('refuses a UTF-16 BOM, a leading NUL, and comments that use up the window', () => {
+    expect(ok(Buffer.from([0xff, 0xfe, 0x3c, 0x00, 0x64, 0x00]))).toBe(false);
+    expect(ok(Buffer.from('\0<div>'))).toBe(false);
+    expect(ok('<!--' + 'x'.repeat(600) + '--><div>')).toBe(false);
   });
 });
 
@@ -633,7 +674,16 @@ describe('createArtifactCapture', () => {
     ).toMatchObject([
       { result: 'skipped', reason: 'not an HTML document', retry: false },
     ]);
-    fs.writeFileSync(bad, '<!doctype html>fixed');
+    expect(
+      cap.capture({
+        key: 's1',
+        version: 'v1b',
+        calls: calls(bad),
+        session: SESSION,
+        readOnly: false,
+      }),
+    ).toMatchObject([{ result: 'skipped', reason: 'failed before' }]);
+    fs.writeFileSync(bad, '<!doctype html>fixed'); // the file changed: retried and added
     expect(
       cap.capture({
         key: 's1',
@@ -642,7 +692,7 @@ describe('createArtifactCapture', () => {
         session: SESSION,
         readOnly: false,
       }),
-    ).toMatchObject([{ result: 'skipped', reason: 'failed before' }]);
+    ).toMatchObject([{ result: 'added' }]);
     fs.mkdirSync(path.join(src, 'groups', 'g1'), { recursive: true });
     const inGroup = path.join(src, 'groups', 'g1', 'p.html');
     fs.writeFileSync(inGroup, '<!doctype html>container-written');
@@ -682,11 +732,14 @@ describe('createArtifactCapture', () => {
         readOnly: true,
       }),
     ).toEqual([]);
-    expect(readRegistry(dir)).toMatchObject({
-      ok: true,
-      registry: { artifacts: [] },
-    });
-    expect(warns).toEqual(['not an HTML document', 'container-writable path']);
+    // only the page fixed after its refusal was added (URL1); nothing else
+    const reg = readRegistry(dir);
+    expect(reg.ok && reg.registry.artifacts.map((a) => a.url)).toEqual([URL1]);
+    expect(warns).toEqual([
+      'not an HTML document',
+      'undefined', // the fixed page's capture, audited at warn
+      'container-writable path',
+    ]);
     expect(
       cap.capture({
         key: 's5',
@@ -696,7 +749,7 @@ describe('createArtifactCapture', () => {
         readOnly: false,
       }),
     ).toMatchObject([{ result: 'added' }]);
-    expect(warns).toHaveLength(3); // the capture itself is audited at warn, reason undefined
+    expect(warns).toHaveLength(4); // the second capture is audited too
   });
   it('a dashboard delete holds: the URL is not captured again on the next transcript version', () => {
     const cap = createArtifactCapture(dir, {

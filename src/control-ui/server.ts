@@ -297,6 +297,10 @@ const CLAUDE_CONV_READS_PER_MIN = 120;
 const OTHERS_ACTIVE_MS = 10_000; // "someone else is answering" after their last key
 const CLAUDE_STOPS_PER_MIN = 6;
 const CLAUDE_LIVE_MAX = 3;
+/** Shown to the operator as they are (web/control/ui.js SAFE_ERRORS). */
+export const START_NAME_ERROR =
+  'Session name: letters, numbers, spaces and . _ - only (up to 60)';
+export const START_PROMPT_ERROR = 'First message: 1 to 8192 characters';
 const CLAUDE_POLL_MS = 3000;
 const CLAUDE_TAB_ACTIVE_MS = 60_000;
 const WORKFLOW_READS_PER_MIN = 60;
@@ -1802,56 +1806,68 @@ export function createControlServer(
    * this route and for Create artifact: limiter, live cap, ledger, audit.
    * Answers the response itself on failure and returns null.
    */
+  // Every refused start says why and is logged (never the first message;
+  // the name only once it passed the name rule).
+  const refuseStart = (
+    ctx: RequestContext,
+    status: number,
+    error: string,
+    extra: Record<string, unknown> = {},
+  ): null => {
+    logger.warn(
+      {
+        event: 'control_ui_claude_start_refused',
+        status,
+        reason: error,
+        remoteAddr: ctx.remoteAddr,
+        actor: actor(ctx.session),
+      },
+      'Control UI refused to start a Claude session',
+    );
+    writeJson(ctx.res, status, { error, ...extra });
+    return null;
+  };
   const startDashboardSession = async (
     ctx: RequestContext,
     name: string,
     prompt: string,
   ): Promise<{ id: string } | null> => {
-    if (!claudeCli) {
-      claudeUnavailable(ctx.res);
-      return null;
-    }
-    if (!CLAUDE_NAME_RE.test(name) || validatePrompt(prompt) === null) {
-      writeJson(ctx.res, 400, { error: 'name and prompt are required' });
-      return null;
-    }
-    if (claudeStartLimiter.isRateLimited('global', now())) {
-      writeJson(ctx.res, 429, { error: 'too many session starts' });
-      return null;
-    }
+    if (!claudeCli) return refuseStart(ctx, 503, 'claude CLI not found');
+    if (!CLAUDE_NAME_RE.test(name))
+      return refuseStart(ctx, 400, START_NAME_ERROR);
+    if (validatePrompt(prompt) === null)
+      return refuseStart(ctx, 400, START_PROMPT_ERROR);
+    if (claudeStartLimiter.isRateLimited('global', now()))
+      return refuseStart(ctx, 429, 'too many session starts');
     const ledgerRaw = claudeLedger ? claudeLedger.read() : [];
-    if (ledgerRaw === null) {
-      writeJson(ctx.res, 409, { error: 'live-session ledger unreadable' });
-      return null;
-    }
+    if (ledgerRaw === null)
+      return refuseStart(ctx, 409, 'live-session ledger unreadable');
     const ledger = ledgerRaw;
     const listed = await claudeList(true);
-    if (!('sessions' in listed)) {
-      claudeUnavailable(ctx.res);
-      return null;
-    }
+    if (!('sessions' in listed))
+      return refuseStart(ctx, 503, 'session list unavailable');
     const live = listed.sessions.filter(
       (s) => s.state === 'working' && ledger.some((e) => e.id === s.id),
     ).length;
-    if (live >= CLAUDE_LIVE_MAX) {
-      writeJson(ctx.res, 409, {
-        error: `${live} dashboard-started sessions are already working`,
-        live,
-      });
-      return null;
-    }
+    if (live >= CLAUDE_LIVE_MAX)
+      return refuseStart(
+        ctx,
+        409,
+        `${live} dashboard-started sessions are already working`,
+        { live },
+      );
     const promptHash = crypto
       .createHash('sha256')
       .update(prompt)
       .digest('hex')
       .slice(0, 12);
     const r = await startClaudeSession(claudeCli, name, prompt);
-    if ('error' in r) {
-      writeJson(ctx.res, r.error.startsWith('invalid') ? 400 : 502, {
-        error: r.error,
-      });
-      return null;
-    }
+    if ('error' in r)
+      return refuseStart(
+        ctx,
+        r.error.startsWith('invalid') ? 400 : 502,
+        r.error,
+      );
     if ('unparsed' in r) {
       logger.warn(
         {
@@ -1900,8 +1916,9 @@ export function createControlServer(
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     const prompt = validatePrompt(body.prompt);
     // Validated before the limiter so invalid input never spends budget.
-    if (!CLAUDE_NAME_RE.test(name) || prompt === null)
-      return writeJson(ctx.res, 400, { error: 'name and prompt are required' });
+    if (!CLAUDE_NAME_RE.test(name))
+      return void refuseStart(ctx, 400, START_NAME_ERROR);
+    if (prompt === null) return void refuseStart(ctx, 400, START_PROMPT_ERROR);
     const r = await startDashboardSession(ctx, name, prompt);
     if (r) writeJson(ctx.res, 200, { started: true, id: r.id });
   });

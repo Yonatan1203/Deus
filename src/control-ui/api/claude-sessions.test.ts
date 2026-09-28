@@ -42,6 +42,25 @@ describe('claude sessions — validation & argv', () => {
     expect(CLAUDE_NAME_RE.test('Posts pipeline')).toBe(true);
     expect(CLAUDE_NAME_RE.test('-dangerously')).toBe(false);
     expect(CLAUDE_NAME_RE.test('a"b')).toBe(false);
+    expect(CLAUDE_NAME_RE.test('Compliance & Testing')).toBe(false);
+  });
+
+  it('the dashboard checks names with the same rule as the server', () => {
+    const view = fs.readFileSync(
+      path.join(
+        import.meta.dirname,
+        '..',
+        '..',
+        '..',
+        'web',
+        'control',
+        'views',
+        'claude.js',
+      ),
+      'utf-8',
+    );
+    const m = /const NAME_RE = \/(.+)\/u;/.exec(view);
+    expect(m?.[1]).toBe(CLAUDE_NAME_RE.source);
     expect(validatePrompt('hi')).toBe('hi');
     expect(validatePrompt('')).toBeNull();
     expect(validatePrompt('x'.repeat(8193))).toBeNull();

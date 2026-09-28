@@ -1,3 +1,4 @@
+import fs from 'fs';
 import {
   addCapturedArtifact,
   captureSource,
@@ -37,9 +38,18 @@ export function createArtifactCapture(
 ) {
   const now = opts.now ?? Date.now;
   const removed = createRemovedUrls(dir);
-  // URLs whose file failed the checks for good: no retry on every poll.
-  // Transient failures (registry busy) are not recorded.
-  const failed = new Set<string>();
+  // URLs whose file failed the checks, with the file's version at that time:
+  // no retry on every poll, but a retry once the file changes (republished,
+  // fixed). Transient failures (registry busy) are not recorded.
+  const failed = new Map<string, string>();
+  const fileVersion = (file: string): string => {
+    try {
+      const st = fs.lstatSync(file);
+      return `${Math.trunc(st.mtimeMs)}:${st.size}`;
+    } catch {
+      return 'missing';
+    }
+  };
   // Per session: the transcript version the calls were last taken from.
   const seen = new Map<string, string>();
 
@@ -58,8 +68,10 @@ export function createArtifactCapture(
         ? { transcript: transcript.uuid, dir: transcript.dir }
         : {}),
     };
-    if (failed.has(url))
+    const version = fileVersion(call.file_path);
+    if (failed.get(url) === version)
       return { url, result: 'skipped', reason: 'failed before', retry: false };
+    failed.delete(url);
     if (removed().urls.has(url))
       return {
         url,
@@ -69,7 +81,7 @@ export function createArtifactCapture(
       };
     const src = captureSource(call.file_path);
     if (!src.ok) {
-      failed.add(url);
+      failed.set(url, version);
       opts.log?.warn(
         {
           event: 'control_ui_artifact_capture_skip',
@@ -81,7 +93,7 @@ export function createArtifactCapture(
       return { url, result: 'skipped', reason: src.reason, retry: false };
     }
     if (isUnderAny(src.source, opts.roots())) {
-      failed.add(url);
+      failed.set(url, version);
       opts.log?.warn(
         {
           event: 'control_ui_artifact_capture_skip',
@@ -142,7 +154,7 @@ export function createArtifactCapture(
         );
       return { url, result: 'exists', id: r.id };
     }
-    if (!r.transient) failed.add(url);
+    if (!r.transient) failed.set(url, version);
     return { url, result: 'skipped', reason: r.error, retry: r.transient };
   }
 

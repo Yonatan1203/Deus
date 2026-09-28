@@ -2488,6 +2488,30 @@ describe('control-ui server — claude sessions', () => {
     ).toBe(true);
   });
 
+  it('new session: a bad name and a bad first message each say why, and the refusal is logged', async () => {
+    await bootC();
+    const { auth } = await login();
+    const post = (body: unknown) =>
+      request({
+        method: 'POST',
+        path: '/api/v1/claude/sessions',
+        headers: { ...auth, ...H, 'X-Confirm': 'start' },
+        body: JSON.stringify(body),
+      });
+    const r1 = await post({ name: 'Compliance & Testing', prompt: 'hello' });
+    expect(r1.status).toBe(400);
+    expect(j(r1).error).toBe(
+      'Session name: letters, numbers, spaces and . _ - only (up to 60)',
+    );
+    const r2 = await post({ name: 'Compliance and Testing', prompt: '' });
+    expect(r2.status).toBe(400);
+    expect(j(r2).error).toBe('First message: 1 to 8192 characters');
+    const refused = ev('control_ui_claude_start_refused');
+    expect(refused).toHaveLength(2);
+    expect(refused[0][0]).toMatchObject({ status: 400 });
+    expect(JSON.stringify(refused)).not.toContain('hello');
+  });
+
   it('lists only rows under the repo, with waiting_on and started_here', async () => {
     await bootC();
     const { auth } = await login();

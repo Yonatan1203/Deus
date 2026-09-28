@@ -183,6 +183,8 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 .login-card p.muted { font-size: 14px; margin-top: -8px; }
 .login-card button.primary { width: 100%; }
 .login-card .error { border-top: 1px solid var(--line); padding-top: 10px; }
+.field-hint { font-size: 13px; margin: 6px 0 0; font-weight: 400; }
+.field-hint[hidden] { display: none; }
 .offline-cmd { display: block; font-family: var(--mono, monospace); font-size: 13px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow-wrap: anywhere; user-select: all; }
 
 /* Shell */

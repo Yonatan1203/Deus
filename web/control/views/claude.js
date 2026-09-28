@@ -344,11 +344,30 @@ export async function render(root, api, bus, me) {
   const promptInput = h('textarea', { rows: '3', placeholder: 'What should it do first?', 'aria-label': 'First message', required: true });
   promptInput.addEventListener('input', () => autosizeTextarea(promptInput, 12));
   const startBtn = h('button', { type: 'submit', class: 'primary' }, 'Start');
+  // The server's name rule (CLAUDE_NAME_RE in api/claude-sessions.ts; a test keeps
+  // the two equal), checked as you type so a refusal never comes as a surprise.
+  const NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,59}$/u;
+  const nameHint = h('p', { class: 'field-hint error', role: 'status', hidden: true });
+  const checkName = () => {
+    const v = nameInput.value.trim();
+    let why = '';
+    if (v && !NAME_RE.test(v)) {
+      const bad = [...new Set([...v].filter((c) => !/[\p{L}\p{N} ._-]/u.test(c)))].join(' ');
+      why = bad
+        ? `${bad} can't be used in a session name${bad.includes('&') ? ' — try "and"' : ''}. Use letters, numbers, spaces and . _ -`
+        : 'Start the name with a letter or a number.';
+    }
+    nameHint.textContent = why;
+    nameHint.hidden = !why;
+    startBtn.disabled = Boolean(why);
+    return !why;
+  };
+  nameInput.addEventListener('input', checkName);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = nameInput.value.trim();
     const prompt = promptInput.value.trim();
-    if (!name || !prompt) return;
+    if (!name || !prompt || !checkName()) return;
     startBtn.disabled = true;
     try {
       // The form itself is the explicit action; runs in auto mode, like the terminal.
@@ -358,12 +377,12 @@ export async function render(root, api, bus, me) {
       await load();
       const s = sessions.find((x) => x.id === r.id);
       if (s) select(s);
-    } catch (err) { if (err.status === 429) limitToast('starts', 'a few minutes'); else toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
-    finally { startBtn.disabled = false; }
+    } catch (err) { if (err.status === 429) limitToast('starts', 'a few minutes'); else toast(serverError(err, "Couldn't start the session — try again in a minute."), 'error'); }
+    finally { checkName(); }
   });
   form.append(
     h('div', { class: 'form-grid' },
-      h('label', {}, 'Name', nameInput),
+      h('label', {}, 'Name', nameInput, nameHint),
       h('label', { class: 'wide' }, 'First message', promptInput)),
     h('p', { class: 'hint' }, 'Starts in auto mode in the Deus repo, the same as a terminal session.'),
     h('div', { class: 'editor-actions' }, h('button', { type: 'button', onclick: () => { form.hidden = true; } }, 'Cancel'), startBtn));

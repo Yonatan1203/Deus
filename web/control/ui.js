@@ -50,5 +50,9 @@ export const limitToast = (what, wait = 'a minute') => toast(`Too many ${what} â
 
 // Server errors the page may show as they are; anything else gets the fallback,
 // so a code path never leaks a fragment like "invalid size" to the operator.
-const SAFE_ERRORS = new Set(['confirmation required', 'not found', 'read-only from the dashboard', 'chat not found', 'too many session starts']);
-export const serverError = (err, fallback) => (err && SAFE_ERRORS.has(err.message) ? err.message : fallback);
+const SAFE_ERRORS = new Set(['confirmation required', 'not found', 'read-only from the dashboard', 'chat not found', 'too many session starts',
+  'Session name: letters, numbers, spaces and . _ - only (up to 60)', 'First message: 1 to 8192 characters', 'live-session ledger unreadable']);
+// Fixed-format messages with a number in them (server.ts, the live-session cap).
+const SAFE_PATTERNS = [/^\d+ dashboard-started sessions are already working$/];
+export const serverError = (err, fallback) =>
+  (err && (SAFE_ERRORS.has(err.message) || SAFE_PATTERNS.some((re) => re.test(err.message))) ? err.message : fallback);

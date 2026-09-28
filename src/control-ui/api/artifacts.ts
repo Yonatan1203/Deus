@@ -718,15 +718,69 @@ export type CaptureSource =
     }
   | { ok: false; reason: string };
 
-const HTML_START_RE = /<!doctype\s+html|<html[\s>]/i;
 const TITLE_TAG_RE = /<title[^>]*>([^<]{1,400})<\/title>/i;
+const HTML_START_TAGS = new Set([
+  'html',
+  'head',
+  'body',
+  'title',
+  'meta',
+  'link',
+  'style',
+  'script',
+  'base',
+  'main',
+  'header',
+  'nav',
+  'section',
+  'article',
+  'div',
+  'p',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'svg',
+  'table',
+]);
+const SNIFF_SPACE = new Set([' ', '\t', '\r', '\n', '\f']);
+
+/**
+ * Does the file start as HTML? Within the first SNIFF_BYTES: an optional UTF-8
+ * BOM, then whitespace (space, tab, CR, LF, FF only) and complete `<!-- -->`
+ * comments, then `<!doctype html` or an opening tag from HTML_START_TAGS followed
+ * by whitespace, `>` or `/`. Artifact pages are usually fragments (`<title>…`,
+ * `<style>…`) — the Artifact tool adds the document skeleton — so the doctype
+ * alone is not required. Anything else (text, JSON, KEY=value, PEM, `<?xml`,
+ * a UTF-16 BOM, NUL, an unterminated comment, an unknown tag) is refused.
+ */
+export function startsAsHtml(head: Buffer): boolean {
+  const s = head.subarray(0, SNIFF_BYTES).toString('latin1');
+  let i = s.startsWith('\xEF\xBB\xBF') ? 3 : 0;
+  for (;;) {
+    while (i < s.length && SNIFF_SPACE.has(s[i])) i++;
+    if (!s.startsWith('<!--', i)) break;
+    const end = s.indexOf('-->', i + 4);
+    if (end < 0) return false; // unterminated, or longer than the sniff window
+    i = end + 3;
+  }
+  const rest = s.slice(i);
+  if (/^<!doctype\s+html[\s>]/i.test(rest)) return true;
+  const m = /^<([a-z][a-z0-9]*)[\s>/]/i.exec(rest);
+  return Boolean(m && HTML_START_TAGS.has(m[1].toLowerCase()));
+}
 
 /**
  * The checks `scripts/artifact-registry.mjs add --file` makes, plus a content
  * sniff: a real `.html` the caller owns, not a link, no other hard links,
  * 1..COPY_MAX bytes, dev/ino equal to a stat after the open, and the bytes
- * start with `<!doctype html` or `<html` within the first 512. Absolute
- * paths only. Nothing is copied here.
+ * start as HTML (`startsAsHtml`). Absolute paths only. Nothing is copied here.
+ *
+ * The main control against disclosure is upstream: a capture needs a paired,
+ * successful Artifact publish of this very file, so its bytes already went to
+ * claude.ai. The sniff is defence in depth against copying non-markup files.
  */
 export function captureSource(file: unknown): CaptureSource {
   if (typeof file !== 'string' || !path.isAbsolute(file) || file.length > 1024)
@@ -749,7 +803,7 @@ export function captureSource(file: unknown): CaptureSource {
     const buf = Buffer.alloc(st.size);
     const n = fs.readSync(fd, buf, 0, st.size, 0);
     const data = buf.subarray(0, n);
-    if (!HTML_START_RE.test(data.subarray(0, SNIFF_BYTES).toString('utf-8')))
+    if (!startsAsHtml(data))
       return { ok: false, reason: 'not an HTML document' };
     const head = data.subarray(0, TITLE_SCAN_BYTES).toString('utf-8');
     const t = TITLE_TAG_RE.exec(head)?.[1];

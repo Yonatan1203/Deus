@@ -59,6 +59,8 @@ export interface ArtifactCall {
   url: string;
 }
 export const ARTIFACT_CALLS_MAX = 20;
+/** Artifact tool_uses still waiting for their result; the oldest is dropped past this. */
+export const ARTIFACT_PENDING_MAX = 50;
 
 export interface Conversation {
   items: ConvItem[];
@@ -110,6 +112,63 @@ function resultText(content: unknown): string {
     )
     .join('\n');
 }
+
+/**
+ * Pairs `Artifact` tool_uses (absolute `file_path` ≤ 1024) with their results
+ * by id; only a non-error result with exactly one claude.ai link counts.
+ * Rows can be fed across several reads (the artifact scan feeds appends).
+ */
+export function createArtifactCallCollector() {
+  const files = new Map<string, string>(); // tool_use id → file_path
+  const calls: ArtifactCall[] = [];
+  return {
+    feed(e: Record<string, unknown>): void {
+      if (e.isSidechain === true || e.isMeta === true) return;
+      const content = (e.message as { content?: unknown } | undefined)?.content;
+      if (!Array.isArray(content)) return;
+      for (const b of content as Block[]) {
+        if (
+          e.type === 'assistant' &&
+          b?.type === 'tool_use' &&
+          b.name === 'Artifact' &&
+          typeof b.id === 'string'
+        ) {
+          const fp = b.input?.file_path;
+          if (
+            typeof fp === 'string' &&
+            path.isAbsolute(fp) &&
+            fp.length <= 1024
+          ) {
+            files.delete(b.id);
+            files.set(b.id, fp);
+            if (files.size > ARTIFACT_PENDING_MAX)
+              files.delete(files.keys().next().value as string);
+          }
+        } else if (
+          e.type === 'user' &&
+          b?.type === 'tool_result' &&
+          typeof b.tool_use_id === 'string'
+        ) {
+          const file = files.get(b.tool_use_id);
+          if (file === undefined) continue;
+          files.delete(b.tool_use_id);
+          if (b.is_error === true) continue;
+          const links = resultText(b.content).match(ARTIFACT_URLS_RE) ?? [];
+          if (links.length !== 1) continue;
+          calls.push({ file_path: file, url: links[0] });
+          if (calls.length > ARTIFACT_CALLS_MAX) calls.shift(); // the newest publishes are the ones to show
+        }
+      }
+    },
+    calls: (): ArtifactCall[] => calls.slice(),
+    get pendingCount(): number {
+      return files.size;
+    },
+  };
+}
+export type ArtifactCallCollector = ReturnType<
+  typeof createArtifactCallCollector
+>;
 
 function toolItem(b: Block): ConvItem {
   const inp = b.input ?? {};
@@ -238,10 +297,7 @@ export function buildConversation(
 ): Conversation {
   const items: ConvItem[] = [];
   const pending = new Map<string, ConvItem>(); // tool_use id → its item
-  // Artifact publishes: the absolute file_path of the tool_use, paired with
-  // its result by id; only a non-error result with exactly one link counts.
-  const artifactFiles = new Map<string, string>();
-  const artifactCalls: ArtifactCall[] = [];
+  const artifacts = createArtifactCallCollector();
   let model: string | null = null;
   let model_label: string | null = null;
   let effort: string | null = null;
@@ -311,6 +367,7 @@ export function buildConversation(
       if (items[i].ts === undefined) items[i].ts = rowTs;
   };
   for (const e of rows) {
+    artifacts.feed(e);
     stamp();
     mark = items.length;
     const ts = (e as { timestamp?: unknown }).timestamp;
@@ -367,16 +424,8 @@ export function buildConversation(
           } else if (it?.k === 'tool' && it.tool === 'Artifact') {
             const text = resultText(b.content);
             const url = ARTIFACT_URL_RE.exec(text)?.[0];
-            if (url) it.url = url;
-            const file = artifactFiles.get(b.tool_use_id);
-            const links = text.match(ARTIFACT_URLS_RE) ?? [];
-            if (file && url && b.is_error !== true && links.length === 1) {
-              artifactCalls.push({ file_path: file, url });
-              if (artifactCalls.length > ARTIFACT_CALLS_MAX)
-                artifactCalls.shift(); // the newest publishes are the ones to show
-            }
+            if (url) it.url = url; // the card keeps its link even where the capture does not
           }
-          artifactFiles.delete(b.tool_use_id);
           pending.delete(b.tool_use_id);
         } else if (b?.type === 'image') {
           items.push({ k: 'note', text: 'Image' });
@@ -400,17 +449,7 @@ export function buildConversation(
           const it = b.name === 'AskUserQuestion' ? askItem(b) : toolItem(b);
           if (!it) continue;
           items.push(it);
-          if (typeof b.id === 'string') {
-            pending.set(b.id, it);
-            const fp = b.input?.file_path;
-            if (
-              b.name === 'Artifact' &&
-              typeof fp === 'string' &&
-              path.isAbsolute(fp) &&
-              fp.length <= 1024
-            )
-              artifactFiles.set(b.id, fp);
-          }
+          if (typeof b.id === 'string') pending.set(b.id, it);
         }
       }
     }
@@ -419,7 +458,7 @@ export function buildConversation(
   const kept = dropped.size ? items.filter((it) => !dropped.has(it)) : items;
   return {
     items: kept.slice(-limit),
-    artifactCalls,
+    artifactCalls: artifacts.calls(),
     truncated: kept.length > limit,
     model,
     model_label,
