@@ -138,6 +138,11 @@ export const CONTROL_UI_READONLY =
 // Exact hostnames (comma-separated) allowed as workflow/artifact preview
 // links besides claude.ai — `.example.com`/`*.example.com` never match.
 export const CONTROL_UI_PREVIEW_HOSTS = process.env.CONTROL_UI_PREVIEW_HOSTS;
+// Phone access through `tailscale serve` on this host (control-ui/tailnet.ts):
+// the tailnet name as the browser sends it (e.g. `<machine>.<tailnet>.ts.net:8443`)
+// and the Tailscale logins allowed (comma-separated). Either unset → off.
+export const CONTROL_UI_TAILNET_HOST = process.env.CONTROL_UI_TAILNET_HOST;
+export const CONTROL_UI_TAILNET_LOGINS = process.env.CONTROL_UI_TAILNET_LOGINS;
 export const CONTROL_UI_CREDENTIAL_FILE =
   process.env.CONTROL_UI_CREDENTIAL_FILE ||
   path.join(CONFIG_DIR, 'control-ui.json');

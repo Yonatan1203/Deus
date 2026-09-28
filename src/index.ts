@@ -30,9 +30,12 @@ import {
   CONFIG_DIR,
   deusInstanceId,
   CONTROL_UI_PREVIEW_HOSTS,
+  CONTROL_UI_TAILNET_HOST,
+  CONTROL_UI_TAILNET_LOGINS,
   CONTROL_UI_PORT,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
+import { parseTailnetLogins } from './control-ui/tailnet.js';
 import { startToolProxy } from './tool-proxy.js';
 import { startIngressGateway, type IngressHandler } from './ingress/gateway.js';
 import { startTunnel, type TunnelHandle } from './ingress/tunnel.js';
@@ -498,6 +501,8 @@ async function main(): Promise<void> {
     envPath: path.join(PROJECT_ROOT, '.env'),
     configDir: CONFIG_DIR,
     previewHosts: CONTROL_UI_PREVIEW_HOSTS,
+    tailnetHost: CONTROL_UI_TAILNET_HOST,
+    tailnetLogins: parseTailnetLogins(CONTROL_UI_TAILNET_LOGINS),
     gmailCredentialsDir: process.env.GMAIL_CREDENTIALS_DIR,
     publicPort: CONTROL_UI_PORT,
     ...createChannelLifecycle(channels, channelOpts),

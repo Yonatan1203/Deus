@@ -174,10 +174,15 @@ export interface SessionInfo {
   shortId: string;
   createdAt: number;
   userAgent: string;
+  /** The Tailscale login the session was created under; absent over the local tunnel. */
+  login?: string;
 }
 
 export interface SessionStore {
-  create(userAgent: string): { id: string; secret: string; expiresAt: number };
+  create(
+    userAgent: string,
+    login?: string,
+  ): { id: string; secret: string; expiresAt: number };
   validate(
     id: string | undefined,
     secret: string | undefined,
@@ -200,6 +205,7 @@ interface SessionRecord {
   lastSeen: number;
   userAgent: string;
   shortId: string;
+  login?: string;
 }
 
 export function createSessionStore(now: () => number = Date.now): SessionStore {
@@ -211,6 +217,7 @@ export function createSessionStore(now: () => number = Date.now): SessionStore {
     shortId: r.shortId,
     createdAt: r.createdAt,
     userAgent: r.userAgent,
+    ...(r.login ? { login: r.login } : {}),
   });
 
   // Returns the record only while it is within both expiry windows. It never
@@ -232,7 +239,7 @@ export function createSessionStore(now: () => number = Date.now): SessionStore {
   };
 
   return {
-    create(userAgent) {
+    create(userAgent, login) {
       const id = crypto.randomBytes(32).toString('hex');
       const secret = crypto.randomBytes(32).toString('hex');
       const t = now();
@@ -241,6 +248,7 @@ export function createSessionStore(now: () => number = Date.now): SessionStore {
         createdAt: t,
         lastSeen: t,
         userAgent: userAgent.slice(0, 200),
+        ...(login ? { login } : {}),
         shortId: crypto
           .createHash('sha256')
           .update(id)

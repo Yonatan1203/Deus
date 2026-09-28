@@ -2150,3 +2150,40 @@ page — list, conversation and page head step aside; Restore brings them back. 
 | 3440 × 1440 / stored 40 % | 55 % / 40 % | 55 % / 40 % | PASS |
 | 390, 899, 1099 wide; 1400 × 600 | unchanged, page scrolls | no fixed height, overflow visible | PASS |
 
+
+## Phone access over Tailscale (#58, 2026-09-28)
+
+The dashboard still listens on 127.0.0.1 only. `tailscale serve --bg --https=8443
+http://127.0.0.1:3017` on the host gives the operator's devices an HTTPS address on the
+tailnet. `src/control-ui/tailnet.ts` answers such a request only when the socket peer is
+loopback, `Host` equals `CONTROL_UI_TAILNET_HOST` exactly (as the browser sends it, e.g.
+`<machine>.<tailnet>.ts.net:8443`), `Tailscale-User-Login` is in
+`CONTROL_UI_TAILNET_LOGINS` (comma list; empty = off), `X-Forwarded-For` is exactly one
+Tailscale address and no `Tailscale-Funnel-Request` header is present; otherwise 421 and
+`control_ui_tailnet_refused` (no header values logged). Password, CSRF and Origin checks
+are unchanged. Tailnet requests: `Secure` cookie, audit address `tailnet:<ip>`, one shared
+login-backoff bucket (a rotating `X-Forwarded-For` cannot open new ones), and sessions
+bound to the login that created them (another login, or a local-tunnel session → 401).
+
+Host side (outside the repo): tailscaled with `--ssh=false`, Funnel never enabled; an
+nftables table `inet deus_tailnet` (`/etc/deus/tailnet.nft`) lets only tcp 8443 in over
+`tailscale0`, forwards nothing from it and lets the host start no connection into it; it
+is loaded by `deus-tailnet-fw.service` (oneshot, `RemainAfterExit=yes`, before
+tailscaled) and tailscaled `Requires=` it (drop-in `10-deus-fw.conf`) — no table, no
+tailnet. Do not enable `nftables.service`: `/etc/nftables.conf` begins with `flush
+ruleset`. After a reboot or a tailscale package upgrade, check `systemctl is-active
+deus-tailnet-fw` and `nft list table inet deus_tailnet`.
+
+Adding a person: only once the tailnet's own access policy restricts them to the
+dashboard port (the default policy lets members reach each other's devices); invite them
+as Member (never an admin role), add their login to the policy and to
+`CONTROL_UI_TAILNET_LOGINS`, restart, share the password — they get full control,
+including the live terminal. Removing: out of the policy, out of the list + restart, then
+change the password (clears every session). Lost phone: remove the device in the admin
+console, `tailscale serve reset` if needed, change the password.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Classifier (`tailnet.test.ts`, 22 cases) | list parsing, ranges, loopback, login, XFF, Funnel | all pass | PASS |
+| Server (`server.test.ts`, 6 cases) | off by default; Secure cookie; refusals logged; sessions bound to login; shared lockout; login on later actions | all pass | PASS |
+| Headers from the phone through serve (throwaway echo) | Host with `:8443`, the login, one 100.x address | as expected | PASS |

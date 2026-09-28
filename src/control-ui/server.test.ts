@@ -5395,3 +5395,166 @@ describe('control-ui server — static compression', () => {
     expect(again.status).toBe(304);
   });
 });
+
+describe('control-ui server — phone access through tailscale serve', () => {
+  const TN = 'dash.tail0000.ts.net:8443';
+  const tn = (login = 'a@x.com', xff = '100.64.0.7') => ({
+    ...H,
+    Host: TN,
+    'Tailscale-User-Login': login,
+    'X-Forwarded-For': xff,
+  });
+  const bootTn = () =>
+    boot({ tailnetHost: TN, tailnetLogins: ['a@x.com', 'b@y.com'] });
+  const tnLogin = async (
+    headers: Record<string, string>,
+    password = PASSWORD,
+  ) => {
+    const reply = await request({
+      method: 'POST',
+      path: '/auth/login',
+      headers,
+      body: JSON.stringify({ password }),
+    });
+    const cookie = String(reply.headers['set-cookie']?.[0] ?? '').split(';')[0];
+    const token = reply.status === 200 ? JSON.parse(reply.text).token : '';
+    return { reply, cookie, token };
+  };
+  const warnSpy = vi.spyOn(logger, 'warn');
+  const infoSpy = vi.spyOn(logger, 'info');
+  beforeEach(() => {
+    warnSpy.mockClear();
+    infoSpy.mockClear();
+  });
+  const calls = (spy: typeof warnSpy, ev: string) =>
+    spy.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((o) => o?.event === ev);
+
+  it('off by default: the tailnet name is misdirected, as before', async () => {
+    await boot();
+    const r = await request({
+      method: 'GET',
+      path: '/api/v1/me',
+      headers: tn(),
+    });
+    expect(r.status).toBe(421);
+  });
+
+  it('a listed login is answered and signs in with a Secure cookie; audit carries the tailnet address and login', async () => {
+    await bootTn();
+    const me = await request({
+      method: 'GET',
+      path: '/api/v1/me',
+      headers: tn(),
+    });
+    expect(me.status).toBe(401); // normal auth applies
+    const { reply, cookie, token } = await tnLogin(tn());
+    expect(reply.status).toBe(200);
+    expect(String(reply.headers['set-cookie']?.[0])).toContain('Secure');
+    const ok = calls(infoSpy, 'control_ui_login').find(
+      (o) => o.outcome === 'ok',
+    );
+    expect(ok).toMatchObject({
+      remoteAddr: 'tailnet:100.64.0.7',
+      login: 'a@x.com',
+      peer: expect.stringMatching(/127\.0\.0\.1/),
+    });
+    const after = await request({
+      method: 'GET',
+      path: '/api/v1/me',
+      headers: { ...tn(), Cookie: cookie, 'X-Deus-Session': token },
+    });
+    expect(after.status).toBe(200);
+  });
+
+  it('unlisted or missing login is refused, logged without header values', async () => {
+    await bootTn();
+    for (const h of [
+      tn('c@z.com'),
+      { ...H, Host: TN, 'X-Forwarded-For': '100.64.0.7' },
+    ]) {
+      const r = await request({
+        method: 'GET',
+        path: '/api/v1/me',
+        headers: h,
+      });
+      expect(r.status).toBe(421);
+    }
+    const refused = calls(warnSpy, 'control_ui_tailnet_refused');
+    expect(refused.map((o) => o.reason)).toEqual([
+      'login-mismatch',
+      'login-missing',
+    ]);
+    expect(JSON.stringify(refused)).not.toContain('c@z.com');
+  });
+
+  it('a session only works for the login it was made under; a local-tunnel session is not usable over the tailnet', async () => {
+    await bootTn();
+    const a = await tnLogin(tn('a@x.com'));
+    const asB = await request({
+      method: 'GET',
+      path: '/api/v1/me',
+      headers: {
+        ...tn('b@y.com'),
+        Cookie: a.cookie,
+        'X-Deus-Session': a.token,
+      },
+    });
+    expect(asB.status).toBe(401);
+    const local = await login();
+    const localOverTn = await request({
+      method: 'GET',
+      path: '/api/v1/me',
+      headers: { ...tn(), ...local.auth },
+    });
+    expect(localOverTn.status).toBe(401);
+    // the local tunnel still works, and its cookie is not Secure
+    expect(String(local.reply.headers['set-cookie']?.[0])).not.toContain(
+      'Secure',
+    );
+    expect(
+      (
+        await request({
+          method: 'GET',
+          path: '/api/v1/me',
+          headers: local.auth,
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it('rotating X-Forwarded-For cannot dodge the lockout: every tailnet login shares one bucket', async () => {
+    await bootTn();
+    const first = await tnLogin(tn('a@x.com', '100.64.0.1'), 'wrong');
+    expect(first.reply.status).toBe(401);
+    for (let i = 2; i <= 10; i++) {
+      const r = await tnLogin(tn('a@x.com', `100.64.0.${i}`), 'wrong');
+      expect(r.reply.status, `attempt ${i}`).toBe(429);
+    }
+    // audit lines still name each attempt's address
+    const tried = calls(warnSpy, 'control_ui_login').map((o) => o.remoteAddr);
+    expect(tried).toContain('tailnet:100.64.0.1');
+    expect(tried).toContain('tailnet:100.64.0.5');
+    expect(tried).not.toContain('tailnet');
+    // the local tunnel keeps its own bucket
+    expect((await login()).reply.status).toBe(200);
+  });
+
+  it('a tailnet sign-in logs the login on later actions', async () => {
+    await bootTn();
+    const a = await tnLogin(tn('b@y.com'));
+    await request({
+      method: 'POST',
+      path: '/auth/sessions/revoke-all',
+      headers: {
+        ...tn('b@y.com'),
+        Cookie: a.cookie,
+        'X-Deus-Session': a.token,
+        'X-Confirm': 'all',
+      },
+    });
+    const revoke = calls(warnSpy, 'control_ui_revoke_all')[0];
+    expect(revoke).toMatchObject({ actor: { login: 'b@y.com' } });
+  });
+});

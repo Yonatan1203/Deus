@@ -80,6 +80,7 @@ import {
 import type { LogEntry, LogRing } from '../log-ring.js';
 import { createHostCli, type HostCli } from './api/host-cli.js';
 import { parsePreviewHosts } from './api/allowed-url.js';
+import { classifyTailnet } from './tailnet.js';
 import {
   capCheck,
   clearAttention,
@@ -217,6 +218,9 @@ export interface ControlDeps {
   configDir?: string;
   /** `CONTROL_UI_PREVIEW_HOSTS`, raw; parsed once here. */
   previewHosts?: string;
+  /** `CONTROL_UI_TAILNET_HOST` / `_LOGINS` (parsed in index.ts): phone access via `tailscale serve`; unset → off. */
+  tailnetHost?: string;
+  tailnetLogins?: string[];
   /** `GMAIL_CREDENTIALS_DIR`, raw; defaults to `~/.gmail-mcp`. */
   gmailCredentialsDir?: string;
   /** The port the operator's tunnel maps — the OAuth redirect is built from it, never from Host. */
@@ -470,7 +474,14 @@ const header = (req: IncomingMessage, name: string): string | undefined => {
 };
 
 const actor = (s: SessionInfo | null) =>
-  s ? { sid: s.shortId, since: s.createdAt, ua: s.userAgent } : undefined;
+  s
+    ? {
+        sid: s.shortId,
+        since: s.createdAt,
+        ua: s.userAgent,
+        ...(s.login ? { login: s.login } : {}),
+      }
+    : undefined;
 
 export function createControlServer(
   deps: ControlDeps,
@@ -650,13 +661,16 @@ export function createControlServer(
     'POST',
     '/auth/login',
     async (ctx) => {
-      const key = ctx.remoteAddr;
+      // `key` gates the backoff and limiter only. Every tailnet request shares
+      // one bucket (a rotating X-Forwarded-For must never open fresh ones);
+      // audit lines carry the per-request address, ctx.remoteAddr.
+      const key = ctx.backoffKey;
       const wait = backoff.retryAfterMs(key);
       if (wait > 0 || loginLimiter.isRateLimited(key, now())) {
         logger.warn(
           {
             event: 'control_ui_login',
-            remoteAddr: key,
+            remoteAddr: ctx.remoteAddr,
             outcome: 'locked',
             retryAfterMs: wait,
           },
@@ -676,7 +690,7 @@ export function createControlServer(
         logger.error(
           {
             event: 'control_ui_login',
-            remoteAddr: key,
+            remoteAddr: ctx.remoteAddr,
             outcome: 'credential_unavailable',
             reason: state.reason,
           },
@@ -693,18 +707,28 @@ export function createControlServer(
       if (!ok) {
         backoff.recordFailure(key);
         logger.warn(
-          { event: 'control_ui_login', remoteAddr: key, outcome: 'failed' },
+          {
+            event: 'control_ui_login',
+            remoteAddr: ctx.remoteAddr,
+            outcome: 'failed',
+          },
           'Control UI login failed',
         );
         return writeJson(ctx.res, 401, { error: 'invalid password' });
       }
       backoff.recordSuccess(key);
-      const session = sessions.create(header(ctx.req, 'user-agent') ?? '');
+      const session = sessions.create(
+        header(ctx.req, 'user-agent') ?? '',
+        ctx.tailnetLogin,
+      );
       fs.rmSync(firstPasswordFile, { force: true });
       logger.info(
         {
           event: 'control_ui_login',
-          remoteAddr: key,
+          remoteAddr: ctx.remoteAddr,
+          ...(ctx.tailnetLogin
+            ? { login: ctx.tailnetLogin, peer: ctx.req.socket.remoteAddress }
+            : {}),
           outcome: 'ok',
           actor: {
             sid: crypto
@@ -716,10 +740,7 @@ export function createControlServer(
         },
         'Control UI login',
       );
-      ctx.res.setHeader(
-        'Set-Cookie',
-        sessionCookie(session.id, isTls(ctx.req)),
-      );
+      ctx.res.setHeader('Set-Cookie', sessionCookie(session.id, ctx.tls));
       writeJson(ctx.res, 200, {
         ok: true,
         token: session.secret,
@@ -735,7 +756,7 @@ export function createControlServer(
       sessions.destroy(ctx.session.id);
       gmailAuth.dropSession(ctx.session.id);
     }
-    ctx.res.setHeader('Set-Cookie', clearSessionCookie(isTls(ctx.req)));
+    ctx.res.setHeader('Set-Cookie', clearSessionCookie(ctx.tls));
     ctx.res.writeHead(204);
     ctx.res.end();
   });
@@ -758,7 +779,7 @@ export function createControlServer(
     gmailAuth.dropAll();
     createCounts.clear();
     readAudits.clear();
-    ctx.res.setHeader('Set-Cookie', clearSessionCookie(isTls(ctx.req)));
+    ctx.res.setHeader('Set-Cookie', clearSessionCookie(ctx.tls));
     ctx.res.writeHead(204);
     ctx.res.end();
   });
@@ -2447,7 +2468,7 @@ export function createControlServer(
           error: r.error,
         },
       );
-    ctx.res.setHeader('Set-Cookie', flowCookie(r.flowCookie, isTls(ctx.req)));
+    ctx.res.setHeader('Set-Cookie', flowCookie(r.flowCookie, ctx.tls));
     gmailAudit(ctx, 'control_ui_gmail_connect');
     writeJson(ctx.res, 200, { url: r.url });
   });
@@ -2456,7 +2477,7 @@ export function createControlServer(
     result: CallbackResult,
     httpStatus: number,
   ) => {
-    ctx.res.setHeader('Set-Cookie', flowCookie('', isTls(ctx.req), true));
+    ctx.res.setHeader('Set-Cookie', flowCookie('', ctx.tls, true));
     ctx.res.writeHead(httpStatus, {
       'Content-Type': 'text/html; charset=utf-8',
       ...SECURITY_HEADERS,
@@ -3270,11 +3291,46 @@ export function createControlServer(
     // DNS rebinding: a page on another name that resolves to 127.0.0.1 would
     // still carry its own Host. Only loopback names on the port this socket
     // accepted, or the tunnel's local port, are answered.
-    if (!hostAllowed(req.headers.host, req.socket.localPort, deps.publicPort))
+    // A request through `tailscale serve` is answered only when it provably is
+    // one (tailnet.ts); every other request passes the loopback-name check.
+    const tailnet = classifyTailnet(
+      {
+        host: req.headers.host,
+        peer: req.socket.remoteAddress,
+        headers: req.headers,
+      },
+      { tailnetHost: deps.tailnetHost, tailnetLogins: deps.tailnetLogins },
+    );
+    if (tailnet.kind === 'refused') {
+      const login = req.headers['tailscale-user-login'];
+      const xff = req.headers['x-forwarded-for'];
+      logger.warn(
+        {
+          event: 'control_ui_tailnet_refused',
+          reason: tailnet.reason,
+          loginPresent: login !== undefined,
+          xffCount:
+            typeof xff === 'string'
+              ? xff.split(',').length
+              : xff
+                ? xff.length
+                : 0,
+        },
+        'Control UI tailnet request refused',
+      );
+      return writeJson(res, 421, { error: 'misdirected request' });
+    }
+    if (
+      tailnet.kind === 'none' &&
+      !hostAllowed(req.headers.host, req.socket.localPort, deps.publicPort)
+    )
       return writeJson(res, 421, { error: 'misdirected request' });
     const url = new URL(req.url ?? '/', 'http://control');
     const method = req.method ?? 'GET';
-    const remoteAddr = normalizeAddr(req.socket.remoteAddress);
+    const remoteAddr =
+      tailnet.kind === 'ok'
+        ? `tailnet:${tailnet.ip}`
+        : normalizeAddr(req.socket.remoteAddress);
     const isApi =
       url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/');
 
@@ -3304,6 +3360,10 @@ export function createControlServer(
             )
           : sessions.validate(cookieId, header(req, SESSION_HEADER));
       if (!session) return writeJson(res, 401, { error: 'unauthorized' });
+      // A tailnet request only uses a session made under the same login; a
+      // session from the local tunnel has none and is not usable here.
+      if (tailnet.kind === 'ok' && session.login !== tailnet.login)
+        return writeJson(res, 401, { error: 'unauthorized' });
     }
     if (match.mutation && deps.readOnly && !url.pathname.startsWith('/auth/')) {
       return writeJson(res, 403, { error: 'read-only mode' });
@@ -3331,6 +3391,9 @@ export function createControlServer(
       body,
       remoteAddr,
       session,
+      tls: tailnet.kind === 'ok' || isTls(req),
+      backoffKey: tailnet.kind === 'ok' ? 'tailnet' : remoteAddr,
+      ...(tailnet.kind === 'ok' ? { tailnetLogin: tailnet.login } : {}),
     };
     await match.handler(ctx);
   }

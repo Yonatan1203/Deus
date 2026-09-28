@@ -11,6 +11,12 @@ export interface RequestContext {
   body: unknown;
   remoteAddr: string;
   session: SessionInfo | null;
+  /** The browser's hop is HTTPS (socket TLS, or `tailscale serve`): the cookie gets `Secure`. */
+  tls: boolean;
+  /** Key for the login backoff and limiter: the address, or one shared `tailnet` bucket. */
+  backoffKey: string;
+  /** The Tailscale login of a request that came through `tailscale serve`. */
+  tailnetLogin?: string;
 }
 
 export type Handler = (ctx: RequestContext) => void | Promise<void>;
