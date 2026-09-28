@@ -2165,6 +2165,13 @@ are unchanged. Tailnet requests: `Secure` cookie, audit address `tailnet:<ip>`, 
 login-backoff bucket (a rotating `X-Forwarded-For` cannot open new ones), and sessions
 bound to the login that created them (another login, or a local-tunnel session → 401).
 
+The two settings are read from the process environment, not `.env`: set them in a
+systemd drop-in for the service (e.g. `/etc/systemd/system/<service>.service.d/20-tailnet.conf`
+with `Environment=CONTROL_UI_TAILNET_HOST=…` and `Environment=CONTROL_UI_TAILNET_LOGINS=…`),
+then `systemctl daemon-reload` and restart. Verified live: the listed login gets the normal
+401 before sign-in, another login or a non-tailnet `X-Forwarded-For` gets 421, and the
+phone's sign-in is logged as `tailnet:<ip>` with its login.
+
 Host side (outside the repo): tailscaled with `--ssh=false`, Funnel never enabled; an
 nftables table `inet deus_tailnet` (`/etc/deus/tailnet.nft`) lets only tcp 8443 in over
 `tailscale0`, forwards nothing from it and lets the host start no connection into it; it
