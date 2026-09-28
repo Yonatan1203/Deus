@@ -1645,15 +1645,16 @@ describe('publicIngress fresh session per run', () => {
       release: vi.fn(),
       recordSpend: vi.fn(),
     };
+    const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
       state: state as unknown as RouterState,
-      queue: makeQueue() as unknown as GroupQueue,
+      queue: queue as unknown as GroupQueue,
       channels: [channel as unknown as Channel],
       ingressCaps: localCaps as unknown as IngressCaps,
     });
     await orchestrator.processGroupMessages('group@g.us');
-    return { channel, event };
+    return { channel, event, queue };
   }
 
   it('delivers the whole answer once through sendEventOutput with the event', async () => {
@@ -1700,6 +1701,30 @@ describe('publicIngress fresh session per run', () => {
     });
     expect(channel.sendEventOutput).not.toHaveBeenCalled();
     expect(channel.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // Without this the container idles for IDLE_TIMEOUT (30 min) after
+  // answering, holding back delivery and every queued event.
+  it('closes the container as soon as the event is answered', async () => {
+    const { queue } = await runIngress({});
+    expect(queue.closeStdin).toHaveBeenCalledWith('group@g.us');
+  });
+
+  it('closes the container when the run fails', async () => {
+    const { queue } = await runIngress({
+      turn: async (_ctx, _s, sink) => {
+        await sink({ type: 'error', error: 'boom' });
+        return { status: 'error', result: null, error: 'boom' };
+      },
+    });
+    expect(queue.closeStdin).toHaveBeenCalledWith('group@g.us');
+  });
+
+  it('does not close a dropped event (no container ran)', async () => {
+    const { queue } = await runIngress({
+      admit: { ok: false, reason: 'spend-limit' },
+    });
+    expect(queue.closeStdin).not.toHaveBeenCalled();
   });
 
   it('tells the channel when the caps drop an event', async () => {
