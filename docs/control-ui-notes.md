@@ -2234,3 +2234,25 @@ pill). Cache v45.
 | Unit (`control-ui-markdown.test.ts`) | known link → pill that opens it; unknown / no handlers / copy-only → link only; list, table, bold, bare URL + full stop | 10/10 with the conversation tests | PASS |
 | Fixture on a real conversation with a pasted page link | pill beside it, click opens the page | opened the right page | PASS |
 | Neutral render | pill after the known link only | `artifacts/link-open-beside.png` | PASS |
+
+## Artifacts tab: search and sort (#52, 2026-09-28)
+
+A search box above the list narrows the cards as you type: every word must appear in the
+title, description, publishing session, kind or host (case-insensitive; Hebrew works).
+"N of M artifacts" shows while a search is set; nothing matching shows one line and a
+**Clear search** button. × (or Esc while the box is focused) clears it; `/` jumps to the box
+unless you are typing somewhere, a dialog is open or a modifier is held. Sort: Newest
+(default — the registry is oldest-first), Oldest, Title A–Z, Session; the order applies
+**within** each kind section (Apps, Reports, Previews stay grouped) and is remembered per
+browser. The search survives live updates and leaving/returning to the tab; "Creating"
+cards are never filtered or counted. The view's bus and document listeners now share one
+AbortController registered before the first load, so repeat visits no longer stack
+listeners. Filter logic: `web/control/artifact-filter.js`. Cache v46.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Unit (`control-ui-artifact-filter.test.ts`) | AND match over five fields, `added_by` ignored, empty query unchanged, word caps, each sort mode, missing fields, no mutation | 6/6 | PASS |
+| Fixture drive, 1400 px (mocked registry) | narrows + count; live update keeps filter; ×, Esc, empty-state button clear; sort survives reload; `/` guards; query restored on return | all as expected | PASS |
+| Listener count after 6 visits + 1 leave-during-load | one document keydown, one of each bus listener | 1 / 1 / 1 / 1 | PASS |
+| Phone 390 px | no horizontal overflow | 0 px | PASS |
+| Neutral renders | fixture titles only | `artifacts/artifacts-search.png`, `artifacts/artifacts-search-phone.png` | PASS |

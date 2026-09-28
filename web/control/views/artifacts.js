@@ -2,6 +2,7 @@ import { h, clear, badge } from '../dom.js';
 import { icon } from '../icons.js';
 import { header } from '../app.js';
 import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
+import { matchArtifacts, sortArtifacts, SORTS } from '../artifact-filter.js';
 
 // The operator's curated list of live artifact apps, reports and previews.
 // Titles and descriptions are text nodes; an href is built only from a URL
@@ -12,10 +13,19 @@ const BLOCKED = { userinfo: 'link withheld · credentials in URL', host: 'link w
 const STATE = { working: ['working', 'ok'], blocked: ['needs you', 'warn'], done: ['finished', ''], gone: ['session gone', ''] };
 const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
 const REASON = { unreadable: 'file unreadable', 'too-large': 'file too large', 'not-json': 'not JSON', 'bad-schema': 'bad schema' };
+const SORT_KEY = 'deus-control.artifacts-sort';
+// The search survives re-draws and leaving/returning to the tab within one page load.
+let query = '';
+const savedSort = () => { try { const v = localStorage.getItem(SORT_KEY); return v && SORTS[v] ? v : 'newest'; } catch { return 'newest'; } };
+const typingIn = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 
 export async function render(root, api, bus, me) {
   const readOnly = Boolean(me && me.read_only);
-  const holder = h('div', { class: 'art-sections' });
+  // Registered before the first await, so leaving mid-load still cleans up.
+  const ac = new AbortController();
+  const { signal } = ac;
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
+  const holder = h('div', { class: 'art-sections', id: 'art-list' });
   const form = h('div', { class: 'card new-artifact', hidden: true });
   let data = { artifacts: [], rev: 0 };
 
@@ -106,10 +116,31 @@ export async function render(root, api, bus, me) {
         : c.state === 'blocked' ? 'The session needs an answer from you.' : `Being built · started ${ago(c.started_at)}`),
       h('div', { class: 'wf-foot muted' }, h('span', {}, `${label} · ${c.kind}`), h('a', { href: `#/claude/${encodeURIComponent(c.id)}`, class: 'small linkish' }, 'Open session')));
   }
+  // Search and sort. "Creating" cards are never filtered or counted.
+  let sort = savedSort();
+  const search = h('input', { type: 'search', value: query, placeholder: 'Search by title, description or session', 'aria-label': 'Search artifacts', 'aria-controls': 'art-list', maxlength: '200' });
+  const clearBtn = h('button', { type: 'button', class: 'ghost art-clear', 'aria-label': 'Clear search', hidden: !query }, '×');
+  const sortSel = h('select', { 'aria-label': 'Sort' }, ...Object.entries(SORTS).map(([k, label]) => h('option', { value: k }, label)));
+  sortSel.value = sort;
+  const count = h('span', { class: 'art-count muted', 'aria-live': 'polite' });
+  const toolbar = h('div', { class: 'toolbar art-toolbar', hidden: true }, search, clearBtn, sortSel, count);
+  const setQuery = (v) => { query = v; search.value = v; clearBtn.hidden = !v; draw(); };
+  search.addEventListener('input', () => { query = search.value; clearBtn.hidden = !query; draw(); });
+  search.addEventListener('keydown', (e) => { if (e.key === 'Escape' && search.value) { e.preventDefault(); e.stopPropagation(); setQuery(''); } });
+  clearBtn.addEventListener('click', () => { setQuery(''); search.focus(); });
+  sortSel.addEventListener('change', () => { sort = sortSel.value; try { localStorage.setItem(SORT_KEY, sort); } catch { /* per-browser convenience only */ } draw(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || e.isComposing) return;
+    if (toolbar.hidden || typingIn(document.activeElement) || document.querySelector('dialog[open]')) return;
+    e.preventDefault();
+    search.focus();
+  }, { signal });
+
   function draw() {
     clear(holder);
     const creating = data.creating || [];
     if (creating.length) holder.append(h('section', { class: 'art-section' }, h('h2', {}, 'Creating', badge(String(creating.length), '')), h('div', { class: 'wf-grid' }, ...creating.map(creatingCard))));
+    toolbar.hidden = Boolean(data.invalid) || data.artifacts.length === 0;
     if (data.invalid) {
       holder.append(h('div', { class: 'empty' }, `The artifact list can't be read right now (${REASON[data.reason] || 'unreadable'}). Check artifacts.json on the server.`));
       return;
@@ -119,8 +150,15 @@ export async function render(root, api, bus, me) {
       holder.append(h('div', { class: 'empty' }, readOnly ? 'No artifacts registered.' : 'Nothing here yet. Create one, add a link, or say yes when Claude asks to add one it published.'));
       return;
     }
+    const shown = sortArtifacts(matchArtifacts(data.artifacts, query), sort);
+    count.textContent = query.trim() ? `${shown.length} of ${data.artifacts.length} artifacts` : '';
+    if (shown.length === 0) {
+      holder.append(h('div', { class: 'empty' }, h('p', {}, `No artifacts match “${query.trim()}”.`),
+        h('button', { type: 'button', class: 'small', onclick: () => { setQuery(''); search.focus(); } }, 'Clear search')));
+      return;
+    }
     for (const kind of Object.keys(KIND)) {
-      const rows = data.artifacts.filter((a) => a.kind === kind);
+      const rows = shown.filter((a) => a.kind === kind);
       if (rows.length === 0) continue;
       holder.append(h('section', { class: 'art-section' }, h('h2', {}, KIND[kind], badge(String(rows.length), '')), h('div', { class: 'wf-grid' }, ...rows.map(card))));
     }
@@ -131,9 +169,9 @@ export async function render(root, api, bus, me) {
   }
 
   clear(root);
-  root.append(header('Artifacts', { eyebrow: 'Operate', actions: [addAction, createAction].filter(Boolean) }), createForm, form, holder);
+  root.append(header('Artifacts', { eyebrow: 'Operate', actions: [addAction, createAction].filter(Boolean) }), createForm, form, toolbar, holder);
+  bus.addEventListener('artifact', (e) => { if (e.detail && e.detail.artifacts) { data = e.detail; draw(); } }, { signal });
+  bus.addEventListener('csession', () => { if (data.creating && data.creating.length) load(); }, { signal });
+  bus.addEventListener('refresh', load, { signal });
   await load();
-  bus.addEventListener('artifact', (e) => { if (e.detail && e.detail.artifacts) { data = e.detail; draw(); } });
-  bus.addEventListener('csession', () => { if (data.creating && data.creating.length) load(); });
-  bus.addEventListener('refresh', load);
 }
