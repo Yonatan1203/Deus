@@ -18,6 +18,7 @@ const THREAD_ID = /^[0-9a-f]{8,32}$/;
 const HEADER = /^Gmail thread id: ([0-9a-f]{8,32})$/;
 const DIRECTIVE = /^gmail-label:\s*([0-9a-f]{8,32})\s*\|\s*(.{1,40}?)\s*$/i;
 const MAX_LABELS_PER_EMAIL = 5;
+const MAX_DIRECTIVE_LINE = 200;
 const ALERT_MARKER =
   '📧 Gmail triage — generated from an incoming email; verify before acting:';
 const ALERT_MAX_CHARS = 1500;
@@ -81,8 +82,12 @@ export function parseTriageOutput(text: string): {
   const labels: Array<{ threadId: string; label: string }> = [];
   const kept: string[] = [];
   for (const line of text.split('\n')) {
-    if (/^\s*gmail-label:/i.test(line)) {
-      const m = DIRECTIVE.exec(line.trim());
+    // A real directive is well under 200 chars; don't spend work unwrapping
+    // longer (possibly hostile) lines.
+    const plain =
+      line.length <= MAX_DIRECTIVE_LINE ? stripLineMarkdown(line) : line.trim();
+    if (/^gmail-label:/i.test(plain)) {
+      const m = DIRECTIVE.exec(plain);
       if (m && labels.length < MAX_LABELS_PER_EMAIL) {
         labels.push({ threadId: m[1].toLowerCase(), label: m[2] });
       }
@@ -91,6 +96,25 @@ export function parseTriageOutput(text: string): {
     kept.push(line);
   }
   return { labels, rest: kept.join('\n').trim() };
+}
+
+/**
+ * The agent sometimes wraps a line in markdown (`code`, **bold**, a bullet or
+ * a quote). Peel those off so a directive is still recognised — validation of
+ * the thread and label happens later, unchanged.
+ */
+function stripLineMarkdown(line: string): string {
+  let s = line.trim().replace(/^(?:>\s*|[-*•]\s+)+/, '');
+  for (let prev = ''; prev !== s;) {
+    prev = s;
+    s = s.replace(/^(`{1,3}|\*{1,2}|_{1,2})(.*)\1$/, '$2').trim();
+  }
+  return s;
+}
+
+/** Markdown the agent may still use, rendered for WhatsApp. */
+function toWhatsApp(text: string): string {
+  return text.replace(/^#{1,6}\s+/gm, '').replace(/\*\*(.+?)\*\*/g, '*$1*');
 }
 
 /** Make links in alert text non-clickable. */
@@ -146,7 +170,7 @@ export function createTriageChannel(deps: TriageChannelDeps): Channel {
       logger.warn('Gmail triage alert dropped: no control group');
       return;
     }
-    const body = defang(rest).slice(0, ALERT_MAX_CHARS);
+    const body = defang(toWhatsApp(rest)).slice(0, ALERT_MAX_CHARS);
     alertTimes.push(t);
     try {
       await deps.sendToJid(jid, `${ALERT_MARKER}\n${body}`);
