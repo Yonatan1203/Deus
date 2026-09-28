@@ -392,6 +392,15 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         const parts: string[] = [];
         const collect = async (output: ContainerOutput) => {
           if (typeof output.result === 'string') parts.push(output.result);
+          // One independent event, never a follow-up: close the container as
+          // soon as it has answered (or failed) instead of after IDLE_TIMEOUT,
+          // so delivery and the next event don't wait. Safe because every
+          // event of a publicIngress group shares this chatJid, so the queue
+          // runs one container at a time and this `_close` can't reach another
+          // run; per-event chatJids would need a per-run ipcRunKey (LIA-211).
+          if (output.status === 'error' || output.result === null) {
+            queue.closeStdin(chatJid);
+          }
         };
 
         // runAgent never throws (it catches internally and returns 'error'); the
