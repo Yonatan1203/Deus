@@ -151,6 +151,36 @@ describe('mirrorToTriage', () => {
   });
 });
 
+describe('parseTriageOutput with markdown around the directive', () => {
+  // Seen live: the agent wrapped its label line in backticks, so it wasn't
+  // applied and the raw line was forwarded as the alert.
+  it.each([
+    [`\`gmail-label: ${THREAD} | Suppliers\``],
+    [`\`\`\`gmail-label: ${THREAD} | Suppliers\`\`\``],
+    [`**gmail-label: ${THREAD} | Suppliers**`],
+    [`- gmail-label: ${THREAD} | Suppliers`],
+    [`> gmail-label: ${THREAD} | Suppliers`],
+    [`  * \`gmail-label: ${THREAD} | Suppliers\`  `],
+  ])('recognises %s and keeps it out of the text', (line) => {
+    const { labels, rest } = parseTriageOutput(`${line}\nUrgent: payout`);
+    expect(labels).toEqual([{ threadId: THREAD, label: 'Suppliers' }]);
+    expect(rest).toBe('Urgent: payout');
+  });
+});
+
+describe('parseTriageOutput on hostile long lines', () => {
+  it('handles a 100k-char line of nested markdown quickly', () => {
+    const hostile = '`'.repeat(50_000) + 'x' + '`'.repeat(50_000);
+    const start = Date.now();
+    const { labels, rest } = parseTriageOutput(
+      `${hostile}\n${'*'.repeat(100_000)}`,
+    );
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(labels).toEqual([]);
+    expect(rest.length).toBeGreaterThan(0);
+  });
+});
+
 describe('parseTriageOutput', () => {
   it('pulls out directives and strips every directive line from the text', () => {
     const { labels, rest } = parseTriageOutput(
@@ -257,6 +287,27 @@ describe('triage channel', () => {
     );
     expect(labelThread).toHaveBeenCalledTimes(2);
     expect(sendToJid).toHaveBeenCalledTimes(1);
+  });
+
+  it('still rejects a wrapped directive for another thread or label', async () => {
+    const { channel, labelThread } = channelWith();
+    await channel.sendEventOutput!(
+      mirroredEvent(),
+      `\`gmail-label: ${OTHER} | Suppliers\`\n**gmail-label: ${THREAD} | TRASH**`,
+    );
+    expect(labelThread).not.toHaveBeenCalled();
+  });
+
+  it('renders markdown bold for WhatsApp in alerts', async () => {
+    const { channel, sendToJid } = channelWith();
+    await channel.sendEventOutput!(
+      mirroredEvent(),
+      '## Heads up\n**Alert:** payout on hold',
+    );
+    const text = sendToJid.mock.calls[0][1];
+    expect(text).toContain('*Alert:* payout on hold');
+    expect(text).not.toContain('**');
+    expect(text).not.toContain('## ');
   });
 
   it('sends a marked, defanged, truncated alert to the control group', async () => {
