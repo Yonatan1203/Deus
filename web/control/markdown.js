@@ -122,13 +122,22 @@ export function parseMarkdown(text) {
   return blocks;
 }
 
-function renderInline(spans, h) {
-  return spans.map((s) => {
-    if (s.type === 'strong') return h('strong', {}, ...renderInline(s.children || [{ type: 'text', text: s.text }], h));
-    if (s.type === 'em') return h('em', {}, ...renderInline(s.children || [{ type: 'text', text: s.text }], h));
-    if (s.type === 'code') return h('code', {}, s.text);
-    if (s.type === 'link') return h('a', { href: s.href, target: '_blank', rel: 'noopener noreferrer' }, s.text);
-    return s.text;
+// A link to a page the dashboard holds a copy of gets an "Open beside" button
+// right after it — only when both handlers are given (the Claude tab's
+// conversation); everywhere else links render exactly as before.
+function renderInline(spans, h, handlers = {}) {
+  const canOpen = typeof handlers.localArtifact === 'function' && typeof handlers.openArtifact === 'function';
+  return spans.flatMap((s) => {
+    if (s.type === 'strong') return [h('strong', {}, ...renderInline(s.children || [{ type: 'text', text: s.text }], h, handlers))];
+    if (s.type === 'em') return [h('em', {}, ...renderInline(s.children || [{ type: 'text', text: s.text }], h, handlers))];
+    if (s.type === 'code') return [h('code', {}, s.text)];
+    if (s.type === 'link') {
+      const a = h('a', { href: s.href, target: '_blank', rel: 'noopener noreferrer' }, s.text);
+      const entry = canOpen ? handlers.localArtifact(s.href) : null;
+      if (!entry) return [a];
+      return [a, h('button', { type: 'button', class: 'md-open-beside', onclick: () => handlers.openArtifact(entry) }, 'Open beside')];
+    }
+    return [s.text];
   });
 }
 
@@ -139,22 +148,22 @@ function renderInline(spans, h) {
  */
 export function renderBlocks(blocks, h, handlers = {}) {
   const li = (it) => (Array.isArray(it)
-    ? h('li', { dir: 'auto' }, ...renderInline(it, h))
-    : h('li', { dir: 'auto' }, ...renderInline(it.inline, h), h(it.sub.type, {}, ...it.sub.items.map((s) => h('li', { dir: 'auto' }, ...renderInline(s, h))))));
+    ? h('li', { dir: 'auto' }, ...renderInline(it, h, handlers))
+    : h('li', { dir: 'auto' }, ...renderInline(it.inline, h, handlers), h(it.sub.type, {}, ...it.sub.items.map((s) => h('li', { dir: 'auto' }, ...renderInline(s, h, handlers))))));
   return blocks.map((b) => {
     switch (b.type) {
-      case 'h': return h(`h${b.level + 2}`, { class: 'md-h', dir: 'auto' }, ...renderInline(b.inline, h));
+      case 'h': return h(`h${b.level + 2}`, { class: 'md-h', dir: 'auto' }, ...renderInline(b.inline, h, handlers));
       case 'ul':
       case 'ol': return h(b.type, { dir: 'auto' }, ...b.items.map(li));
       case 'code': return h('div', { class: 'md-codewrap' },
         handlers.copy ? h('button', { type: 'button', class: 'small ghost md-copy', 'aria-label': 'Copy the code', onclick: () => handlers.copy(b.text) }, 'Copy') : null,
         h('pre', { class: 'md-code', dir: 'ltr' }, h('code', {}, b.text)));
       case 'table': return h('table', { class: 'md-table', dir: 'auto' },
-        h('thead', {}, h('tr', {}, ...b.head.map((c) => h('th', { dir: 'auto' }, ...renderInline(c, h))))),
-        h('tbody', {}, ...b.rows.map((r) => h('tr', {}, ...r.map((c) => h('td', { dir: 'auto' }, ...renderInline(c, h)))))));
-      case 'quote': return h('blockquote', { dir: 'auto' }, ...renderInline(b.inline, h));
+        h('thead', {}, h('tr', {}, ...b.head.map((c) => h('th', { dir: 'auto' }, ...renderInline(c, h, handlers))))),
+        h('tbody', {}, ...b.rows.map((r) => h('tr', {}, ...r.map((c) => h('td', { dir: 'auto' }, ...renderInline(c, h, handlers)))))));
+      case 'quote': return h('blockquote', { dir: 'auto' }, ...renderInline(b.inline, h, handlers));
       case 'hr': return h('hr', {});
-      default: return h('p', { dir: 'auto' }, ...renderInline(b.inline, h));
+      default: return h('p', { dir: 'auto' }, ...renderInline(b.inline, h, handlers));
     }
   });
 }

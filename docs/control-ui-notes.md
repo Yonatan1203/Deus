@@ -2218,3 +2218,19 @@ console, `tailscale serve reset` if needed, change the password.
 | Conversation with `!` commands | shell cards, no raw `<bash-` text | 2 cards, none on a real session; neutral render with output, stderr and no-output cards — `artifacts/conversation-cards.png` | PASS |
 | Page card with / without a local copy | button + card opens pane / link only | as expected (card click opened the pane on the fixture) — `artifacts/conversation-cards.png` | PASS |
 | Server: shell item build, clip, redaction, stray result row | as specified | 20/20 | PASS |
+
+## A page link inside a reply opens beside (#54, 2026-09-28)
+
+A session that writes a page's claude.ai link into its reply (rather than publishing it in
+that turn) showed a plain link with no way to open the local copy. `markdown.js`
+`renderInline` now gets the conversation's handlers (also through bold/italic), and a link
+whose exact URL the registry holds a copy of gets an **Open beside** pill right after it.
+Only assistant replies in the Claude tab; the Chat/Agents tabs, user bubbles and the live
+streaming reply render links as before. Exact URL match (a trailing slash or query gets no
+pill). Cache v45.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Unit (`control-ui-markdown.test.ts`) | known link → pill that opens it; unknown / no handlers / copy-only → link only; list, table, bold, bare URL + full stop | 10/10 with the conversation tests | PASS |
+| Fixture on a real conversation with a pasted page link | pill beside it, click opens the page | opened the right page | PASS |
+| Neutral render | pill after the known link only | `artifacts/link-open-beside.png` | PASS |

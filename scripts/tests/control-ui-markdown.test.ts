@@ -70,3 +70,54 @@ describe('markdown: nested lists and direction', () => {
     ).toBe('pre');
   });
 });
+
+describe('markdown: page links open beside', () => {
+  const URL = 'https://claude.ai/artifact/abc123';
+  const entry = { id: 'art-1', url: URL, title: 'Workbench' };
+  const find = (n: unknown, pred: (x: Node) => boolean): Node[] => {
+    if (typeof n !== 'object' || n === null) return [];
+    const node = n as Node;
+    return [
+      ...(pred(node) ? [node] : []),
+      ...node.children.flatMap((c) => find(c, pred)),
+    ];
+  };
+  const render = (md: string, handlers: Record<string, unknown> = {}) =>
+    renderBlocks(parseMarkdown(md), h, handlers).map((b: unknown) => b);
+  const buttons = (nodes: unknown[]) =>
+    nodes.flatMap((n) =>
+      find(n, (x) => x.tag === 'button' && x.attrs.class === 'md-open-beside'),
+    );
+  const opened: unknown[] = [];
+  const handlers = {
+    localArtifact: (u: string) => (u === URL ? entry : null),
+    openArtifact: (e: unknown) => opened.push(e),
+  };
+
+  it('a known page link gets an Open beside button that opens it', () => {
+    const out = render(`See [the workbench](${URL}) now.`, handlers);
+    const b = buttons(out);
+    expect(b).toHaveLength(1);
+    expect(text(b[0])).toBe('Open beside');
+    (b[0].attrs.onclick as () => void)();
+    expect(opened).toEqual([entry]);
+    expect(
+      out.flatMap((n) => find(n, (x) => x.tag === 'a'))[0].attrs.href,
+    ).toBe(URL);
+  });
+  it('unknown links, no handlers, or only a copy handler: link only', () => {
+    expect(
+      buttons(render('[x](https://claude.ai/artifact/other)', handlers)),
+    ).toHaveLength(0);
+    expect(buttons(render(`[x](${URL})`))).toHaveLength(0);
+    expect(buttons(render(`[x](${URL})`, { copy: () => {} }))).toHaveLength(0);
+  });
+  it('inside a list item, a table cell and bold; a bare URL before a full stop', () => {
+    expect(buttons(render(`- item [x](${URL})`, handlers))).toHaveLength(1);
+    expect(
+      buttons(render(`| a |\n|---|\n| [x](${URL}) |`, handlers)),
+    ).toHaveLength(1);
+    expect(buttons(render(`**[x](${URL})**`, handlers))).toHaveLength(1);
+    expect(buttons(render(`Open ${URL}.`, handlers))).toHaveLength(1);
+  });
+});
