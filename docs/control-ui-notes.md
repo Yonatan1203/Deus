@@ -1926,3 +1926,17 @@ per batch. Not taken: an ambient badge on the Artifacts nav item for a page
 published while the operator is elsewhere (a later item), and auto-dismiss
 (the reviewer's own comparison — Slack's jump-to-latest pill — argues for a
 persistent offer).
+
+## Conversation card: the external link says where it goes (2026-09-28)
+
+The operator clicked the card's "Artifact · Open" expecting the page beside
+the conversation; it opened claude.ai in a new tab. "Open beside" only shows
+when the registry holds a local copy, and none of the three registered
+artifacts did (all link-only, registered before copies existed). The link
+now reads **"claude.ai ↗"** (title "Open on claude.ai in a new tab"), so it
+cannot be mistaken for Open beside (`artifacts/claude-artifact-card-buttons.png`:
+a card with a local copy shows both, a link-only card only the link). Supplier Line was re-registered with its
+file (`add --file`); Product image suites' page is 9 MB, over the 4 MiB copy
+limit; All posts preview was published without a local file. Known gap: the
+auto-capture skips a URL already registered link-only, so older entries do
+not gain a copy by themselves.

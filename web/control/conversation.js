@@ -79,7 +79,7 @@ function toolsItem(g, h, key, expanded, handlers = {}) {
     return h('div', { class: 'conv-card' },
       h('span', { class: 'conv-card-title' }, a.summary ? a.summary.split('/').pop() : 'Artifact'),
       a.url && isClaudeArtifact(a.url)
-        ? h('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, 'Artifact · Open')
+        ? h('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer', title: 'Open on claude.ai in a new tab' }, 'claude.ai ↗')
         : h('span', { class: 'muted' }, 'Artifact'),
       local ? h('button', { type: 'button', class: 'small', onclick: () => handlers.openArtifact(local) }, 'Open beside') : null);
   });
