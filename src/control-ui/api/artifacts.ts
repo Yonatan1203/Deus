@@ -27,7 +27,7 @@ export const REGISTRY_WRITE_MAX = 192 * 1024;
 export const REGISTRY_FILE = 'artifacts.json';
 export const REMOVED_LOG = 'artifacts-removed.jsonl';
 export const REMOVED_LOG_MAX = 1024 * 1024;
-export const COPY_MAX = 4 * 1024 * 1024;
+export const COPY_MAX = 16 * 1024 * 1024; // kept in lockstep with scripts/artifact-registry.mjs
 export const COPY_DIR = 'artifacts';
 export const LOCK_STALE_MS = 5000;
 const TMP_RE = /^artifacts\.json\.tmp-[0-9a-f]{8}$/;
@@ -529,7 +529,7 @@ export function refreshArtifact(
   opts: {
     readOnly: boolean;
     now?: () => number;
-    /** Captured entries (`added_by: 'session'`) stop following a source under one of these. */
+    /** A copy that came from a session (`added_by: 'session'`, or an operator entry that gained one: `session` set) stops following a source under one of these. */
     refuseUnder?: () => string[];
   },
 ): RefreshResult {
@@ -547,7 +547,7 @@ export function refreshArtifact(
   if (!version) return { status: 404, error: 'no-copy' };
   if (opts.readOnly) return { status: 200, version, following: false };
   if (
-    entry.added_by === 'session' &&
+    (entry.added_by === 'session' || entry.session !== undefined) &&
     opts.refuseUnder &&
     isUnderAny(entry.local.source, opts.refuseUnder())
   )
@@ -803,7 +803,14 @@ export function sessionForEntry(raw: ArtifactSession): ArtifactSession | null {
 }
 
 export type CapturedAdd =
-  | { status: 201; id: string; rev: number; evicted: ArtifactEntry[] }
+  | {
+      status: 201;
+      id: string;
+      rev: number;
+      evicted: ArtifactEntry[];
+      /** Set when an operator's link-only entry gained the copy in place: its origin. */
+      adopted?: ArtifactEntry['added_by'];
+    }
   | { status: 200; id: string; existing: true }
   | { status: 400 | 409 | 503; error: string; transient: boolean };
 
@@ -853,24 +860,41 @@ export function addCapturedArtifact(
         if (!cur.ok)
           return { status: 503, error: 'registry unreadable', transient: true };
         const dup = cur.registry.artifacts.find((a) => a.url === url);
-        if (dup) return { status: 200, id: dup.id, existing: true };
+        if (dup && dup.local)
+          return { status: 200, id: dup.id, existing: true };
+        // A link-only entry (registered before copies existed, or added by
+        // hand without --file) gains the copy in place: its title, kind,
+        // description and origin stay the operator's; no new entry, no quota.
         let kept = cur.registry.artifacts;
         const evicted: ArtifactEntry[] = [];
-        const captured = kept
-          .filter((a) => a.added_by === 'session')
-          .sort((a, b) => a.added_at.localeCompare(b.added_at));
-        for (let i = 0; captured.length - i >= SESSION_MAX; i++)
-          evicted.push(captured[i]);
-        if (evicted.length) kept = kept.filter((a) => !evicted.includes(a));
-        // Full is a state of the registry, not of the file: retried next time.
-        if (kept.length >= ARTIFACTS_MAX)
-          return { status: 409, error: 'registry full', transient: true };
-        const id = `art-${crypto.randomBytes(6).toString('hex')}`;
+        if (!dup) {
+          const captured = kept
+            .filter((a) => a.added_by === 'session')
+            .sort((a, b) => a.added_at.localeCompare(b.added_at));
+          for (let i = 0; captured.length - i >= SESSION_MAX; i++)
+            evicted.push(captured[i]);
+          if (evicted.length) kept = kept.filter((a) => !evicted.includes(a));
+          // Full is a state of the registry, not of the file: retried next time.
+          if (kept.length >= ARTIFACTS_MAX)
+            return { status: 409, error: 'registry full', transient: true };
+        }
+        const id = dup
+          ? dup.id
+          : `art-${crypto.randomBytes(6).toString('hex')}`;
         fs.mkdirSync(path.join(dir, COPY_DIR), {
           recursive: true,
           mode: 0o700,
         });
         const file = copyPath(dir, id);
+        // A link-only entry never had a copy, so anything at its path is a
+        // leftover (a removal whose unlink failed): cleared, or O_EXCL below
+        // would refuse this entry on every capture.
+        if (dup)
+          try {
+            fs.unlinkSync(file);
+          } catch {
+            /* none there */
+          }
         const fd = fs.openSync(
           file,
           fs.constants.O_WRONLY |
@@ -890,25 +914,31 @@ export function addCapturedArtifact(
             fs.closeSync(fd);
           }
           const at = new Date(now()).toISOString();
-          const entry: ArtifactEntry = {
-            id,
-            title: entryTitle,
-            url,
-            kind,
-            added_at: at,
-            added_by: 'session',
-            local: {
-              source: input.source.source,
-              uid: input.source.uid,
-              bytes: input.source.bytes,
-              copied_at: at,
-              source_mtime_ms: input.source.mtimeMs,
-            },
-            session,
+          const local: ArtifactLocal = {
+            source: input.source.source,
+            uid: input.source.uid,
+            bytes: input.source.bytes,
+            copied_at: at,
+            source_mtime_ms: input.source.mtimeMs,
           };
+          const artifacts = dup
+            ? kept.map((a) => (a.id === dup.id ? { ...a, local, session } : a))
+            : [
+                ...kept,
+                {
+                  id,
+                  title: entryTitle,
+                  url,
+                  kind,
+                  added_at: at,
+                  added_by: 'session' as const,
+                  local,
+                  session,
+                },
+              ];
           const w = writeRegistry(
             dir,
-            { v: 1, rev: cur.registry.rev + 1, artifacts: [...kept, entry] },
+            { v: 1, rev: cur.registry.rev + 1, artifacts },
             cur.registry.rev,
             now,
           );
@@ -923,7 +953,9 @@ export function addCapturedArtifact(
               /* no copy */
             }
           }
-          return { status: 201, id, rev: w.rev, evicted };
+          return dup
+            ? { status: 201, id, rev: w.rev, evicted, adopted: dup.added_by }
+            : { status: 201, id, rev: w.rev, evicted };
         } finally {
           if (!committed)
             try {

@@ -258,6 +258,119 @@ describe('addCapturedArtifact', () => {
   });
 });
 
+describe('addCapturedArtifact on an URL already registered', () => {
+  const linkOnly: ArtifactEntry = {
+    id: 'art-aaaaaaaaaaaa',
+    title: 'Supplier Line',
+    url: URL1,
+    kind: 'report',
+    description: 'kept',
+    added_at: '2026-09-21T18:42:31.791Z',
+    added_by: 'cli',
+  };
+  it('a link-only entry gains the copy in place: same id, title, kind, origin; local + session set', () => {
+    writeRegistry(dir, { v: 1, rev: 1, artifacts: [linkOnly] }, 0, () => T0);
+    const s = good(page());
+    const r = addCapturedArtifact(
+      dir,
+      {
+        title: 'Other Title',
+        url: URL1,
+        kind: 'app',
+        source: s,
+        session: SESSION,
+      },
+      { hosts: HOSTS, now: () => T0 },
+    );
+    expect(r).toMatchObject({ status: 201, id: linkOnly.id, evicted: [] });
+    const reg = readRegistry(dir);
+    expect(reg.ok && reg.registry.artifacts).toHaveLength(1);
+    expect(reg.ok && reg.registry.artifacts[0]).toMatchObject({
+      id: linkOnly.id,
+      title: 'Supplier Line',
+      kind: 'report',
+      description: 'kept',
+      added_by: 'cli',
+      local: { source: s.source, bytes: s.bytes },
+      session: SESSION,
+    });
+    expect(fs.statSync(copyPath(dir, linkOnly.id)).size).toBe(s.bytes);
+  });
+  it('adoption is reported with the entry origin, and a leftover file at the copy path does not block it', () => {
+    writeRegistry(dir, { v: 1, rev: 1, artifacts: [linkOnly] }, 0, () => T0);
+    fs.mkdirSync(path.join(dir, 'artifacts'), { recursive: true });
+    fs.writeFileSync(copyPath(dir, linkOnly.id), 'stale leftover');
+    const s = good(page());
+    const r = addCapturedArtifact(
+      dir,
+      { title: null, url: URL1, kind: 'app', source: s, session: SESSION },
+      { hosts: HOSTS, now: () => T0 },
+    );
+    expect(r).toMatchObject({ status: 201, id: linkOnly.id, adopted: 'cli' });
+    expect(fs.readFileSync(copyPath(dir, linkOnly.id), 'utf-8')).toBe(
+      fs.readFileSync(s.source, 'utf-8'),
+    );
+  });
+  it('an adopted operator entry stops following a source that lands under a refused root', () => {
+    writeRegistry(dir, { v: 1, rev: 1, artifacts: [linkOnly] }, 0, () => T0);
+    const s = good(page());
+    addCapturedArtifact(
+      dir,
+      { title: null, url: URL1, kind: 'app', source: s, session: SESSION },
+      { hosts: HOSTS, now: () => T0 },
+    );
+    fs.writeFileSync(s.source, '<!doctype html><p>changed</p>');
+    fs.utimesSync(s.source, new Date(T0 + 5000), new Date(T0 + 5000));
+    expect(
+      refreshArtifact(dir, linkOnly.id, {
+        readOnly: false,
+        now: () => T0 + 6000,
+        refuseUnder: () => [src],
+      }),
+    ).toMatchObject({ status: 200, following: false });
+    expect(
+      refreshArtifact(dir, linkOnly.id, {
+        readOnly: false,
+        now: () => T0 + 6000,
+        refuseUnder: () => ['/nowhere/at/all'],
+      }),
+    ).toMatchObject({ status: 200, following: true });
+  });
+  it('an entry that already has a copy is left as it is', () => {
+    writeRegistry(dir, { v: 1, rev: 1, artifacts: [linkOnly] }, 0, () => T0);
+    const s = good(page());
+    addCapturedArtifact(
+      dir,
+      { title: null, url: URL1, kind: 'app', source: s, session: SESSION },
+      { hosts: HOSTS, now: () => T0 },
+    );
+    const again = addCapturedArtifact(
+      dir,
+      {
+        title: null,
+        url: URL1,
+        kind: 'app',
+        source: good(page('b.html')),
+        session: SESSION,
+      },
+      { hosts: HOSTS, now: () => T0 + 1 },
+    );
+    expect(again).toEqual({ status: 200, id: linkOnly.id, existing: true });
+  });
+  it('a page between 4 MiB and 16 MiB is accepted; over 16 MiB is refused', () => {
+    const nine = page(
+      'nine.html',
+      '<!doctype html>' + ' '.repeat(9 * 1024 * 1024),
+    );
+    expect(captureSource(nine)).toMatchObject({ ok: true });
+    const big = page(
+      'big.html',
+      '<!doctype html>' + ' '.repeat(16 * 1024 * 1024),
+    );
+    expect(captureSource(big)).toMatchObject({ ok: false });
+  });
+});
+
 describe('validateEntry with session', () => {
   it('keeps a valid session block and drops a malformed one without dropping the entry', () => {
     const base = {

@@ -1940,3 +1940,59 @@ file (`add --file`); Product image suites' page is 9 MB, over the 4 MiB copy
 limit; All posts preview was published without a local file. Known gap: the
 auto-capture skips a URL already registered link-only, so older entries do
 not gain a copy by themselves.
+
+## Artifact pane, round 2: follows the session, opens from the session, larger, more pages qualify (2026-09-28)
+
+Asked right after the side pane first worked for the operator: keep it updated
+when the session changes something, open it from inside the session, make it
+larger, and explain why the other artifacts lacked the option.
+
+- **Updates.** Edits to the same file already showed within ~2 s (the pane
+  polls the copy's version; the refresh step re-copies a newer source). New:
+  when the session publishes the page again (a new claude.ai link, a new
+  entry) and the pane is open on the same session's page with the same
+  title, the pane switches to the new one and says "Updated — the session
+  published a new version." (8 s). The source path is never sent to the
+  browser, so the match is session + title.
+- **From inside the session.** A "Pages" button in the session header lists
+  the session's pages that have a copy (its captured entries, plus any page
+  its conversation published that the registry holds) — one page opens
+  directly, several open a menu (title, time; Esc closes).
+- **Larger.** Default width 38 % → 45 %; a drag handle on the pane's left
+  edge (also ←/→ from the keyboard) sets 30–75 %, remembered in this browser
+  only; the conversation keeps its 320 px minimum, so the drag stops there.
+  "Expand" hides the conversation column (the session list stays);
+  "Restore" or Close brings it back. Below 1100 px the pane is already
+  fullscreen, so both are hidden.
+- **More pages qualify.** The copy limit is 16 MiB (was 4; store and CLI in
+  lockstep; worst case 200 × 16 MiB = 3200 MiB). A link-only entry — the
+  operator's older ones — gains the copy in place when its page is published
+  again with a file: same id, title, kind, description and origin; `local`
+  and `session` added.
+
+Driven on the fixture (`pane2.mjs`; a throwaway session, a link-only entry
+added with the CLI, synthetic paired Artifact rows appended to its
+transcript; entries, files and the session removed in `finally`):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Pages button | hidden until a page exists; "Pages (2)" after two publishes; the menu lists both | as expected — `artifacts/claude-pages-menu.png` | PASS |
+| Link-only gains a copy | the CLI entry keeps its title and origin and gets `local` | as expected | PASS |
+| Open from the session | the page opens beside | "Version one" in the frame | PASS |
+| Width | ~45 % by default; the drag widens it up to the conversation's minimum; kept after a reload | 522 → 568 px of 1160; kept | PASS |
+| Expand / Restore | the conversation column hides and returns | as expected — `claude-artifact-expanded.png` | PASS |
+| Follow a republish | the pane switches to the new version with the note | "Updated — …", "Version two" in the frame — `claude-artifact-updated.png` | PASS |
+| Unit | store: link-only gains a copy, an entry with a copy stays `existing`, 9 MiB accepted / >16 MiB refused; CLI size test at 16 MiB | green | PASS |
+
+Screenshot hygiene: three screenshots from #46 and this round showed the
+real session list; they are now cropped to the conversation and pane, and
+the drives clip the same way.
+
+Reviews: threat-modeler REVISE → SHIP. An operator entry that gained a
+session's copy kept `added_by: cli`, so the refresh-time refusal for
+container-writable sources (keyed on `added_by === 'session'`) skipped it; the
+refusal now keys on where the copy came from (`session` set), with a test.
+Such an adoption is logged with `adopted_from`. code-reviewer SHIP with one
+warning, taken: on the adoption path a leftover file at the entry's copy path
+(a removal whose unlink failed) would have made the O_EXCL open fail on every
+capture; it is cleared first (a link-only entry never had a copy), with a test.

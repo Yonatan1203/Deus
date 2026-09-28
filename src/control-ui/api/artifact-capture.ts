@@ -104,6 +104,7 @@ export function createArtifactCapture(
           session: session.id,
           sid,
           evicted: r.evicted.map((e) => e.id),
+          ...(r.adopted ? { adopted_from: r.adopted } : {}),
         },
         'Control UI captured a page a session published',
       );

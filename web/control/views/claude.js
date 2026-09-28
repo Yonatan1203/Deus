@@ -284,14 +284,55 @@ export async function render(root, api, bus, me) {
       const r = await api.get('/api/v1/artifacts');
       artifactsByUrl = new Map((r.artifacts || []).filter((a) => a.local && typeof a.url === 'string').map((a) => [a.url, a]));
     } catch { /* the cards just offer no "Open beside" */ }
+    pagesRefresh();
   }
   const localArtifact = (url) => artifactsByUrl.get(url) || null;
-  function openArtifact(a) {
+  // The pane's width at ≥ 1100 px: a drag handle on its left edge, 30–75 % of
+  // the layout, remembered in this browser only (a convenience, not state).
+  const W_KEY = 'deus-control.artifact-width';
+  const W_MIN = 30, W_MAX = 75, W_DEFAULT = 45;
+  const clampW = (v) => Math.min(W_MAX, Math.max(W_MIN, v));
+  function setWidth(pct) { wrap.style.setProperty('--art-w', `${clampW(pct)}%`); }
+  try { const saved = Number(localStorage.getItem(W_KEY)); setWidth(saved > 0 ? saved : W_DEFAULT); } catch { setWidth(W_DEFAULT); }
+  const handle = h('div', { class: 'ap-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the page pane', tabindex: '0' });
+  artPane.el.prepend(handle);
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const box = wrap.getBoundingClientRect();
+    let pct = null;
+    const move = (ev) => { pct = clampW(((box.right - ev.clientX) / box.width) * 100); setWidth(pct); };
+    const up = () => {
+      handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up);
+      if (pct !== null) try { localStorage.setItem(W_KEY, String(Math.round(pct))); } catch { /* not remembered */ }
+    };
+    handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
+  });
+  handle.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const now = parseFloat(wrap.style.getPropertyValue('--art-w')) || W_DEFAULT;
+    const pct = clampW(now + (e.key === 'ArrowLeft' ? 5 : -5));
+    setWidth(pct);
+    try { localStorage.setItem(W_KEY, String(pct)); } catch { /* not remembered */ }
+  });
+  function openArtifact(a, updated) {
     if (!a || !a.local) return;
     if (!artPane.el.isConnected) wrap.append(artPane.el); // attached first, so open() can focus it
     wrap.classList.add('with-artifact');
-    artPane.open(a, { onClose: () => { wrap.classList.remove('with-artifact'); } });
+    artPane.open(a, {
+      updated,
+      onClose: () => { wrap.classList.remove('with-artifact', 'artifact-expanded'); },
+      onExpand: (v) => { wrap.classList.toggle('artifact-expanded', v); },
+    });
   }
+  // The open session's pages: its own captured entries plus any page its
+  // conversation published that the registry holds a copy of (Pages menu).
+  let convUrls = new Set();
+  let pagesRefresh = () => {};
+  let pagesOutside = () => {}; // one document listener for the view, pointed at the open session's menu
+  const onPagesOutside = (e) => pagesOutside(e.target);
+  document.addEventListener('pointerdown', onPagesOutside);
   let sessions = [];
   let liveAvailable = false;
   let current = null; // { id, view }
@@ -401,6 +442,7 @@ export async function render(root, api, bus, me) {
     if (current && current.conv) current.conv.dispose();
     if (current && current.view) current.view.close();
     current = null;
+    pagesRefresh = () => {}; pagesOutside = () => {};
     document.body.classList.remove('claude-full');
   }
   async function select(s) {
@@ -419,10 +461,38 @@ export async function render(root, api, bus, me) {
       h('dt', {}, 'Started'), h('dd', {}, s.started_at ? fmtTime(s.started_at) : '—'),
       h('dt', {}, 'Folder'), h('dd', { class: 'mono' }, s.cwd_rel || '.'),
       h('dt', {}, 'Kind'), h('dd', {}, KIND_LABEL[s.kind] || s.kind));
+    // "Pages": this session's pages that can open beside the conversation.
+    convUrls = new Set();
+    const pagesBtn = h('button', { type: 'button', class: 'small', hidden: true, 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, 'Pages');
+    const pagesMenu = h('div', { class: 'pages-menu', role: 'menu', hidden: true });
+    const pagesWrap = h('div', { class: 'pages-wrap' }, pagesBtn, pagesMenu);
+    const sessionPages = () => [...artifactsByUrl.values()]
+      .filter((a) => (a.session && a.session.id === s.id) || convUrls.has(a.url))
+      .sort((a, b) => String(b.added_at || '').localeCompare(String(a.added_at || '')));
+    const closeMenu = () => { pagesMenu.hidden = true; pagesBtn.setAttribute('aria-expanded', 'false'); };
+    pagesRefresh = () => {
+      const list = sessionPages();
+      pagesBtn.hidden = list.length === 0;
+      pagesBtn.textContent = list.length > 1 ? `Pages (${list.length})` : 'Page';
+      pagesMenu.replaceChildren(...list.map((a) => h('button', { type: 'button', class: 'pages-item', role: 'menuitem', onclick: () => { closeMenu(); openArtifact(a); } },
+        h('span', { class: 'pages-title', dir: 'auto' }, a.title), h('span', { class: 'muted small' }, a.added_at ? fmtTime(a.added_at) : ''))));
+      if (!list.length) closeMenu();
+    };
+    pagesBtn.addEventListener('click', () => {
+      const list = sessionPages();
+      if (list.length === 1) { openArtifact(list[0]); return; } // one page: open it, no menu
+      const open = pagesMenu.hidden;
+      pagesMenu.hidden = !open; pagesBtn.setAttribute('aria-expanded', String(open));
+      if (open) { const first = pagesMenu.querySelector('button'); if (first) first.focus(); }
+    });
+    pagesMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeMenu(); pagesBtn.focus(); } });
+    pagesOutside = (t) => { if (!pagesWrap.contains(t)) closeMenu(); };
+    pagesRefresh();
     const bar = h('div', { class: 'claude-bar' },
       h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to sessions', onclick: () => { closeCurrent(); draw(); placeholder(); } }, '←'),
       h('div', { class: 'claude-title' }, h('span', { class: 'session-name' }, s.name), statusEl),
       h('div', { class: 'claude-actions' },
+        pagesWrap,
         pinSlot,
         h('button', { type: 'button', class: 'small', onclick: () => { details.hidden = !details.hidden; } }, 'Details'),
         readOnly || s.kind !== 'background' ? null : h('button', { type: 'button', class: 'small danger', onclick: async () => {
@@ -595,6 +665,8 @@ export async function render(root, api, bus, me) {
     }
     const knownArtifacts = new Set();
     async function onArtifacts(list) {
+      convUrls = new Set((list || []).map((a) => a.url));
+      pagesRefresh();
       const fresh = (list || []).filter((a) => a.local && a.id);
       if (first) { fresh.forEach((a) => knownArtifacts.add(a.id)); return; }
       const arrived = fresh.filter((a) => !knownArtifacts.has(a.id));
@@ -605,6 +677,13 @@ export async function render(root, api, bus, me) {
       for (const a of arrived) {
         const art = artifactsByUrl.get(a.url);
         if (!art) continue;
+        // A newer version of the page already open beside (same session, same
+        // title): the pane follows it instead of offering it again.
+        const open = artPane.entry;
+        if (open && open.id !== art.id && open.session && art.session && open.session.id === art.session.id && open.title === art.title) {
+          openArtifact(art, 'Updated — the session published a new version.');
+          continue;
+        }
         if (a.started_here && window.innerWidth >= 1100) { openArtifact(art); continue; }
         published.push(art);
       }
@@ -963,5 +1042,5 @@ export async function render(root, api, bus, me) {
   });
   bus.addEventListener('refresh', () => load());
   refreshTimer = setInterval(() => { if (!document.hidden) load(); }, 45_000);
-  bus.addEventListener('view-unmount', () => { clearInterval(refreshTimer); closeCurrent(); artPane.dispose(); }, { once: true });
+  bus.addEventListener('view-unmount', () => { clearInterval(refreshTimer); closeCurrent(); artPane.dispose(); document.removeEventListener('pointerdown', onPagesOutside); }, { once: true });
 }

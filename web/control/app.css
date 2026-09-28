@@ -805,9 +805,30 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 .artifact-pane:focus { outline: none; }
 .ap-note { padding: 8px 0 0; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
 .ap-note[hidden] { display: none; }
+.ap-updated { font-size: 13px; color: var(--accent); }
+.ap-updated[hidden] { display: none; }
+.artifact-pane { position: relative; }
+.ap-resize { position: absolute; left: -6px; top: 0; bottom: 0; width: 10px; cursor: col-resize; z-index: 2; touch-action: none; }
+.ap-resize::after { content: ""; position: absolute; left: 4px; top: 45%; height: 40px; width: 2px; border-radius: 2px; background: var(--line); }
+.ap-resize:hover::after, .ap-resize:focus-visible::after { background: var(--accent); }
+.ap-resize:focus-visible { outline: none; }
+/* The session's pages (views/claude.js "Pages"). */
+.pages-wrap { position: relative; }
+.pages-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 240px; max-width: 360px; display: grid; gap: 2px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+.pages-menu[hidden] { display: none; }
+.pages-item { display: grid; gap: 2px; text-align: start; padding: 8px 10px; border-radius: 8px; background: none; border: 0; color: var(--text); cursor: pointer; }
+.pages-item:hover, .pages-item:focus-visible { background: var(--surface-2); outline: none; }
+.pages-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (min-width: 1100px) {
-  /* the session list gives way first, so the conversation keeps room for its header */
-  .claude-layout.with-artifact { grid-template-columns: minmax(200px, 240px) minmax(380px, 1fr) minmax(340px, 38%); }
+  /* the session list gives way first, so the conversation keeps room for its header;
+     the pane's width is the operator's (drag handle, --art-w, default 45 %) */
+  .claude-layout.with-artifact { grid-template-columns: minmax(200px, 240px) minmax(320px, 1fr) minmax(340px, var(--art-w, 45%)); }
+  /* Expand: the conversation column steps aside; the list stays */
+  .claude-layout.with-artifact.artifact-expanded { grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); }
+  .claude-layout.with-artifact.artifact-expanded > .claude-pane { display: none; }
+}
+@media (max-width: 1099px) {
+  .ap-resize, .ap-expand { display: none; } /* the pane is already fullscreen */
 }
 @media (max-width: 1099px) {
   .artifact-pane { position: fixed; inset: 0; z-index: 30; background: var(--bg); padding: 12px var(--gutter) calc(12px + env(safe-area-inset-bottom)); border-left: 0; }

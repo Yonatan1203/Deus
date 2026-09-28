@@ -321,7 +321,7 @@ describe('add --file: the local copy', () => {
     const txt = path.join(dir, 'notes.txt');
     fs.writeFileSync(txt, 'x');
     const big = path.join(dir, 'big.html');
-    fs.writeFileSync(big, Buffer.alloc(4 * 1024 * 1024 + 1, 0x20));
+    fs.writeFileSync(big, Buffer.alloc(16 * 1024 * 1024 + 1, 0x20));
     for (const f of [link, txt, big, path.join(dir, 'missing.html')]) {
       const r = run([
         'add',

@@ -26,15 +26,30 @@ export function createArtifactPane(api) {
   const kind = h('span', { class: 'chip' });
   const link = h('a', { target: '_blank', rel: 'noopener noreferrer', class: 'small linkish', hidden: true }, icon('external', { size: 14 }), 'Open on claude.ai');
   const closeBtn = h('button', { type: 'button', class: 'small ghost', 'aria-label': 'Close the artifact pane' }, icon('x', { size: 14 }), 'Close');
+  // Expand: the pane takes the conversation's column too; the layout decides how (opts.onExpand).
+  const expandBtn = h('button', { type: 'button', class: 'small ghost ap-expand', 'aria-pressed': 'false' }, 'Expand');
+  // A short-lived line when the session published a newer version and the pane followed it.
+  const updated = h('div', { class: 'ap-updated', role: 'status', hidden: true });
+  let updatedTimer = null;
   const frame = h('iframe', { class: 'ap-frame', sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', title: 'Artifact' });
   const note = h('div', { class: 'ap-note', role: 'status', hidden: true });
   const el = h('aside', { class: 'artifact-pane', 'aria-label': 'Artifact', hidden: true, tabindex: '-1' },
     h('div', { class: 'ap-head' },
       what,
       h('div', { class: 'ap-row' }, title, kind),
-      h('div', { class: 'ap-actions' }, link, closeBtn)),
+      updated,
+      h('div', { class: 'ap-actions' }, link, expandBtn, closeBtn)),
     frame, note);
   let onClose = () => {};
+  let onExpand = () => {};
+  let expanded = false;
+  function setExpanded(v) {
+    expanded = v;
+    expandBtn.textContent = v ? 'Restore' : 'Expand';
+    expandBtn.setAttribute('aria-pressed', String(v));
+    onExpand(v);
+  }
+  expandBtn.addEventListener('click', () => setExpanded(!expanded));
   const closeAndTell = () => { close(); onClose(); };
   closeBtn.addEventListener('click', closeAndTell);
   // Esc closes the pane, as the agent panel's does — unless the key is typed
@@ -97,7 +112,12 @@ export function createArtifactPane(api) {
   function open(artifact, opts = {}) {
     if (!artifact || !ID_RE.test(artifact.id)) return;
     onClose = opts.onClose || (() => {});
-    current = { id: artifact.id, title: artifact.title, kind: artifact.kind, url: typeof artifact.url === 'string' ? artifact.url : null };
+    onExpand = opts.onExpand || (() => {});
+    current = { id: artifact.id, title: artifact.title, kind: artifact.kind, url: typeof artifact.url === 'string' ? artifact.url : null,
+      session: artifact.session && artifact.session.id ? { id: artifact.session.id } : null };
+    clearTimeout(updatedTimer);
+    updated.hidden = !opts.updated;
+    if (opts.updated) { updated.textContent = opts.updated; updatedTimer = setTimeout(() => { updated.hidden = true; }, 8000); }
     title.textContent = artifact.title;
     title.title = artifact.title; // the full title when the row clips it
     kind.textContent = artifact.kind;
@@ -117,6 +137,8 @@ export function createArtifactPane(api) {
   }
   function close() {
     clearInterval(timer); timer = null;
+    clearTimeout(updatedTimer); updated.hidden = true;
+    if (expanded) setExpanded(false);
     current = null;
     expectLoad = true;
     delete frame.dataset.loaded;
@@ -124,5 +146,8 @@ export function createArtifactPane(api) {
     el.hidden = true;
   }
   function dispose() { close(); disposed = true; document.removeEventListener('keydown', onKey); }
-  return { el, open, close, dispose, get id() { return current ? current.id : null; } };
+  return { el, open, close, dispose,
+    get id() { return current ? current.id : null; },
+    /** The open entry's title and session, for following a newer publish; null when closed. */
+    get entry() { return current ? { id: current.id, title: current.title, session: current.session } : null; } };
 }
