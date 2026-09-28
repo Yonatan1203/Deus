@@ -4,8 +4,6 @@ import * as chat from './views/chat.js';
 import * as agents from './views/agents.js';
 import * as wardens from './views/wardens.js';
 import * as mcps from './views/mcps.js';
-import * as sessions from './views/sessions.js';
-import * as groups from './views/groups.js';
 import * as tasks from './views/tasks.js';
 import * as channels from './views/channels.js';
 import * as memory from './views/memory.js';
@@ -15,7 +13,6 @@ import * as system from './views/system.js';
 import * as config from './views/config.js';
 import * as debug from './views/debug.js';
 import * as claude from './views/claude.js';
-import * as workflows from './views/workflows.js';
 import * as artifacts from './views/artifacts.js';
 import * as browser from './views/browser.js';
 
@@ -26,15 +23,12 @@ const CHAT_KEY = 'deus_ctl_chat';
 const VIEWS = {
   chat: { title: 'Chat', group: 'Operate', render: chat.render },
   claude: { title: 'Claude', group: 'Operate', render: claude.render },
-  workflows: { title: 'Workflows', group: 'Operate', render: workflows.render },
   artifacts: { title: 'Artifacts', group: 'Operate', render: artifacts.render },
   browser: { title: 'Browser', group: 'Operate', render: browser.render },
-  sessions: { title: 'Sessions', group: 'Operate', render: sessions.render },
   tasks: { title: 'Tasks', group: 'Operate', render: tasks.render },
   agents: { title: 'Agents', group: 'Configure', render: agents.render },
   wardens: { title: 'Wardens', group: 'Configure', render: wardens.render },
   mcps: { title: 'MCPs', group: 'Configure', render: mcps.render },
-  groups: { title: 'Groups', group: 'Configure', render: groups.render },
   channels: { title: 'Channels', group: 'Configure', render: channels.render },
   memory: { title: 'Memory', group: 'Configure', render: memory.render },
   containers: { title: 'Containers', group: 'System', render: containers.render },
@@ -44,7 +38,7 @@ const VIEWS = {
   debug: { title: 'Debug', group: 'System', render: debug.render },
 };
 const GROUPS = ['Operate', 'Configure', 'System'];
-const MOBILE_PRIMARY = ['chat', 'claude', 'sessions', 'tasks'];
+const MOBILE_PRIMARY = ['chat', 'claude', 'artifacts', 'tasks'];
 const DEFAULT_VIEW = 'chat';
 
 // Page header shared by every view: eyebrow (group), title, optional count

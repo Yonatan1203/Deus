@@ -232,8 +232,8 @@ Further dev info: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 ## Reporting long-running work
 
 For any order that takes more than a minute (creating posts, product images,
-site images…), report progress with the workflow CLI so the control UI's
-Workflows tab can show it:
+site images…), report progress with the workflow CLI so Deus can show it (status and
+the nightly agents report):
 
 ```bash
 WF=$(node scripts/workflow.mjs start --name "Posts batch 12" --kind posts)
@@ -276,8 +276,7 @@ exception: when the operator started your session from the dashboard's
 **Create artifact** form (the prompt says so), that click is the approval —
 register the finished artifact without asking again. Only
 `https://claude.ai/…` links are accepted unless the operator configured
-`CONTROL_UI_PREVIEW_HOSTS`. A finished workflow's preview can also be added
-from its card in the Workflows tab.
+`CONTROL_UI_PREVIEW_HOSTS`.
 
 ## Browser jobs
 

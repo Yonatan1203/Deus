@@ -724,14 +724,7 @@ table.kv input { min-height: 36px; }
 .wf-card { display: grid; gap: 10px; align-content: start; }
 .wf-card.invalid { opacity: 0.7; }
 .wf-card .title > span:first-child { min-width: 0; overflow-wrap: anywhere; }
-.wf-progress { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; font-size: 13px; }
-.wf-step { color: var(--text); font-size: 14px; }
-.wf-message { white-space: pre-wrap; overflow-wrap: anywhere; }
-.wf-links { display: grid; gap: 6px; font-size: 14px; }
-.wf-link { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
-.wf-link.withheld { font-size: 13px; }
 .wf-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
-.wf-notice { padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: var(--radius); font-size: 13px; }
 
 /* Phase A: Artifacts */
 .art-sections { display: grid; gap: 20px; }
@@ -743,7 +736,6 @@ table.kv input { min-height: 36px; }
 .new-artifact .counter { justify-self: end; margin-top: 4px; font-size: 12px; }
 .art-link { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 .art-link.withheld { font-weight: 500; }
-.wf-foot-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* Phase D: Gmail account panel + OAuth callback page */
 .gmail-panel { display: grid; gap: 10px; }

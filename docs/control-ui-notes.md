@@ -1996,3 +1996,22 @@ Such an adoption is logged with `adopted_from`. code-reviewer SHIP with one
 warning, taken: on the adoption path a leftover file at the entry's copy path
 (a removal whose unlink failed) would have made the O_EXCL open fail on every
 capture; it is cleared first (a link-only entry never had a copy), with a test.
+
+## Left menu: Workflows, Groups and Sessions removed (2026-09-28)
+
+The operator asked to start cleaning the left menu. Removed from `VIEWS`
+(`web/control/app.js`) with their view files, the seven `wf-*` style rules
+only they used, their icons and their service-worker entries (cache v38).
+The phone's bottom bar is now Chat, Claude, Artifacts, Tasks + More. Old
+links (`#/workflows`, `#/groups`, `#/sessions`) fall back to Chat. The
+backend stays: the Tasks tab still reads `/api/v1/groups`, and
+`scripts/workflow.mjs` progress records are kept for the Agents Manager's
+nightly report (AGENTS.md now says so instead of "the Workflows tab").
+
+Driven on the fixture (`tabs.mjs`): every remaining tab renders without a
+page error; the three old links land on Chat; the rail and the phone bar
+hold the expected items — `artifacts/rail-after-cleanup.png`,
+`mobile-bar-after-cleanup.png`. On the fixture, Tasks says "runtime
+unavailable" and Config "config unavailable" (the fixture has no job runtime
+and no `.env`); both are checked on production in the next step, and the
+bare wording goes on the UI/UX review list.
