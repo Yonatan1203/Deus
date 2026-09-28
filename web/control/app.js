@@ -172,9 +172,22 @@ async function connectEvents() {
 
 function showLogin() {
   $('app').hidden = true;
+  $('offline').hidden = true;
   $('login').hidden = false;
   $('password').focus();
 }
+
+// The server did not answer (tunnel down, a restart in progress): say so and
+// keep trying, instead of leaving both panels hidden (a blank page).
+let offlineTimer = null;
+function showOffline() {
+  $('app').hidden = true;
+  $('login').hidden = true;
+  $('offline').hidden = false;
+  clearTimeout(offlineTimer);
+  offlineTimer = setTimeout(boot, 3000);
+}
+$('offline-retry').addEventListener('click', () => { clearTimeout(offlineTimer); $('offline-status').textContent = 'Trying…'; boot(); });
 
 function currentView() {
   const key = location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
@@ -236,11 +249,16 @@ async function route() {
 }
 
 async function boot() {
+  clearTimeout(offlineTimer);
   try {
     me = await api.get('/api/v1/me');
-  } catch {
-    return; // showLogin already ran
+  } catch (err) {
+    if (err.message === 'unauthorized') return; // showLogin already ran
+    $('offline-status').textContent = 'Trying again every few seconds…';
+    showOffline();
+    return;
   }
+  $('offline').hidden = true;
   $('brand-name').textContent = `${me.assistant} · Control`;
   document.title = `${me.assistant} Control`;
   $('mode-pill').hidden = !me.read_only;
@@ -264,7 +282,9 @@ $('login-form').addEventListener('submit', async (e) => {
   } catch (ex) {
     err.textContent = ex.status === 429
       ? `Too many attempts — wait ${Math.ceil((ex.data?.retry_after_ms || 1000) / 1000)} s.`
-      : ex.status === 503 ? 'Credential unavailable on the server.' : 'Wrong password.';
+      : ex.status === 503 ? 'Credential unavailable on the server.'
+      : ex.status === undefined ? "Can't reach the server — check your SSH tunnel."
+      : 'Wrong password.';
   }
 });
 

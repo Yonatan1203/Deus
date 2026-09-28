@@ -2063,3 +2063,29 @@ never opened; the entry, file and session removed in `finally`):
 | Found without opening | the page is in the Artifacts tab on the next load | 0.9 s after load — `artifacts/artifacts-scan-card.png` | PASS |
 | Copy + session | `local`, session link to the listed session | as expected | PASS |
 | Unit | scan (a)–(f) 7; capture: same file, removed source, no session, no adoption without a session (4); route: page in a second project folder (1); full dashboard suite | green (one workflows SSE test is timing-flaky under full-suite load: failed once, passed alone twice and on the next full run) | PASS |
+
+## "Can't reach the dashboard" instead of a blank page (2026-09-28)
+
+The operator got an empty dark page titled "Deus Control". The server was
+healthy; his SSH tunnel was not forwarding (no connection reached the port
+while he reloaded), and the page came from the service worker's cache. Cause
+in `app.js`: `boot()` caught any failure of `GET /api/v1/me` as "showLogin
+already ran" — true only for a 401 — so a network failure (tunnel down, a
+restart in progress) or a 5xx left both `#login` and `#app` hidden. The sign-in
+form also said "Wrong password." when the server could not be reached.
+
+Now a `#offline` panel says the server did not answer, shows the tunnel
+command (generic placeholders), retries every 3 s and loads the login by
+itself once the server answers; "Try again now" retries at once. Signing in
+while unreachable says "Can't reach the server — check your SSH tunnel."
+Cache v39.
+
+Driven on the fixture (`offline.mjs`):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Reachable, signed out | the login | login | PASS |
+| API refused | the offline panel, no blank page | panel shown — `artifacts/offline-panel.png` | PASS |
+| API back | the login by itself within 4 s, no reload | 1.45 s | PASS |
+| Sign in while unreachable / with a wrong password | "Can't reach the server…" / "Wrong password." | as expected | PASS |
+| Right password | the app (after the login backoff from the drive's own wrong attempts) | app | PASS |

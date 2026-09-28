@@ -25,6 +25,15 @@
       <p id="login-error" class="error" role="alert"></p>
     </form>
   </div>
+  <div id="offline" class="login" hidden>
+    <div class="login-card" role="alert">
+      <div class="brand"><span class="mark"></span><span>Can't reach the dashboard</span></div>
+      <p class="muted">The server didn't answer. If you reach it through an SSH tunnel, check that the tunnel is running:</p>
+      <code class="offline-cmd">ssh -N -L 3017:127.0.0.1:3017 &lt;user&gt;@&lt;server&gt;</code>
+      <p class="muted" id="offline-status">Trying again every few seconds…</p>
+      <button id="offline-retry" type="button" class="primary">Try again now</button>
+    </div>
+  </div>
   <div id="app" class="app" hidden>
     <aside class="rail">
       <div class="brand"><span class="mark"></span><span id="brand-name">Deus</span></div>
