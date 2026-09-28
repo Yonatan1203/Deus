@@ -67,6 +67,22 @@ Deus is a **knowledgeable companion**, not a corporate assistant. It understands
 | Queued messages invisible | Fixed (show text + mark_chat_changed) | 2026-05-06 |
 | Mixed Hebrew+English in input | Open — needs reproduction case | 2026-05-06 |
 | Text selection undiscoverable | Fixed (Shift+drag hint in status bar) | 2026-05-06 |
+| Control UI artifact pane: docks at ≥1100px but conversation itself splits at 900px, so 900–1099px viewports get a full-screen takeover with room to spare for a docked column | Open — breakpoints need aligning | 2026-09-27 |
+| Control UI artifact pane: sandboxed iframe (`allow-scripts` only) silently no-ops forms/popups/downloads inside framed artifacts, with no in-pane explanation | Open | 2026-09-27 |
+
+## Web Control Dashboard (separate surface from the TUI)
+
+The control-ui web dashboard (`web/control/`) is a distinct surface from the
+terminal Deus TUI above — Rubik UI font, browser chrome, no monospace
+constraint. Side-panel pattern established by the artifact pane
+(`web/control/artifact-pane.js`, reviewed 2026-09-27):
+- Header names the publishing session ("Published by <name>", a link) when
+  the registry knows it (fixed 2026-09-27, #46).
+- Width: default 45 %, drag handle and ←/→ (30–75 %), remembered per browser;
+  "Expand" hides the conversation column (fixed 2026-09-28, #47).
+- The panel intentionally survives switching the selected session (by
+  design, not a bug) — but nothing in the header disambiguates "this artifact
+  is unrelated to the session you just picked."
 
 ## Competitive Benchmarks
 

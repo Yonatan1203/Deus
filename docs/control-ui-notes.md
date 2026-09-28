@@ -2015,3 +2015,51 @@ hold the expected items — `artifacts/rail-after-cleanup.png`,
 unavailable" and Config "config unavailable" (the fixture has no job runtime
 and no `.env`); both are checked on production in the next step, and the
 bare wording goes on the UI/UX review list.
+
+## Every artifact appears in the Artifacts tab; the dashboard starts first (2026-09-28)
+
+The operator saw that most artifacts he had made were missing from the tab
+(27 on claude.ai, 3 registered). The auto-capture only ran for the session open
+in the Claude tab and for sessions the dashboard started. Two further facts: a
+publish result carries only the session link (`claude.ai/code/artifact/<uuid>`)
+while the claude.ai gallery shows the page as `claude.ai/artifact/<id>`, and
+the two cannot be derived from each other.
+
+- **One-time import** (operator action through the registry CLI, registry
+  backed up first): the 24 missing gallery entries, 11 with a local copy (a
+  file found by title, ≤ 16 MiB), 13 link-only (file gone, 27.9 MB, or never
+  published from a file). The registry now holds all 27.
+- **Recent sessions are scanned** (`api/artifact-scan.ts`): the list route
+  walks exactly `<projects>/<dir>/<uuid>.jsonl` (lstat on folder and file,
+  realpath under the projects dir, `subagents/` out; fails closed if the
+  projects dir overlaps a container-writable root), transcripts from the last
+  14 days, the 40 newest per call, a 64 MiB read budget per call, and its own
+  memo of Artifact calls (200) so an unchanged transcript is never re-read. It
+  replaces the ledger-only walk.
+- **Who published**: only the transcript's file-name uuid, matched to a listed
+  session; an unlisted one gives no session link (still `added_by: session`,
+  so the quota and the refresh refusal apply) and the audit line names the
+  transcript uuid and folder.
+- **No duplicates, deletes hold**: a capture whose source file is already
+  registered (under the other link form) changes nothing and is logged
+  (`control_ui_artifact_capture_dup_source`); a removed page's source file is
+  kept in the removals index, so it is not captured again under the other
+  link. Adoption of a link-only operator entry still needs a listed session.
+- **Dashboard first on boot** (`src/index.ts`): the dashboard starts before the
+  channels connect (~3.8 s of each restart), so it is unreachable for about
+  the node start (~2 s) instead of 6–12 s. Measured on production below.
+- **Also in this batch**: the social-publish skill branch (`71d5b5bb`, with its
+  skill-loader fix `fa0fbf31`) merged into the live line — it already ran live
+  from untracked copies. Found on the way: containers load skill code only
+  because `agent.ts` was hand-copied into `container/agent-runner/src/skills/`
+  (the run-time mount of `agent-runner/src` hides the image's copy); a proper
+  fix is its own task.
+
+Driven on the fixture (`scan.mjs`: a throwaway session publishes a page and is
+never opened; the entry, file and session removed in `finally`):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Found without opening | the page is in the Artifacts tab on the next load | 0.9 s after load — `artifacts/artifacts-scan-card.png` | PASS |
+| Copy + session | `local`, session link to the listed session | as expected | PASS |
+| Unit | scan (a)–(f) 7; capture: same file, removed source, no session, no adoption without a session (4); route: page in a second project folder (1); full dashboard suite | green (one workflows SSE test is timing-flaky under full-suite load: failed once, passed alone twice and on the next full run) | PASS |

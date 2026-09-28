@@ -660,8 +660,9 @@ export function logRemoved(
  * mtime changed, else served from memory.
  */
 export function createRemovedUrls(dir: string) {
-  let memo: { version: string; urls: Set<string> } | null = null;
-  const parse = (file: string, into: Set<string>) => {
+  type Removed = { urls: Set<string>; sources: Set<string> };
+  let memo: { version: string; removed: Removed } | null = null;
+  const parse = (file: string, into: Removed) => {
     let text: string;
     try {
       const st = fs.lstatSync(file);
@@ -673,14 +674,20 @@ export function createRemovedUrls(dir: string) {
     for (const line of text.split('\n')) {
       if (!line) continue;
       try {
-        const rec = JSON.parse(line) as { entry?: { url?: unknown } };
-        if (typeof rec?.entry?.url === 'string') into.add(rec.entry.url);
+        const rec = JSON.parse(line) as {
+          entry?: { url?: unknown; local?: { source?: unknown } };
+        };
+        if (typeof rec?.entry?.url === 'string') into.urls.add(rec.entry.url);
+        // The source file too: a page removed under one link form is not
+        // captured again under the other (a session link vs the gallery link).
+        const src = rec?.entry?.local?.source;
+        if (typeof src === 'string') into.sources.add(src);
       } catch {
         /* a torn line */
       }
     }
   };
-  return (): Set<string> => {
+  return (): Removed => {
     const file = path.join(dir, REMOVED_LOG);
     let version = 'none';
     try {
@@ -689,12 +696,12 @@ export function createRemovedUrls(dir: string) {
     } catch {
       /* no log yet */
     }
-    if (memo && memo.version === version) return memo.urls;
-    const urls = new Set<string>();
-    parse(`${file}.1`, urls);
-    parse(file, urls);
-    memo = { version, urls };
-    return urls;
+    if (memo && memo.version === version) return memo.removed;
+    const removed: Removed = { urls: new Set(), sources: new Set() };
+    parse(`${file}.1`, removed);
+    parse(file, removed);
+    memo = { version, removed };
+    return removed;
   };
 }
 
@@ -811,7 +818,13 @@ export type CapturedAdd =
       /** Set when an operator's link-only entry gained the copy in place: its origin. */
       adopted?: ArtifactEntry['added_by'];
     }
-  | { status: 200; id: string; existing: true }
+  | {
+      status: 200;
+      id: string;
+      existing: true;
+      /** The same source file is registered under this other link. */
+      sameSource?: string;
+    }
   | { status: 400 | 409 | 503; error: string; transient: boolean };
 
 /**
@@ -829,7 +842,8 @@ export function addCapturedArtifact(
     url: string;
     kind: ArtifactKind;
     source: Extract<CaptureSource, { ok: true }>;
-    session: ArtifactSession;
+    /** Null when the transcript is not a listed session: no session link. */
+    session: ArtifactSession | null;
   },
   opts: { hosts: string[]; now?: () => number },
 ): CapturedAdd {
@@ -846,10 +860,9 @@ export function addCapturedArtifact(
   // The session's name comes from the CLI's list and may carry characters the
   // registry's name rule does not (parentheses, say): it is reduced to that
   // charset, and the id stands in when nothing usable is left.
-  const sessionOrNull = sessionForEntry(input.session);
-  if (!sessionOrNull)
+  const session = input.session ? sessionForEntry(input.session) : undefined;
+  if (session === null)
     return { status: 400, error: 'session invalid', transient: false };
-  const session: ArtifactSession = sessionOrNull;
   if (!registryDirOk(dir))
     return { status: 503, error: 'registry unavailable', transient: true };
   try {
@@ -859,8 +872,23 @@ export function addCapturedArtifact(
         const cur = readRegistry(dir);
         if (!cur.ok)
           return { status: 503, error: 'registry unreadable', transient: true };
+        // The same file under another link (a session link vs the gallery
+        // link of one page): the entry is left exactly as it is.
+        const same = cur.registry.artifacts.find(
+          (a) => a.local?.source === input.source.source,
+        );
+        if (same)
+          return {
+            status: 200,
+            id: same.id,
+            existing: true,
+            ...(same.url !== url ? { sameSource: same.url } : {}),
+          };
         const dup = cur.registry.artifacts.find((a) => a.url === url);
-        if (dup && dup.local)
+        // Adoption needs a session: the refresh refusal for a session-derived
+        // source is keyed on `session`, so a copy from an unlisted transcript
+        // never lands on an operator's entry.
+        if (dup && (dup.local || !session))
           return { status: 200, id: dup.id, existing: true };
         // A link-only entry (registered before copies existed, or added by
         // hand without --file) gains the copy in place: its title, kind,
@@ -922,7 +950,7 @@ export function addCapturedArtifact(
             source_mtime_ms: input.source.mtimeMs,
           };
           const artifacts = dup
-            ? kept.map((a) => (a.id === dup.id ? { ...a, local, session } : a))
+            ? kept.map((a) => (a.id === dup.id ? { ...a, local, session } : a)) // session is set here: checked above
             : [
                 ...kept,
                 {
@@ -933,7 +961,7 @@ export function addCapturedArtifact(
                   added_at: at,
                   added_by: 'session' as const,
                   local,
-                  session,
+                  ...(session ? { session } : {}),
                 },
               ];
           const w = writeRegistry(

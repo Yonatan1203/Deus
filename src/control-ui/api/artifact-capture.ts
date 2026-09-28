@@ -45,13 +45,22 @@ export function createArtifactCapture(
 
   function captureOne(
     call: ArtifactCall,
-    session: ArtifactSession,
+    session: ArtifactSession | null,
     sid: string | null,
+    transcript: TranscriptRef | null,
   ): CaptureOutcome {
     const { url } = call;
+    // Who published, for the audit lines: the listed session, else the
+    // transcript's file name — never a field from inside the transcript.
+    const who = {
+      session: session?.id ?? null,
+      ...(transcript
+        ? { transcript: transcript.uuid, dir: transcript.dir }
+        : {}),
+    };
     if (failed.has(url))
       return { url, result: 'skipped', reason: 'failed before', retry: false };
-    if (removed().has(url))
+    if (removed().urls.has(url))
       return {
         url,
         result: 'skipped',
@@ -65,7 +74,7 @@ export function createArtifactCapture(
         {
           event: 'control_ui_artifact_capture_skip',
           reason: src.reason,
-          session: session.id,
+          ...who,
         },
         'Control UI did not capture a published page',
       );
@@ -77,7 +86,7 @@ export function createArtifactCapture(
         {
           event: 'control_ui_artifact_capture_skip',
           reason: 'container-writable path',
-          session: session.id,
+          ...who,
         },
         'Control UI did not capture a page from a container-writable folder',
       );
@@ -88,6 +97,14 @@ export function createArtifactCapture(
         retry: false,
       };
     }
+    // The page's file was removed under its other link form: the delete holds.
+    if (removed().sources.has(src.source))
+      return {
+        url,
+        result: 'skipped',
+        reason: 'removed by the operator',
+        retry: false,
+      };
     const r = addCapturedArtifact(
       dir,
       { title: src.title, url, kind: 'app', source: src, session },
@@ -101,7 +118,7 @@ export function createArtifactCapture(
           id: r.id,
           hostname: hostOf(url),
           source: src.source,
-          session: session.id,
+          ...who,
           sid,
           evicted: r.evicted.map((e) => e.id),
           ...(r.adopted ? { adopted_from: r.adopted } : {}),
@@ -110,7 +127,21 @@ export function createArtifactCapture(
       );
       return { url, result: 'added', id: r.id };
     }
-    if (r.status === 200) return { url, result: 'exists', id: r.id };
+    if (r.status === 200) {
+      if (r.sameSource)
+        opts.log?.warn(
+          {
+            event: 'control_ui_artifact_capture_dup_source',
+            id: r.id,
+            registered_url: r.sameSource,
+            published_url: url,
+            source: src.source,
+            ...who,
+          },
+          'Control UI kept a page already registered from the same file',
+        );
+      return { url, result: 'exists', id: r.id };
+    }
     if (!r.transient) failed.add(url);
     return { url, result: 'skipped', reason: r.error, retry: r.transient };
   }
@@ -124,16 +155,23 @@ export function createArtifactCapture(
       key: string;
       version: string;
       calls: ArtifactCall[];
-      session: ArtifactSession;
+      /** The listed session, or null (no session link; see `transcript`). */
+      session: ArtifactSession | null;
       readOnly: boolean;
       sid?: string | null;
+      transcript?: TranscriptRef;
     }): CaptureOutcome[] {
       if (o.readOnly || !o.calls.length) return [];
       if (seen.get(o.key) === o.version) return [];
       const out: CaptureOutcome[] = [];
       let retry = false;
       for (const call of o.calls) {
-        const r = captureOne(call, o.session, o.sid ?? null);
+        const r = captureOne(
+          call,
+          o.session,
+          o.sid ?? null,
+          o.transcript ?? null,
+        );
         if (r.result === 'skipped' && r.retry) retry = true;
         out.push(r);
       }
@@ -155,7 +193,13 @@ export function createArtifactCapture(
     },
   };
 }
-const SEEN_MAX = 64;
+const SEEN_MAX = 256; // above the scan's 40 transcripts per call, so versions are not forgotten between calls
+
+/** A transcript as named on disk: its file-name uuid and project folder. */
+export interface TranscriptRef {
+  uuid: string;
+  dir: string;
+}
 
 function hostOf(url: string): string {
   try {

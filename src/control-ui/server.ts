@@ -123,6 +123,7 @@ import {
   validateAddInput,
 } from './api/artifacts.js';
 import { createArtifactCapture } from './api/artifact-capture.js';
+import { createArtifactScan } from './api/artifact-scan.js';
 import {
   CREATIONS_FILE,
   createCreations,
@@ -2920,24 +2921,32 @@ export function createControlServer(
       : null;
   const startedHere = (claudeId: string): boolean =>
     Boolean(creations && creations.list().some((c) => c.id === claudeId));
-  // A page built from "Create artifact" registers even if nobody opened the
-  // conversation: the ledger's sessions are walked here, at most 10 per call.
-  const captureCreations = async () => {
-    if (!artifactCapture || !creations || !readConversation || deps.readOnly)
-      return;
+  // Pages any recent host session published appear without anyone opening
+  // that session (artifact-scan.ts: a confined, bounded walk of the projects
+  // dir). The session link comes only from the transcript's file-name uuid
+  // matched to a listed session; otherwise the entry has none.
+  const artifactScan =
+    artifactCapture && deps.claudeProjectsDir && deps.containerWritableRoots
+      ? createArtifactScan(deps.claudeProjectsDir, {
+          roots: deps.containerWritableRoots,
+          now,
+        })
+      : null;
+  const captureRecent = async () => {
+    if (!artifactCapture || !artifactScan || deps.readOnly) return;
+    const found = artifactScan.scan();
+    if (!found.length) return;
     const listed = await claudeList(false);
-    if (!('sessions' in listed)) return;
-    for (const c of creations.list().slice(-10)) {
-      const row = listed.sessions.find((x) => x.id === c.id);
-      if (!row?.session_id) continue;
-      const read = readConversation(row.session_id);
-      if (!read || !read.conv.artifactCalls.length) continue;
+    const rows = 'sessions' in listed ? listed.sessions : [];
+    for (const t of found) {
+      const row = rows.find((r) => r.session_id === t.uuid);
       artifactCapture.capture({
-        key: row.session_id,
-        version: read.version,
-        calls: read.conv.artifactCalls,
-        session: { id: row.id, name: row.name },
+        key: t.uuid,
+        version: t.version,
+        calls: t.calls,
+        session: row ? { id: row.id, name: row.name } : null,
         readOnly: deps.readOnly,
+        transcript: { uuid: t.uuid, dir: t.dir },
       });
     }
   };
@@ -2979,7 +2988,7 @@ export function createControlServer(
   router.add('GET', '/api/v1/artifacts', async (ctx) => {
     if (artifactReadLimiter.isRateLimited(sid(ctx), now()))
       return writeJson(ctx.res, 429, { error: 'too many requests' });
-    await captureCreations();
+    await captureRecent();
     const r = artifactList();
     if ('error' in r) return writeJson(ctx.res, 503, { error: r.error });
     writeJson(ctx.res, 200, { ...r, creating: await creatingList() });

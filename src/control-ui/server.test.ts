@@ -2422,6 +2422,72 @@ describe('control-ui server — claude sessions', () => {
     expect(list.artifacts[0]).not.toHaveProperty('local.source');
   });
 
+  it('artifacts list: a page published in another project folder appears without opening its session', async () => {
+    const pageDir = path.join(root, 'pages2');
+    fs.mkdirSync(pageDir, { recursive: true });
+    const pageFile = path.join(pageDir, 'scan-page.html');
+    fs.writeFileSync(
+      pageFile,
+      '<!doctype html><title>Scanned Page</title><p>x</p>',
+    );
+    await bootC({ containerWritableRoots: () => [path.join(root, 'groups')] });
+    const other = path.join(projects, 'p2');
+    fs.mkdirSync(other, { recursive: true });
+    const uuid = '0badcafe-1111-4222-8333-444455556666';
+    const url =
+      'https://claude.ai/code/artifact/0badcafe-0000-4000-8000-000000000009';
+    fs.writeFileSync(
+      path.join(other, `${uuid}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 's1',
+                name: 'Artifact',
+                input: { file_path: pageFile },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 's1',
+                content: `Published: ${url}`,
+              },
+            ],
+          },
+        }),
+      ].join('\n') + '\n',
+    );
+    const { auth } = await login();
+    const list = j(
+      await request({
+        method: 'GET',
+        path: '/api/v1/artifacts',
+        headers: auth,
+      }),
+    );
+    const e = list.artifacts.find(
+      (a: { title: string }) => a.title === 'Scanned Page',
+    );
+    expect(e).toMatchObject({ local: true });
+    expect(e).not.toHaveProperty('session'); // not a listed session: no session link
+    expect(
+      ev('control_ui_artifact_capture').some(
+        (c) => (c[0] as { transcript?: string }).transcript === uuid,
+      ),
+    ).toBe(true);
+  });
+
   it('lists only rows under the repo, with waiting_on and started_here', async () => {
     await bootC();
     const { auth } = await login();
@@ -2912,7 +2978,9 @@ describe('control-ui server — claude sessions', () => {
     expect(first.model).toBeNull();
     expect(first.model_label).toBe('opus');
     expect(first.effort).toBe('high');
-    expect(first.version).toMatch(/^[0-9]+:[0-9]+\|[0-9]+:[0-9]+\|[0-9a-f]*$/); // transcript | settings | tasks
+    expect(first.version).toMatch(
+      /^[0-9]+:[0-9]+\|[0-9]+:[0-9]+\|[0-9a-f]*\|[a-z0-9,-]*$/,
+    ); // transcript | settings | tasks | captured artifact ids
     expect(j(await get(`?v=${encodeURIComponent(first.version)}`))).toEqual({
       unchanged: true,
       version: first.version,

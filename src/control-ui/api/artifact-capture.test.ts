@@ -148,7 +148,7 @@ describe('addCapturedArtifact', () => {
         title: s.title,
         url: `${URL1}b`,
         kind: 'app',
-        source: s,
+        source: good(page('second.html')),
         session: { id: 'b2c3d4e5', name: '((()))' },
       },
       { hosts: HOSTS, now: () => T0 },
@@ -371,6 +371,127 @@ describe('addCapturedArtifact on an URL already registered', () => {
   });
 });
 
+describe('#49: same file, removed source, no session', () => {
+  it('the same file under another link changes nothing and is logged', () => {
+    const warns: Record<string, unknown>[] = [];
+    const cap = createArtifactCapture(dir, {
+      hosts: HOSTS,
+      roots: () => [],
+      now: () => T0,
+      log: { warn: (o) => warns.push(o) },
+    });
+    const file = page();
+    cap.capture({
+      key: 'a',
+      version: 'v1',
+      calls: [{ file_path: file, url: URL1 }],
+      session: SESSION,
+      readOnly: false,
+    });
+    const before = readRegistry(dir);
+    const r = cap.capture({
+      key: 'b',
+      version: 'v1',
+      calls: [{ file_path: file, url: `${URL1}-other` }],
+      session: SESSION,
+      readOnly: false,
+    });
+    expect(r).toMatchObject([{ result: 'exists' }]);
+    expect(readRegistry(dir)).toEqual(before);
+    expect(
+      warns.find((w) => w.event === 'control_ui_artifact_capture_dup_source'),
+    ).toMatchObject({ registered_url: URL1, published_url: `${URL1}-other` });
+  });
+  it('a page removed under one link is not captured again under the other', () => {
+    const cap = createArtifactCapture(dir, {
+      hosts: HOSTS,
+      roots: () => [],
+      now: () => T0,
+    });
+    const file = page();
+    const [a] = cap.capture({
+      key: 'a',
+      version: 'v1',
+      calls: [{ file_path: file, url: URL1 }],
+      session: SESSION,
+      readOnly: false,
+    });
+    const id = (a as { id: string }).id;
+    expect(removeArtifact(dir, id, id, { now: () => T0 + 1 }).status).toBe(204);
+    expect(
+      cap.capture({
+        key: 'b',
+        version: 'v1',
+        calls: [{ file_path: file, url: `${URL1}-gallery` }],
+        session: SESSION,
+        readOnly: false,
+      }),
+    ).toMatchObject([{ result: 'skipped', reason: 'removed by the operator' }]);
+  });
+  it('a transcript that is not a listed session: no session link, still added_by session, refused root applies, audit names the transcript', () => {
+    const warns: Record<string, unknown>[] = [];
+    const cap = createArtifactCapture(dir, {
+      hosts: HOSTS,
+      roots: () => [],
+      now: () => T0,
+      log: { warn: (o) => warns.push(o) },
+    });
+    const file = page();
+    const [a] = cap.capture({
+      key: 'u',
+      version: 'v1',
+      calls: [{ file_path: file, url: URL1 }],
+      session: null,
+      readOnly: false,
+      transcript: { uuid: '11111111-2222-3333-4444-555555555555', dir: 'proj' },
+    });
+    const id = (a as { id: string }).id;
+    const e = readRegistry(dir);
+    expect(e.ok && e.registry.artifacts[0]).toMatchObject({
+      id,
+      added_by: 'session',
+    });
+    expect(e.ok && e.registry.artifacts[0].session).toBeUndefined();
+    expect(
+      warns.find((w) => w.event === 'control_ui_artifact_capture'),
+    ).toMatchObject({
+      transcript: '11111111-2222-3333-4444-555555555555',
+      dir: 'proj',
+      session: null,
+    });
+    fs.writeFileSync(file, '<!doctype html><p>changed</p>');
+    fs.utimesSync(file, new Date(T0 + 5000), new Date(T0 + 5000));
+    expect(
+      refreshArtifact(dir, id, {
+        readOnly: false,
+        now: () => T0 + 6000,
+        refuseUnder: () => [src],
+      }),
+    ).toMatchObject({ following: false });
+  });
+  it('without a session, a link-only operator entry is not adopted', () => {
+    const linkOnly: ArtifactEntry = {
+      id: 'art-bbbbbbbbbbbb',
+      title: 'Old',
+      url: URL1,
+      kind: 'app',
+      added_at: '2026-09-21T18:42:31.791Z',
+      added_by: 'cli',
+    };
+    writeRegistry(dir, { v: 1, rev: 1, artifacts: [linkOnly] }, 0, () => T0);
+    const s = good(page());
+    expect(
+      addCapturedArtifact(
+        dir,
+        { title: null, url: URL1, kind: 'app', source: s, session: null },
+        { hosts: HOSTS, now: () => T0 },
+      ),
+    ).toEqual({ status: 200, id: linkOnly.id, existing: true });
+    const e = readRegistry(dir);
+    expect(e.ok && e.registry.artifacts[0].local).toBeUndefined();
+  });
+});
+
 describe('validateEntry with session', () => {
   it('keeps a valid session block and drops a malformed one without dropping the entry', () => {
     const base = {
@@ -414,7 +535,7 @@ describe('isUnderAny / createRemovedUrls / refreshArtifact refusal', () => {
   });
   it('removed URLs are read from the log and refreshed when it grows', () => {
     const removed = createRemovedUrls(dir);
-    expect(removed().has(URL1)).toBe(false);
+    expect(removed().urls.has(URL1)).toBe(false);
     const e: ArtifactEntry = {
       id: 'art-0123456789ab',
       title: 'T',
@@ -424,7 +545,7 @@ describe('isUnderAny / createRemovedUrls / refreshArtifact refusal', () => {
       added_by: 'session',
     };
     logRemoved(dir, e, 'dashboard', new Date(T0).toISOString());
-    expect(removed().has(URL1)).toBe(true);
+    expect(removed().urls.has(URL1)).toBe(true);
   });
   it('a captured entry whose source sits under a refused root stops being followed; a cli entry is not affected', () => {
     const s = good(page());

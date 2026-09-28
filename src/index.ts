@@ -441,6 +441,79 @@ async function main(): Promise<void> {
     }
   }
 
+  // The dashboard starts before the channels connect (they take ~4 s), so a
+  // restart leaves it unreachable for ~2 s instead of 6–12 s. Every dependency
+  // below exists by now; the channel list is read lazily.
+  // Rewrites the per-group task snapshots after any task change — shared by
+  // the IPC handlers and the control UI so both paths refresh identically.
+  const refreshTaskSnapshots = () => {
+    const tasks = getAllTasks();
+    const taskRows = tasks.map((t) => ({
+      id: t.id,
+      groupFolder: t.group_folder,
+      prompt: t.prompt,
+      schedule_type: t.schedule_type,
+      schedule_value: t.schedule_value,
+      status: t.status,
+      next_run: t.next_run,
+    }));
+    for (const group of Object.values(state.registeredGroups)) {
+      writeTasksSnapshot(group.folder, group.isControlGroup === true, taskRows);
+    }
+  };
+
+  // Control UI (no-op unless CONTROL_UI_ENABLED=1). Localhost-only dashboard
+  // reached through an SSH tunnel; fails closed on a missing credential file.
+  const controlServer = await startControlServer({
+    repoRoot: PROJECT_ROOT,
+    webRoot: path.join(PROJECT_ROOT, 'web', 'control'),
+    assistantName: ASSISTANT_NAME,
+    version: readPackageVersion(PROJECT_ROOT),
+    envHas: (key) => Boolean(process.env[key] || readEnvFile([key])[key]),
+    runtime: {
+      queue,
+      registry,
+      registeredGroups: () => state.registeredGroups,
+    },
+    store: {
+      listSessionRows,
+      clearSession,
+      stopContainer: stopContainerSync,
+      groupFolderPath: resolveGroupFolderPath,
+      getAllTasks,
+      getTaskById,
+      createTask,
+      updateTask,
+      deleteTask,
+      getTaskRunLogs,
+      onTasksChanged: refreshTaskSnapshots,
+      countMessages,
+      findMessagesById,
+      dbPing,
+    },
+    channels: () => channels,
+    bin: CONTAINER_RUNTIME_BIN,
+    instanceId: deusInstanceId(),
+    logRing,
+    envPath: path.join(PROJECT_ROOT, '.env'),
+    configDir: CONFIG_DIR,
+    previewHosts: CONTROL_UI_PREVIEW_HOSTS,
+    gmailCredentialsDir: process.env.GMAIL_CREDENTIALS_DIR,
+    publicPort: CONTROL_UI_PORT,
+    ...createChannelLifecycle(channels, channelOpts),
+    claudeBin: resolveClaudeBin(process.env.PATH ?? ''),
+    claudeProjectsDir: path.join(homeDir, '.claude', 'projects'),
+    claudeSettingsFile: path.join(homeDir, '.claude', 'settings.json'),
+    claudeTasksDir: path.join(homeDir, '.claude', 'tasks'),
+    containerWritableRoots,
+    vaultPath: resolveVaultPath(),
+    // Resolved so a relative WHATSAPP_AUTH_DIR cannot differ from the adapter's view.
+    whatsappAuthDir: path.resolve(
+      process.env.WHATSAPP_AUTH_DIR || path.join(PROJECT_ROOT, 'store', 'auth'),
+    ),
+  });
+  if (controlServer) webhookServers.push(controlServer);
+
   // Create and connect all registered channels.
   // The control UI's temp dir must exist before the first container is
   // mounted: its shadow is decided per container start (see project-registry).
@@ -567,76 +640,6 @@ async function main(): Promise<void> {
     registeredGroups: () => state.registeredGroups,
   });
   if (odysseusServer) webhookServers.push(odysseusServer);
-
-  // Rewrites the per-group task snapshots after any task change — shared by
-  // the IPC handlers and the control UI so both paths refresh identically.
-  const refreshTaskSnapshots = () => {
-    const tasks = getAllTasks();
-    const taskRows = tasks.map((t) => ({
-      id: t.id,
-      groupFolder: t.group_folder,
-      prompt: t.prompt,
-      schedule_type: t.schedule_type,
-      schedule_value: t.schedule_value,
-      status: t.status,
-      next_run: t.next_run,
-    }));
-    for (const group of Object.values(state.registeredGroups)) {
-      writeTasksSnapshot(group.folder, group.isControlGroup === true, taskRows);
-    }
-  };
-
-  // Control UI (no-op unless CONTROL_UI_ENABLED=1). Localhost-only dashboard
-  // reached through an SSH tunnel; fails closed on a missing credential file.
-  const controlServer = await startControlServer({
-    repoRoot: PROJECT_ROOT,
-    webRoot: path.join(PROJECT_ROOT, 'web', 'control'),
-    assistantName: ASSISTANT_NAME,
-    version: readPackageVersion(PROJECT_ROOT),
-    envHas: (key) => Boolean(process.env[key] || readEnvFile([key])[key]),
-    runtime: {
-      queue,
-      registry,
-      registeredGroups: () => state.registeredGroups,
-    },
-    store: {
-      listSessionRows,
-      clearSession,
-      stopContainer: stopContainerSync,
-      groupFolderPath: resolveGroupFolderPath,
-      getAllTasks,
-      getTaskById,
-      createTask,
-      updateTask,
-      deleteTask,
-      getTaskRunLogs,
-      onTasksChanged: refreshTaskSnapshots,
-      countMessages,
-      findMessagesById,
-      dbPing,
-    },
-    channels: () => channels,
-    bin: CONTAINER_RUNTIME_BIN,
-    instanceId: deusInstanceId(),
-    logRing,
-    envPath: path.join(PROJECT_ROOT, '.env'),
-    configDir: CONFIG_DIR,
-    previewHosts: CONTROL_UI_PREVIEW_HOSTS,
-    gmailCredentialsDir: process.env.GMAIL_CREDENTIALS_DIR,
-    publicPort: CONTROL_UI_PORT,
-    ...createChannelLifecycle(channels, channelOpts),
-    claudeBin: resolveClaudeBin(process.env.PATH ?? ''),
-    claudeProjectsDir: path.join(homeDir, '.claude', 'projects'),
-    claudeSettingsFile: path.join(homeDir, '.claude', 'settings.json'),
-    claudeTasksDir: path.join(homeDir, '.claude', 'tasks'),
-    containerWritableRoots,
-    vaultPath: resolveVaultPath(),
-    // Resolved so a relative WHATSAPP_AUTH_DIR cannot differ from the adapter's view.
-    whatsappAuthDir: path.resolve(
-      process.env.WHATSAPP_AUTH_DIR || path.join(PROJECT_ROOT, 'store', 'auth'),
-    ),
-  });
-  if (controlServer) webhookServers.push(controlServer);
 
   // Start Linear subsystems (no-op if LINEAR_API_KEY not configured)
   const linearEnv = readEnvFile([
