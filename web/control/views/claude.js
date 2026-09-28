@@ -290,7 +290,9 @@ export async function render(root, api, bus, me) {
   // The pane's width at ≥ 1100 px: a drag handle on its left edge, 30–75 % of
   // the layout, remembered in this browser only (a convenience, not state).
   const W_KEY = 'deus-control.artifact-width';
-  const W_MIN = 30, W_MAX = 75, W_DEFAULT = 45;
+  const W_MIN = 30, W_MAX = 75;
+  // Unless the operator dragged a width: more room for the page on very wide screens.
+  const W_DEFAULT = window.matchMedia('(min-width: 2400px)').matches ? 55 : 45;
   const clampW = (v) => Math.min(W_MAX, Math.max(W_MIN, v));
   function setWidth(pct) { wrap.style.setProperty('--art-w', `${clampW(pct)}%`); }
   try { const saved = Number(localStorage.getItem(W_KEY)); setWidth(saved > 0 ? saved : W_DEFAULT); } catch { setWidth(W_DEFAULT); }

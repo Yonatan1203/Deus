@@ -1,5 +1,6 @@
 import { h, clear, badge } from '../dom.js';
 import { header } from '../app.js';
+import * as containers from './containers.js';
 
 const fmtBytes = (n) => {
   if (typeof n !== 'number') return '—';
@@ -13,8 +14,11 @@ const fmtDur = (s) => {
 };
 const tile = (label, value, sub) => h('div', { class: 'tile' }, h('span', { class: 'eyebrow' }, label), h('div', { class: 'value' }, value), sub ? h('div', { class: 'muted' }, sub) : null);
 
-export async function render(root, api, bus) {
+export async function render(root, api, bus, me) {
   const holder = h('div', {});
+  const section = h('section', {}); // the Containers section draws itself here
+  const ac = new AbortController(); // the bus outlives the view
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   function draw(s) {
     clear(holder);
     const disk = s.disk;
@@ -37,8 +41,9 @@ export async function render(root, api, bus) {
         h('tbody', {}, ...s.docker.df.map((r) => h('tr', {}, h('td', {}, r.type), h('td', {}, r.total), h('td', {}, r.active), h('td', {}, r.size), h('td', {}, r.reclaimable)))))) : null);
   }
   clear(root);
-  root.append(header('System', { eyebrow: 'System' }), holder);
+  root.append(header('System', { eyebrow: 'Advanced' }), holder, section);
   draw(await api.get('/api/v1/system'));
-  bus.addEventListener('system', (e) => draw(e.detail));
-  bus.addEventListener('refresh', async () => { try { draw(await api.get('/api/v1/system')); } catch { /* keep last */ } });
+  bus.addEventListener('system', (e) => draw(e.detail), { signal: ac.signal });
+  bus.addEventListener('refresh', async () => { try { draw(await api.get('/api/v1/system')); } catch { /* keep last */ } }, { signal: ac.signal });
+  await containers.render(section, api, bus, me, { embedded: true });
 }

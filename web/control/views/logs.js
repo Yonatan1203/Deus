@@ -57,7 +57,7 @@ export async function render(root, api, bus, me) {
 
   clear(root);
   root.append(
-    header('Logs', { eyebrow: 'System', actions: exportBtn ? [exportBtn] : [] }),
+    header('Logs', { eyebrow: 'Advanced', actions: exportBtn ? [exportBtn] : [] }),
     h('div', { class: 'toolbar' }, source, level, q, lines, readOnly ? null : h('label', { class: 'inline' }, 'Follow', follow)),
     out);
   if (!readOnly) await loadSources();

@@ -17,13 +17,13 @@ export async function render(root, api, bus, me) {
   try { inv = await api.get('/api/v1/mcps'); }
   catch (err) {
     clear(root);
-    root.append(header('MCPs', { eyebrow: 'Configure', actions: readOnly ? [] : [addButton('Add MCP or tool', cat)] }), cat.el,
+    root.append(header('MCPs', { eyebrow: 'Advanced', actions: readOnly ? [] : [addButton('Add MCP or tool', cat)] }), cat.el,
       h('div', { class: 'empty' }, serverError(err, 'Could not load the MCP list — try again in a moment.')));
     return;
   }
   clear(root);
   root.append(
-    header('MCPs', { eyebrow: 'Configure', actions: readOnly ? [] : [addButton('Add MCP or tool', cat)] }),
+    header('MCPs', { eyebrow: 'Advanced', actions: readOnly ? [] : [addButton('Add MCP or tool', cat)] }),
     cat.el,
     h('h2', {}, 'Container MCP servers'),
     table(['Name', 'Source', 'Status'], inv.container.map((c) => h('tr', {},

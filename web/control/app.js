@@ -7,7 +7,6 @@ import * as mcps from './views/mcps.js';
 import * as tasks from './views/tasks.js';
 import * as channels from './views/channels.js';
 import * as memory from './views/memory.js';
-import * as containers from './views/containers.js';
 import * as logs from './views/logs.js';
 import * as system from './views/system.js';
 import * as config from './views/config.js';
@@ -18,27 +17,28 @@ import * as browser from './views/browser.js';
 
 const TOKEN_KEY = 'deus_ctl_token';
 const CHAT_KEY = 'deus_ctl_chat';
-// Rail groups on desktop; on mobile the first four are tabs and the rest sit
-// behind "More" so the bottom bar never exceeds five targets.
+// The rail shows the main views, then "Advanced" (collapsed unless opened or
+// the current view is in it). On a phone the first four are tabs and the rest
+// sit behind "More" so the bottom bar never exceeds five targets.
 const VIEWS = {
-  chat: { title: 'Chat', group: 'Operate', render: chat.render },
-  claude: { title: 'Claude', group: 'Operate', render: claude.render },
-  artifacts: { title: 'Artifacts', group: 'Operate', render: artifacts.render },
-  browser: { title: 'Browser', group: 'Operate', render: browser.render },
-  tasks: { title: 'Tasks', group: 'Operate', render: tasks.render },
-  agents: { title: 'Agents', group: 'Configure', render: agents.render },
-  wardens: { title: 'Wardens', group: 'Configure', render: wardens.render },
-  mcps: { title: 'MCPs', group: 'Configure', render: mcps.render },
-  channels: { title: 'Channels', group: 'Configure', render: channels.render },
-  memory: { title: 'Memory', group: 'Configure', render: memory.render },
-  containers: { title: 'Containers', group: 'System', render: containers.render },
-  logs: { title: 'Logs', group: 'System', render: logs.render },
-  system: { title: 'System', group: 'System', render: system.render },
-  config: { title: 'Config', group: 'System', render: config.render },
-  debug: { title: 'Debug', group: 'System', render: debug.render },
+  chat: { title: 'Chat', group: 'main', render: chat.render },
+  claude: { title: 'Claude', group: 'main', render: claude.render },
+  artifacts: { title: 'Artifacts', group: 'main', render: artifacts.render },
+  tasks: { title: 'Tasks', group: 'main', render: tasks.render },
+  channels: { title: 'Channels', group: 'main', render: channels.render },
+  agents: { title: 'Agents', group: 'advanced', render: agents.render },
+  wardens: { title: 'Wardens', group: 'advanced', render: wardens.render },
+  mcps: { title: 'MCPs', group: 'advanced', render: mcps.render },
+  memory: { title: 'Memory', group: 'advanced', render: memory.render },
+  logs: { title: 'Logs', group: 'advanced', render: logs.render },
+  system: { title: 'System', group: 'advanced', render: system.render }, // containers live on it
+  config: { title: 'Config', group: 'advanced', render: config.render },
+  debug: { title: 'Debug', group: 'advanced', render: debug.render },
+  browser: { title: 'Browser', group: 'advanced', note: 'Paused', render: browser.render }, // a fixed label, not live state
 };
-const GROUPS = ['Operate', 'Configure', 'System'];
+const ALIASES = { containers: 'system' }; // old links keep working
 const MOBILE_PRIMARY = ['chat', 'claude', 'artifacts', 'tasks'];
+const ADVANCED_KEY = 'deus-control.nav-advanced';
 const DEFAULT_VIEW = 'chat';
 
 // Page header shared by every view: eyebrow (group), title, optional count
@@ -190,7 +190,8 @@ function showOffline() {
 $('offline-retry').addEventListener('click', () => { clearTimeout(offlineTimer); $('offline-status').textContent = 'Trying…'; boot(); });
 
 function currentView() {
-  const key = location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
+  const raw = location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
+  const key = ALIASES[raw] || raw;
   return VIEWS[key] ? key : DEFAULT_VIEW;
 }
 /** The part of the hash after `?` (`#/claude?artifact=…`), empty when none. */
@@ -202,30 +203,42 @@ export function hashQuery() {
 function link(k) {
   const active = k === currentView();
   return h('a', { href: `#/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : 'false' },
-    icon(k, { size: 18 }), h('span', {}, VIEWS[k].title));
+    icon(k, { size: 18 }), h('span', {}, VIEWS[k].title),
+    VIEWS[k].note ? h('span', { class: 'chip nav-note' }, VIEWS[k].note) : null);
+}
+const inGroup = (g) => Object.keys(VIEWS).filter((k) => VIEWS[k].group === g);
+function advancedOpen() {
+  try { return localStorage.getItem(ADVANCED_KEY) === '1'; } catch { return false; }
 }
 
 function drawNav() {
   const nav = $('nav');
   clear(nav);
-  for (const group of GROUPS) {
-    nav.append(h('div', { class: 'nav-group' },
-      h('span', { class: 'eyebrow' }, group),
-      ...Object.keys(VIEWS).filter((k) => VIEWS[k].group === group).map(link)));
-  }
+  const current = currentView();
+  const forced = VIEWS[current].group === 'advanced'; // the active link is never hidden
+  const open = forced || advancedOpen();
+  const adv = h('div', { class: 'nav-group', id: 'nav-advanced', hidden: !open }, ...inGroup('advanced').map(link));
+  const toggle = h('button', { type: 'button', class: 'nav-toggle', 'aria-expanded': String(open), 'aria-controls': 'nav-advanced' },
+    h('span', {}, 'Advanced'), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
+  toggle.addEventListener('click', () => {
+    const willOpen = adv.hidden;
+    adv.hidden = !willOpen;
+    toggle.setAttribute('aria-expanded', String(willOpen));
+    try { localStorage.setItem(ADVANCED_KEY, willOpen ? '1' : '0'); } catch { /* remembered for this page only */ }
+  });
+  nav.append(h('div', { class: 'nav-group' }, ...inGroup('main').map(link)), h('div', { class: 'nav-group' }, toggle, adv));
   const rest = Object.keys(VIEWS).filter((k) => !MOBILE_PRIMARY.includes(k));
   const tabbar = $('tabbar');
   clear(tabbar);
-  const moreActive = rest.includes(currentView());
+  const moreActive = rest.includes(current);
   tabbar.append(
     ...MOBILE_PRIMARY.map(link),
     h('button', { type: 'button', class: moreActive ? 'active' : '', 'aria-haspopup': 'dialog', onclick: () => $('more').showModal() },
       icon('more', { size: 18 }), h('span', {}, 'More')));
   const list = $('more-list');
   clear(list);
-  for (const group of GROUPS.slice(1)) {
-    list.append(h('span', { class: 'eyebrow' }, group), ...rest.filter((k) => VIEWS[k].group === group).map(link));
-  }
+  list.append(...rest.filter((k) => VIEWS[k].group === 'main').map(link),
+    h('span', { class: 'eyebrow' }, 'Advanced'), ...inGroup('advanced').map(link));
 }
 
 async function route() {

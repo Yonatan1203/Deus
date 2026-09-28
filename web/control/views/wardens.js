@@ -59,7 +59,7 @@ export async function render(root, api, bus, me) {
     list = list.map((w) => (w.name === updated.name ? updated : w));
     draw();
   };
-  root.append(header('Wardens', { eyebrow: 'Configure', count: list.length }), holder);
+  root.append(header('Wardens', { eyebrow: 'Advanced', count: list.length }), holder);
   draw();
   bus.addEventListener('warden', (e) => apply(e.detail));
   bus.addEventListener('refresh', async () => { list = await api.get('/api/v1/wardens'); draw(); });

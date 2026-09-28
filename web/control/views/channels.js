@@ -12,7 +12,7 @@ export async function render(root, api, bus, me) {
   const served = new Map();
   const cat = catalogue(api, { kinds: ['channel'], title: 'Add a channel', readOnly });
   clear(root);
-  root.append(header('Channels', { eyebrow: 'Configure', actions: readOnly ? [] : [addButton('Add channel', cat)] }), cat.el, grid);
+  root.append(header('Channels', { eyebrow: 'Operate', actions: readOnly ? [] : [addButton('Add channel', cat)] }), cat.el, grid);
 
   async function draw() {
     let channels;

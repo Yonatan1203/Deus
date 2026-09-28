@@ -196,6 +196,9 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
      reading surfaces (chat, forms, editors) keep their own caps below. */
   max-width: 1600px; width: 100%; min-width: 0; margin: 0 auto; animation: view-in var(--dur) var(--ease);
 }
+/* The Claude tab uses the whole width (list, conversation and a page beside it);
+   the other views keep the cap so their rows do not stretch across a wide screen. */
+.view[data-view="claude"] { max-width: none; }
 @keyframes view-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 18px; flex-wrap: wrap; }
 .page-head .titles { display: grid; gap: 4px; }
@@ -230,6 +233,7 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 .sheet .sheet-body {
   background: var(--surface); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0;
   padding: 10px 12px calc(16px + env(safe-area-inset-bottom)); display: grid; gap: 4px; animation: sheet-in 220ms var(--ease);
+  max-height: 85dvh; overflow-y: auto; overscroll-behavior: contain;
 }
 @keyframes sheet-in { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 .sheet .grip { width: 36px; height: 4px; border-radius: 2px; background: var(--line-strong); margin: 0 auto 8px; }
@@ -263,6 +267,15 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
   .nav a.active { color: var(--text); background: var(--accent-soft); }
   .nav a.active::before { content: ""; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 2px; background: var(--accent); border-radius: 0 2px 2px 0; }
   .nav a .icon { color: var(--muted); }
+  .nav-toggle {
+    display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 10px;
+    background: none; border: 0; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; cursor: pointer;
+    border-radius: var(--radius-sm);
+  }
+  .nav-toggle:hover { color: var(--text); background: var(--surface); border-color: transparent; }
+  .nav-toggle:active { transform: none; }
+  .nav-toggle .chev { font-size: 15px; line-height: 1; letter-spacing: 0; transition: transform var(--dur) var(--ease); }
+  .nav-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
   .nav a.active .icon { color: var(--accent); }
   .rail-foot { margin-top: auto; display: grid; gap: 6px; padding: 12px 8px 0; border-top: 1px solid var(--line); }
 
@@ -627,8 +640,8 @@ table.kv input { min-height: 36px; }
 .seg button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
 .conv { display: grid; grid-template-rows: 1fr auto; min-height: 0; font-family: "Rubik", var(--sans); }
 .conv-scroll { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
-.conv-col { max-width: 780px; margin: 0 auto; padding: 8px 16px 16px; display: grid; gap: 14px; }
-.conv-list { display: grid; gap: 14px; line-height: 1.6; font-size: 15px; }
+.conv-col { grid-template-columns: minmax(0, 1fr); max-width: 960px; margin: 0 auto; padding: 8px 16px 16px; display: grid; gap: 14px; }
+.conv-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; line-height: 1.6; font-size: 15px; }
 .conv-user { justify-self: end; max-width: 85%; padding: 9px 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .conv-user.queued { opacity: 0.75; border-style: dashed; border-color: var(--line-strong); }
 .conv-queued { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); text-align: end; }
@@ -644,7 +657,7 @@ table.kv input { min-height: 36px; }
 .conv-list code { font-family: var(--mono); font-size: 0.86em; padding: 1px 5px; background: var(--surface-2); border-radius: 5px; }
 .md-code { margin: 0 0 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); overflow-x: auto; font-size: 13px; line-height: 1.5; }
 .md-code code { padding: 0; background: none; font-size: inherit; }
-.conv-tools { display: grid; gap: 8px; justify-items: start; }
+.conv-tools { grid-template-columns: minmax(0, 1fr); display: grid; gap: 8px; justify-items: start; }
 .conv-fold { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; min-height: 28px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
 .conv-fold:hover { color: var(--text); background: none; }
 .conv-fold .chev { transition: transform 150ms ease-out; }
@@ -687,7 +700,7 @@ table.kv input { min-height: 36px; }
 .think-meta { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .think-verb { animation: none; background: none; color: var(--text); } }
-.conv-composer { padding: 10px 16px 0; display: grid; gap: 8px; max-width: 812px; width: 100%; margin: 0 auto; }
+.conv-composer { padding: 10px 16px 0; display: grid; gap: 8px; max-width: 992px; width: 100%; margin: 0 auto; }
 .conv-banner { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 12px; font-size: 14px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); border-radius: 10px; }
 .conv-box { position: relative; display: grid; gap: 6px; padding: 10px 12px 8px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 16px; }
 .conv-box:focus-within { border-color: color-mix(in srgb, var(--primary) 60%, var(--line-strong)); }
@@ -818,9 +831,12 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
   /* the session list gives way first, so the conversation keeps room for its header;
      the pane's width is the operator's (drag handle, --art-w, default 45 %) */
   .claude-layout.with-artifact { grid-template-columns: minmax(200px, 240px) minmax(320px, 1fr) minmax(340px, var(--art-w, 45%)); }
-  /* Expand: the conversation column steps aside; the list stays */
-  .claude-layout.with-artifact.artifact-expanded { grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); }
-  .claude-layout.with-artifact.artifact-expanded > .claude-pane { display: none; }
+  /* Expand: only the page — the list, the conversation and the page head step aside
+     (Restore is in the pane's own header) */
+  .claude-layout.with-artifact.artifact-expanded { grid-template-columns: minmax(0, 1fr); }
+  .claude-layout.with-artifact.artifact-expanded > .claude-pane,
+  .claude-layout.with-artifact.artifact-expanded > .claude-side,
+  #view:has(.claude-layout.artifact-expanded) .page-head { display: none; }
 }
 @media (max-width: 1099px) {
   .ap-resize, .ap-expand { display: none; } /* the pane is already fullscreen */
@@ -890,3 +906,29 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 .conv-assistant.live > :last-child::after { content: "▍"; margin-inline-start: 2px; color: var(--accent); animation: live-caret 1s steps(2) infinite; }
 @keyframes live-caret { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .conv-assistant.live > :last-child::after { animation: none; } }
+
+/* Menu: a fixed note beside a link ("Paused"); a section heading row inside a page */
+.nav-note { margin-left: auto; font-size: 10px; padding: 1px 6px; color: var(--faint); }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 28px 0 12px; }
+.section-head h2 { margin: 0; }
+
+/* Claude tab on a desktop window tall enough for it: exactly one window high, so the
+   list, the conversation and a page beside it all reach the bottom. A banner or the
+   update bar takes its own row; shorter or narrower windows scroll as before. */
+@media (min-width: 1100px) and (min-height: 640px) {
+  .app:has(> .view[data-view="claude"]) { height: 100dvh; grid-template-rows: auto auto minmax(0, 1fr); }
+  .app:has(> .view[data-view="claude"]) > .rail { grid-row: 1 / -1; }
+  .app:has(> .view[data-view="claude"]) > #banner { grid-row: 1; grid-column: 2; }
+  .app:has(> .view[data-view="claude"]) > #update { grid-row: 2; grid-column: 2; }
+  .app:has(> .view[data-view="claude"]) > #view { grid-row: 3; grid-column: 2; }
+  .view[data-view="claude"] { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding-bottom: 16px; }
+  .view[data-view="claude"] > .claude-layout { flex: 1; min-height: 0; }
+  .claude-side { min-height: 0; overflow-y: auto; }
+  /* The stage takes the pane's 1fr row even while Details (row 2) is hidden. */
+  .claude-pane > .claude-stage { grid-row: 3; height: auto; min-height: 360px; }
+  .claude-pane > .claude-ended { grid-row: 4; }
+}
+/* Very wide screens: a roomier session list (the page's default width is in views/claude.js) */
+@media (min-width: 2400px) {
+  .claude-layout.with-artifact { grid-template-columns: minmax(280px, 320px) minmax(320px, 1fr) minmax(340px, var(--art-w, 55%)); }
+}

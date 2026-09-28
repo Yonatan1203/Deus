@@ -2089,3 +2089,64 @@ Driven on the fixture (`offline.mjs`):
 | API back | the login by itself within 4 s, no reload | 1.45 s | PASS |
 | Sign in while unreachable / with a wrong password | "Can't reach the server…" / "Wrong password." | as expected | PASS |
 | Right password | the app (after the login backoff from the drive's own wrong attempts) | app | PASS |
+
+## Menu: five main views, the rest under "Advanced" (#55, 2026-09-28)
+
+Operator-approved layout. Main: Chat, Claude, Artifacts, Tasks, Channels.
+"Advanced" (collapsed, open state remembered per browser in
+`deus-control.nav-advanced`): Agents, Wardens, MCPs, Memory, Logs, System,
+Config, Debug, Browser — Browser carries a fixed "Paused" label (no live pause
+state exists). Containers is now a section of System; `#/containers` still
+opens it. On a phone the More sheet lists Channels and every Advanced view;
+Browser was unreachable there before (the sheet skipped the first group). The
+System and Containers views now drop their bus listeners on leaving the view
+(they piled up one set per visit before). Cache v41.
+
+Driven on the fixture (`menu.mjs`):
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Rail, collapsed | the five main views | Chat, Claude, Artifacts, Tasks, Channels | PASS |
+| Open Advanced; reload | nine more, Browser "Paused"; stays open | as expected | PASS |
+| `#/logs` with Advanced stored closed | shown open, Logs active | as expected | PASS |
+| Keyboard | Enter and Space toggle, `aria-expanded` follows | true / false | PASS |
+| `#/containers` | System with the Containers section and "Rebuild image" | as expected | PASS |
+| Six visits to System | one live `build`, `container`, `system` listener | 1 / 1 / 1 | PASS |
+| Phone 390 × 568 | 5 bottom targets; sheet scrolls; Browser opens; no horizontal scroll | as expected | PASS |
+
+## Claude tab: whole width, one width per session (#56, 2026-09-28)
+
+Two operator reports from a ~2000 px screen: the Claude tab sat centred with empty
+space each side, and conversations had different widths per session (Label Design
+wider than its composer, with a horizontal scrollbar). The first came from the 1600 px
+`.view` cap — now lifted for the Claude tab only (list pages keep it). The second was a
+grid blowout: `.conv-col`, `.conv-list` and `.conv-tools` had one implicit `auto` track,
+which grows to the widest unbreakable line in the session; they are now
+`minmax(0, 1fr)`. The column is 960 px (was 780), the composer 992 px. Cache v42.
+
+| Check (`wide.mjs`, fixture) | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Six sessions at 2000 px | same width, no horizontal scroll | 960 px column, 928 px track, no scroll, composer centred | PASS |
+| Label Design at 1400 / 1100 px | no overflow | none | PASS |
+| Logs, Memory at 2000 px | 1600 px (cap kept) | 1600 / 1600 | PASS |
+
+## A page beside the conversation fills the screen (#57, 2026-09-28)
+
+Operator report (24" and 27" screens): an expanded page was only as tall as the session
+list. On a desktop window at least 1100 × 640 the app shell is now exactly one window
+high on the Claude tab (a banner or the update bar takes its own row), the list scrolls
+on its own, and the conversation/terminal stage fills its row (it was 62vh; it also
+auto-placed into the wrong row while Details was hidden). Expand now shows only the
+page — list, conversation and page head step aside; Restore brings them back. At
+≥ 2400 px the page opens at 55 % unless a width was dragged. Cache v43.
+
+| Check (`fill.mjs`, fixture) | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| 1920 × 1080, 2560 × 1440, 1400 × 900 | list, conversation, page end at the bottom; no page scroll | all end 16 px above the bottom | PASS |
+| Expand at 1920 | only the page, full width | 1623 px wide, list/conversation/head hidden — `artifacts/page-expanded-1920.png` | PASS |
+| Restore | three columns as before | identical sizes | PASS |
+| Update bar shown | tab below it, still to the bottom | view starts at 42 px, no scroll | PASS |
+| Terminal at 1920 | refits to the taller stage | stage 883 px, screen 880 px | PASS |
+| 3440 × 1440 / stored 40 % | 55 % / 40 % | 55 % / 40 % | PASS |
+| 390, 899, 1099 wide; 1400 × 600 | unchanged, page scrolls | no fixed height, overflow visible | PASS |
+

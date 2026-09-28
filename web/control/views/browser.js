@@ -349,7 +349,7 @@ export async function render(root, api, bus, me) {
 
   clear(root);
   root.append(
-    header('Browser', { eyebrow: 'Operate' }),
+    header('Browser', { eyebrow: 'Advanced' }),
     sitesEl,
     h('h2', { class: 'section-title' }, 'Waiting for you'),
     queueEl,

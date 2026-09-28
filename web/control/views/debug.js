@@ -41,7 +41,7 @@ export async function render(root, api, bus) {
       h('tbody', {}, ...ev.events.slice().reverse().map((e) => h('tr', {}, h('td', {}, h('code', {}, String(e.id))), h('td', {}, e.type), h('td', {}, fmtTime(new Date(e.at).toISOString()))))))));
   }
   clear(root);
-  root.append(header('Debug', { eyebrow: 'System' }), h('h2', {}, 'Health'), health, h('h2', {}, 'Counts'), counts, h('h2', {}, 'Recent events'), events, h('h2', {}, 'Trace a message'), h('div', { class: 'toolbar' }, traceInput, traceBtn), traceOut);
+  root.append(header('Debug', { eyebrow: 'Advanced' }), h('h2', {}, 'Health'), health, h('h2', {}, 'Counts'), counts, h('h2', {}, 'Recent events'), events, h('h2', {}, 'Trace a message'), h('div', { class: 'toolbar' }, traceInput, traceBtn), traceOut);
   await draw();
   bus.addEventListener('refresh', () => { draw().catch(() => {}); });
 }

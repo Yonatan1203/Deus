@@ -9,7 +9,7 @@ export async function render(root, api, bus, me) {
   const viewer = h('div', { class: 'memory-viewer' }, h('div', { class: 'empty' }, 'Pick a file.'));
   const filter = h('input', { type: 'search', placeholder: 'Filter files…', 'aria-label': 'Filter files' });
   clear(root);
-  root.append(header('Memory', { eyebrow: 'Configure' }), h('div', { class: 'memory' }, h('div', { class: 'memory-side' }, filter, list), viewer));
+  root.append(header('Memory', { eyebrow: 'Advanced' }), h('div', { class: 'memory' }, h('div', { class: 'memory-side' }, filter, list), viewer));
 
   let entries = [];
   function drawList() {

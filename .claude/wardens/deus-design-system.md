@@ -84,6 +84,12 @@ constraint. Side-panel pattern established by the artifact pane
   design, not a bug) — but nothing in the header disambiguates "this artifact
   is unrelated to the session you just picked."
 
+Navigation (2026-09-28, #55): five main views (Chat, Claude, Artifacts, Tasks,
+Channels), then a collapsed "Advanced" disclosure with the rest; it opens by
+itself when the current view is inside it, so the active link is never hidden.
+Phone: four tabs + "More" (≤ 5 bottom targets); the More sheet scrolls. Page
+eyebrows follow the menu ("Operate" / "Advanced"). Containers live on System.
+
 ## Competitive Benchmarks
 
 ### Claude Code CLI

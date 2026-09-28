@@ -38,6 +38,6 @@ export async function render(root, api, bus, me) {
       h('p', { class: 'muted' }, `${cfg.secret_keys_omitted} secret-looking key${cfg.secret_keys_omitted === 1 ? '' : 's'} not shown. Values save to .env; restart to apply.`));
   }
   clear(root);
-  root.append(header('Config', { eyebrow: 'System' }), holder);
+  root.append(header('Config', { eyebrow: 'Advanced' }), holder);
   await draw();
 }

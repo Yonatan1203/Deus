@@ -105,7 +105,7 @@ export async function render(root, api, bus, me) {
   } }, icon('plus', { size: 14 }), 'Add agent');
 
   const search = h('input', { type: 'search', placeholder: 'Filter agents by name, text or tool…', 'aria-label': 'Filter agents', oninput: (e) => draw(e.target.value) });
-  root.append(header('Agents', { eyebrow: 'Configure', count: list.length, actions: addBtn ? [addBtn] : [] }), h('div', { class: 'toolbar' }, search), layout);
+  root.append(header('Agents', { eyebrow: 'Advanced', count: list.length, actions: addBtn ? [addBtn] : [] }), h('div', { class: 'toolbar' }, search), layout);
   draw('');
 
   const onKey = (e) => { if (e.key === 'Escape' && openName && !document.querySelector('dialog[open]')) close(); };

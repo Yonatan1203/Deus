@@ -25,8 +25,13 @@ function row(c, api, readOnly, refresh) {
     stop);
 }
 
-export async function render(root, api, bus, me) {
+/** On its own page, or `embedded` as a section of the System page. */
+export async function render(root, api, bus, me, { embedded = false } = {}) {
   const readOnly = Boolean(me && me.read_only);
+  // The bus outlives the view: listeners go when the view is left.
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
+  const on = { signal: ac.signal };
   const holder = h('div', {});
   const consoleBox = h('pre', { class: 'console', hidden: true });
   const buildState = h('div', { class: 'build-state muted', hidden: true });
@@ -57,13 +62,15 @@ export async function render(root, api, bus, me) {
   }
 
   clear(root);
-  root.append(header('Containers', { eyebrow: 'System', actions: rebuild ? [rebuild] : [] }), holder, buildState, consoleBox);
+  root.append(embedded
+    ? h('div', { class: 'section-head' }, h('h2', {}, 'Containers'), rebuild)
+    : header('Containers', { eyebrow: 'Advanced', actions: rebuild ? [rebuild] : [] }), holder, buildState, consoleBox);
   await draw();
   try { showBuild(await api.get('/api/v1/containers/build')); } catch { /* status is optional */ }
   bus.addEventListener('build', (e) => {
     const d = e.detail;
     if (d.line !== undefined) { consoleBox.hidden = false; consoleBox.append(`${d.line}\n`); consoleBox.scrollTop = consoleBox.scrollHeight; }
     if (d.done) { buildState.textContent = `Build exited ${d.code}`; toast(d.code === 0 ? 'Image rebuilt' : `Build failed (${d.code})`, d.code === 0 ? 'ok' : 'error'); }
-  });
-  for (const ev of ['queue', 'container', 'refresh']) bus.addEventListener(ev, () => { draw().catch(() => {}); });
+  }, on);
+  for (const ev of ['queue', 'container', 'refresh']) bus.addEventListener(ev, () => { draw().catch(() => {}); }, on);
 }
