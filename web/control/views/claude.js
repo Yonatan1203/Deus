@@ -4,7 +4,7 @@ import { header, hashQuery } from '../app.js';
 import { createArtifactPane } from '../artifact-pane.js';
 import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js';
 import { createInputQueue } from '../input-queue.js';
-import { parseAskScreen, parseLiveReply, parseMenuScreen, parseRunningTool, parseWorking } from '../ask-screen.js';
+import { parseAskScreen, parseIdlePrompt, parseLiveReply, parseMenuScreen, parseRunningTool, parseWorking } from '../ask-screen.js';
 import { createMissCounter } from '../ask-fallback.js';
 import { BACK_MAX, backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
 import { fallbackNotice, menuCard, renderConversation } from '../conversation.js';
@@ -821,7 +821,9 @@ export async function render(root, api, bus, me) {
       const v = view();
       const lines = v ? v.screenLines() : [];
       const st = v ? parseAskScreen(lines) || parseMenuScreen(lines) : null;
-      banner.hidden = !missCounter.tick({ fromTick, blocked: stateOf(row)[0] === 'needs you', matched: !!st });
+      // A blocked session at its normal input box asked in plain words: the
+      // composer answers it, so that screen counts as understood.
+      banner.hidden = !missCounter.tick({ fromTick, blocked: stateOf(row)[0] === 'needs you', matched: !!st || (v ? parseIdlePrompt(lines) : false) });
       // Before the memo below: the working line changes every tick.
       const working = v && !st && stateOf(row)[0] === 'working' ? parseWorking(lines) : null;
       if (working) { const t = parseRunningTool(lines); if (t) working.tool = t.label; }

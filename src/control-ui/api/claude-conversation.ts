@@ -14,6 +14,8 @@ export const TAIL_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const TEXT_MAX = 20_000;
 const SUMMARY_MAX = 120;
 const OUTPUT_MAX = 300;
+/** A `!` command's output: the card folds it to a few lines with "Show all". */
+const SHELL_OUTPUT_MAX = 2000;
 const DEFAULT_LIMIT = 300;
 const MEMO_MAX = 8; // entries can be large; only open views are read
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -50,6 +52,8 @@ export type ConvItem = (
       answer?: string;
     }
   | { k: 'command'; name: string; args: string; output?: string }
+  /** A command the operator ran with `!` in the terminal, and what it printed. */
+  | { k: 'shell'; command: string; output?: string; error?: string }
   | { k: 'note'; text: string }
 ) & { ts?: string; clipped?: true };
 
@@ -314,6 +318,28 @@ export function buildConversation(
         name: clip(cmd, 64),
         args: clip(tag(s, 'command-args') ?? '', 200),
       });
+      return;
+    }
+    // `!cmd` in the terminal: one row `<bash-input>`, then one row carrying
+    // both `<bash-stdout>` and `<bash-stderr>` (either may be empty).
+    const bash = tag(s, 'bash-input');
+    if (bash !== null) {
+      items.push({ k: 'shell', command: clip(bash, 400) });
+      return;
+    }
+    if (s.includes('<bash-stdout>') || s.includes('<bash-stderr>')) {
+      const so = clip(tag(s, 'bash-stdout') ?? '', SHELL_OUTPUT_MAX);
+      const se = clip(tag(s, 'bash-stderr') ?? '', SHELL_OUTPUT_MAX);
+      const prev = items[items.length - 1];
+      if (
+        prev &&
+        prev.k === 'shell' &&
+        prev.output === undefined &&
+        prev.error === undefined
+      ) {
+        if (so) prev.output = so;
+        if (se) prev.error = se;
+      } else if (so || se) items.push({ k: 'note', text: so || se });
       return;
     }
     const out = tag(s, 'local-command-stdout');

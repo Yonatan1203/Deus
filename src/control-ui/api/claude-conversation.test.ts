@@ -67,6 +67,36 @@ describe('buildConversation', () => {
     expect(c.effort).toBe('high');
   });
 
+  it('turns a `!` command and its result row into one shell item', () => {
+    const key = 'sk-ant-api03-' + 'B'.repeat(90);
+    const c = buildConversation([
+      user('<bash-input>ls -la</bash-input>'),
+      user(
+        '<bash-stdout>a.txt\nb.txt</bash-stdout><bash-stderr></bash-stderr>',
+      ),
+      user('<bash-input>false</bash-input>'),
+      user('<bash-stdout></bash-stdout><bash-stderr>boom</bash-stderr>'),
+      user('<bash-input>true</bash-input>'),
+      user('<bash-stdout></bash-stdout><bash-stderr></bash-stderr>'),
+      user(`<bash-input>echo ${key}</bash-input>`),
+      user(
+        `<bash-stdout>${'x'.repeat(5000)} ${key}</bash-stdout><bash-stderr></bash-stderr>`,
+      ),
+      user('<bash-stdout>stray</bash-stdout><bash-stderr></bash-stderr>'),
+    ]);
+    expect(c.items.slice(0, 3)).toEqual([
+      { k: 'shell', command: 'ls -la', output: 'a.txt\nb.txt' },
+      { k: 'shell', command: 'false', error: 'boom' },
+      { k: 'shell', command: 'true' },
+    ]);
+    const big = c.items[3] as { k: string; output: string };
+    expect(big.k).toBe('shell');
+    expect(big.output.length).toBe(2000);
+    expect(c.items[4]).toEqual({ k: 'note', text: 'stray' });
+    expect(JSON.stringify(c.items)).not.toContain(key);
+    expect(JSON.stringify(c.items)).not.toContain('<bash-');
+  });
+
   it('maps continuation, interruption and images to notes', () => {
     const c = buildConversation([
       user('This session is being continued from a previous conversation...'),

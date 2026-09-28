@@ -2194,3 +2194,27 @@ console, `tailscale serve reset` if needed, change the password.
 | Classifier (`tailnet.test.ts`, 22 cases) | list parsing, ranges, loopback, login, XFF, Funnel | all pass | PASS |
 | Server (`server.test.ts`, 6 cases) | off by default; Secure cookie; refusals logged; sessions bound to login; shared lockout; login on later actions | all pass | PASS |
 | Headers from the phone through serve (throwaway echo) | Host with `:8443`, the login, one 100.x address | as expected | PASS |
+
+## Input box is not a mystery prompt; page cards; shell cards (#59, 2026-09-28)
+
+- Claude Code marks a session `blocked` also when its reply ended by asking in plain
+  words; the view then showed "Claude is asking something this view can't show yet"
+  over a normal input box. `parseIdlePrompt` (`ask-screen.js`, from a live capture: rule,
+  `❯` line, rule, footer; no numbered option) now counts that screen as understood — the
+  composer answers it. The notice still shows for a blocked screen neither parser knows.
+- Page cards: a CSS page glyph, the registry title (else the file name), a muted
+  "Page · Open on claude.ai ↗" line, and an accent **Open beside**; the whole card opens
+  the page when a copy exists.
+- `!` commands (transcript rows `<bash-input>` then one row with `<bash-stdout>` and
+  `<bash-stderr>`, verified on real transcripts) become a `shell` item: a card with
+  `$ command`, output folded to 6 lines with "Show all", errors in red, "no output" when
+  empty. Output clipped to 2000 characters (deviation from the plan's 300: "Show all"
+  needs more than a line or two), redacted like every other string. Cache v44.
+
+| Check (fixture, real sessions) | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Blocked session at its input box, > 2 ticks (a real blocked session on the fixture; not screenshotted — real content) | no notice | none; unit cases below | PASS |
+| `parseIdlePrompt` unit cases (typed/empty/wrapped; menu; question; plain text) | true ×5, false ×4 | as expected | PASS |
+| Conversation with `!` commands | shell cards, no raw `<bash-` text | 2 cards, none on a real session; neutral render with output, stderr and no-output cards — `artifacts/conversation-cards.png` | PASS |
+| Page card with / without a local copy | button + card opens pane / link only | as expected (card click opened the pane on the fixture) — `artifacts/conversation-cards.png` | PASS |
+| Server: shell item build, clip, redaction, stray result row | as specified | 20/20 | PASS |

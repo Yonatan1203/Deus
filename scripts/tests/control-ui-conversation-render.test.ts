@@ -87,7 +87,10 @@ describe('renderConversation with an artifact card', () => {
   it('renders (regression: the card once read a `handlers` that was out of scope) and offers Open beside only with a copy', () => {
     renderConversation(el, items, h, { expanded: new Set() });
     expect(el.last.length).toBe(3);
-    const card = find(el.last[1], (n) => n.attrs.class === 'conv-card');
+    const card = find(
+      el.last[1],
+      (n) => String(n.attrs.class).split(' ')[0] === 'conv-card',
+    );
     expect(card).not.toBeNull();
     expect(
       find(card, (n) => n.tag === 'button' && text(n) === 'Open beside'),

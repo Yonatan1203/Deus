@@ -667,9 +667,35 @@ table.kv input { min-height: 36px; }
 .conv-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .conv-file { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
 .conv-file .plus, .conv .plus { color: var(--ok); } .conv-file .minus { color: var(--bad); }
-.conv-card { display: flex; justify-content: space-between; gap: 12px; align-items: center; width: 100%; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font-size: 14px; }
-.conv-card a { color: var(--accent-text); white-space: nowrap; }
-.conv-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-card { display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; font-size: 14px; transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease); }
+.conv-card.openable { cursor: pointer; }
+.conv-card.openable:hover { border-color: var(--line-strong); background: color-mix(in srgb, var(--surface) 85%, var(--accent) 4%); }
+/* a page glyph drawn in CSS: a sheet with a folded corner */
+.conv-card-icon { flex: none; position: relative; width: 28px; height: 34px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--line-strong); }
+.conv-card-icon::before { content: ""; position: absolute; top: -1px; right: -1px; width: 9px; height: 9px; background: var(--surface); border-left: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); border-bottom-left-radius: 3px; }
+.conv-card-icon::after { content: ""; position: absolute; left: 6px; right: 6px; top: 15px; height: 2px; border-radius: 1px; background: var(--accent); box-shadow: 0 5px 0 var(--line-strong), 0 10px 0 var(--line-strong); }
+.conv-card-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.conv-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-card-sub { font-size: 12.5px; color: var(--muted); }
+.conv-card-sub a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+.conv-card-sub a:hover { color: var(--accent-text); }
+.conv-card-open { flex: none; min-height: 32px; background: var(--accent); color: var(--fg-inverse); border-color: transparent; font-weight: 600; }
+.conv-card-open:hover { background: color-mix(in srgb, var(--accent) 88%, var(--bg)); border-color: transparent; }
+@media (max-width: 480px) {
+  .conv-card { flex-wrap: wrap; }
+  .conv-card-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .conv-card-open { min-height: 40px; margin-left: auto; }
+}
+/* A `!` command the operator ran in the terminal, and what it printed. */
+.conv-shell { justify-self: end; max-width: 85%; min-width: 0; display: grid; gap: 6px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; }
+.shell-cmd { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.shell-prompt { color: var(--accent); font-family: var(--mono); font-weight: 700; }
+.shell-cmd code { font-family: var(--mono); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.shell-out { margin: 0; padding: 8px 10px; font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--muted); background: var(--bg); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.shell-out.err { color: var(--bad); }
+.shell-more { justify-self: start; background: none; border: 0; padding: 0; min-height: 0; color: var(--accent-text); font-size: 12.5px; cursor: pointer; }
+.shell-more:hover { background: none; text-decoration: underline; }
+.shell-none { color: var(--faint); font-size: 12px; }
 .conv-command { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 13px; }
 .conv-command code { color: var(--accent-text); }
 .conv-command .muted, .conv-note { color: var(--muted); font-size: 13px; }

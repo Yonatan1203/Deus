@@ -261,3 +261,20 @@ export function parseRunningTool(lines) {
   }
   return null;
 }
+
+/**
+ * The normal input box: a `❯` line (empty or with typed text, possibly wrapped)
+ * between two horizontal rules, near the bottom, with no numbered option on
+ * screen. Claude Code reports a session as blocked when its reply ended by
+ * asking in plain words; at this box the answer is simply typed — nothing for
+ * the fallback notice to point at. Written against a live capture (2026-09-28).
+ */
+export function parseIdlePrompt(lines) {
+  const rows = lines.filter((l) => l.trim()).slice(-12);
+  if (rows.some((l) => /^\s*❯?\s*\d{1,2}\.\s/.test(l))) return false;
+  for (let i = 1; i < rows.length; i++) {
+    if (!/^\s*❯(\s|$)/.test(rows[i]) || !MENU_RULE_RE.test(rows[i - 1])) continue;
+    if (rows.slice(i + 1).some((l) => MENU_RULE_RE.test(l))) return true;
+  }
+  return false;
+}

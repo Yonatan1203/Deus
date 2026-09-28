@@ -76,12 +76,19 @@ function toolsItem(g, h, key, expanded, handlers = {}) {
     : null;
   const cards = g.artifacts.map((a) => {
     const local = a.url && handlers.localArtifact ? handlers.localArtifact(a.url) : null;
-    return h('div', { class: 'conv-card' },
-      h('span', { class: 'conv-card-title' }, a.summary ? a.summary.split('/').pop() : 'Artifact'),
-      a.url && isClaudeArtifact(a.url)
-        ? h('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer', title: 'Open on claude.ai in a new tab' }, 'claude.ai ↗')
-        : h('span', { class: 'muted' }, 'Artifact'),
-      local ? h('button', { type: 'button', class: 'small', onclick: () => handlers.openArtifact(local) }, 'Open beside') : null);
+    const title = (local && local.title) || (a.summary ? a.summary.split('/').pop() : 'Page');
+    const link = a.url && isClaudeArtifact(a.url)
+      ? h('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer', title: 'Open on claude.ai in a new tab', onclick: (e) => { if (e) e.stopPropagation(); } }, 'Open on claude.ai ↗')
+      : null;
+    const card = h('div', { class: `conv-card${local ? ' openable' : ''}` },
+      h('span', { class: 'conv-card-icon', 'aria-hidden': 'true' }),
+      h('div', { class: 'conv-card-text' },
+        h('span', { class: 'conv-card-title', dir: 'auto', title }, title),
+        h('span', { class: 'conv-card-sub' }, 'Page', link ? ' · ' : null, link)),
+      local ? h('button', { type: 'button', class: 'small conv-card-open', onclick: (e) => { if (e) e.stopPropagation(); handlers.openArtifact(local); } }, 'Open beside') : null);
+    // The whole card opens it too; the button stays the keyboard target.
+    if (local && card.addEventListener) card.addEventListener('click', () => handlers.openArtifact(local));
+    return card;
   });
   return h('div', { class: 'conv-tools' }, toggle, list, files, ...cards);
 }
@@ -140,6 +147,32 @@ export function menuCard(st, h, handlers = {}) {
 }
 
 /**
+ * A command the operator ran with `!` in the terminal: the command, then what
+ * it printed — folded to a few lines, errors in the error colour.
+ */
+const SHELL_LINES = 6;
+function shellCard(it, h) {
+  const block = (text, cls) => {
+    const lines = text.split('\n');
+    const pre = h('pre', { class: `shell-out${cls ? ` ${cls}` : ''}` }, lines.length > SHELL_LINES ? lines.slice(0, SHELL_LINES).join('\n') : text);
+    if (lines.length <= SHELL_LINES) return [pre];
+    const more = h('button', { type: 'button', class: 'shell-more' }, `Show all (${lines.length} lines)`);
+    more.addEventListener('click', () => {
+      const open = more.dataset.open === '1';
+      pre.textContent = open ? lines.slice(0, SHELL_LINES).join('\n') : text;
+      more.dataset.open = open ? '' : '1';
+      more.textContent = open ? `Show all (${lines.length} lines)` : 'Show less';
+    });
+    return [pre, more];
+  };
+  return h('div', { class: 'conv-shell' },
+    h('div', { class: 'shell-cmd' }, h('span', { class: 'shell-prompt', 'aria-hidden': 'true' }, '$'), h('code', {}, it.command)),
+    ...(it.output ? block(it.output) : []),
+    ...(it.error ? block(it.error, 'err') : []),
+    !it.output && !it.error ? h('span', { class: 'shell-none' }, 'no output') : null);
+}
+
+/**
  * When the session is blocked but the screen matches no card the view knows
  * (ask-fallback.js decides when): said, not hidden, with the way to answer.
  */
@@ -189,6 +222,7 @@ const itemKey = (it) => {
     case 'assistant': return `assistant:${it.clipped ? 'c' : ''}:${it.text}`;
     case 'tools': return `tools:${it.label}:${it.calls.length}:${it.files.map((f) => `${f.file}${f.added}${f.removed}`).join(',')}:${it.artifacts.map((a) => a.url || a.summary).join(',')}`;
     case 'command': return `command:${it.name}:${it.args || ''}:${it.output || ''}`;
+    case 'shell': return `shell:${it.command}:${it.output || ''}:${it.error || ''}`;
     case 'ask': return `ask:${it.id}:${it.answered ? 'a' : ''}:${JSON.stringify(it.answer || null)}`;
     default: return `${it.k}:${it.text || ''}`;
   }
@@ -208,6 +242,7 @@ export function renderConversation(el, items, h, handlers = {}) {
       case 'assistant': return h('div', { class: 'conv-assistant', dir: 'auto' }, ...renderBlocks(parseMarkdown(it.text), h, handlers),
         it.clipped ? clippedNote(h, handlers) : null);
       case 'tools': return toolsItem(it, h, i, handlers.expanded, handlers);
+      case 'shell': return shellCard(it, h);
       case 'command': return h('div', { class: 'conv-command' },
         h('code', {}, [it.name, it.args].filter(Boolean).join(' ')),
         it.output ? h('span', { class: 'muted' }, it.output) : null);

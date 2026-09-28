@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error plain JS browser module
-import { parseAskScreen, parseWorking } from '../../web/control/ask-screen.js';
+import {
+  parseAskScreen,
+  parseIdlePrompt,
+  parseWorking,
+} from '../../web/control/ask-screen.js';
 
 // Real screens from the 2026-09-26 spike (Claude Code 2.1.283), as the
 // terminal buffer holds them: a blank row between the tab row, the
@@ -231,5 +235,48 @@ describe('back on an answered question', () => {
         ? st.options.find((o) => o.n === 1)?.on
         : null,
     ).toBe(false);
+  });
+});
+
+// The input box as a live capture showed it (2026-09-28, Claude Code 2.1.x):
+// the reply, a rule, the `❯` input line, a rule, the mode footer.
+describe('parseIdlePrompt', () => {
+  const FOOT = '  ⏵⏵ auto mode on (shift+tab to cycle) · 2 agents';
+  const tail = (input: string[]) => [
+    '  Nothing needs republishing.',
+    '',
+    '✻ Sautéed for 14s · done 3:59 PM',
+    RULE,
+    ...input,
+    RULE,
+    FOOT,
+    '',
+  ];
+  it('the input box with typed text, empty, or wrapped → true', () => {
+    expect(parseIdlePrompt(tail(['❯\u00a0go on with the plan']))).toBe(true);
+    expect(parseIdlePrompt(tail(['❯ go on']))).toBe(true);
+    expect(parseIdlePrompt(tail(['❯ ']))).toBe(true);
+    expect(parseIdlePrompt(tail(['❯']))).toBe(true);
+    expect(
+      parseIdlePrompt(
+        tail(['❯ a long line that', '  wraps onto a second row']),
+      ),
+    ).toBe(true);
+  });
+  it('a numbered menu or a question card → false', () => {
+    expect(
+      parseIdlePrompt([
+        'Do you want to proceed?',
+        RULE,
+        '❯ 1. Yes',
+        '  2. No',
+        RULE,
+      ]),
+    ).toBe(false);
+    expect(parseIdlePrompt(SINGLE)).toBe(false);
+  });
+  it('plain text without the rules → false', () => {
+    expect(parseIdlePrompt(['some reply', '❯ typed', 'more'])).toBe(false);
+    expect(parseIdlePrompt([])).toBe(false);
   });
 });
