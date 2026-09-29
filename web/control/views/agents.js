@@ -39,6 +39,11 @@ function card(a, onOpen) {
 }
 
 export async function render(root, api, bus, me) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   const readOnly = Boolean(me && me.read_only);
   const list = await api.get('/api/v1/agents');
   clear(root);
@@ -109,7 +114,7 @@ export async function render(root, api, bus, me) {
   draw('');
 
   const onKey = (e) => { if (e.key === 'Escape' && openName && !document.querySelector('dialog[open]')) close(); };
-  document.addEventListener('keydown', onKey);
+  document.addEventListener('keydown', onKey, { signal: ac.signal });
   bus.addEventListener('view-unmount', () => { document.removeEventListener('keydown', onKey); document.body.classList.remove('agent-open'); }, { once: true });
 
   const wanted = nameInHash();

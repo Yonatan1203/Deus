@@ -267,6 +267,11 @@ async function openLive(api, host, session, onEnd) {
 }
 
 export async function render(root, api, bus, me) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   const readOnly = Boolean(me && me.read_only);
   const list = h('div', { class: 'claude-sessions', role: 'list' });
   const pane = h('section', { class: 'claude-pane' });
@@ -334,7 +339,7 @@ export async function render(root, api, bus, me) {
   let pagesRefresh = () => {};
   let pagesOutside = () => {}; // one document listener for the view, pointed at the open session's menu
   const onPagesOutside = (e) => pagesOutside(e.target);
-  document.addEventListener('pointerdown', onPagesOutside);
+  document.addEventListener('pointerdown', onPagesOutside, { signal: ac.signal });
   let sessions = [];
   let liveAvailable = false;
   let current = null; // { id, view }
@@ -1079,6 +1084,8 @@ export async function render(root, api, bus, me) {
   // `#/claude?artifact=<id>` (from the Artifacts tab) opens that page beside.
   const wantedArtifact = hashQuery().get('artifact');
   await loadArtifacts();
+  // Left while loading: undo what render already set up and open nothing more.
+  if (ac.signal.aborted) { closeCurrent(); artPane.dispose(); return; }
   if (wantedId) {
     const s = sessions.find((x) => x.id === wantedId);
     if (s) select(s);
@@ -1089,12 +1096,12 @@ export async function render(root, api, bus, me) {
     else toast('That artifact has no local copy to show here.', 'error');
   }
   if (wantedId || wantedArtifact) history.replaceState(null, '', '#/claude');
-  bus.addEventListener('artifact', () => loadArtifacts());
+  bus.addEventListener('artifact', () => loadArtifacts(), { signal: ac.signal });
   bus.addEventListener('csession', (e) => {
     if (e.detail && e.detail.sessions) { sessions = e.detail.sessions.map((s) => { const o = sessions.find((x) => x.id === s.id) || {}; return { ...s, last_active: o.last_active, pinned: Boolean(o.pinned) }; }); draw(); }
     else load();
-  });
-  bus.addEventListener('refresh', () => load());
+  }, { signal: ac.signal });
+  bus.addEventListener('refresh', () => load(), { signal: ac.signal });
   refreshTimer = setInterval(() => { if (!document.hidden) load(); }, 45_000);
   bus.addEventListener('view-unmount', () => { clearInterval(refreshTimer); closeCurrent(); artPane.dispose(); document.removeEventListener('pointerdown', onPagesOutside); }, { once: true });
 }

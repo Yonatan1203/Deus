@@ -68,6 +68,11 @@ function messageNode(m) {
 }
 
 export async function render(root, api, bus, me) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   clear(root);
   const readOnly = Boolean(me && me.read_only);
   const who = (me && me.assistant) || 'Amos';
@@ -313,6 +318,7 @@ export async function render(root, api, bus, me) {
   root.append(h('div', { class: 'chat-page' }, header('Chat', { eyebrow: 'Operate' }), layout));
   await importLegacy();
   await loadList();
+  if (ac.signal.aborted) return; // left while loading: nothing more to wire
   placeholder();
 
   const onChat = (e) => {
@@ -323,8 +329,8 @@ export async function render(root, api, bus, me) {
     }
   };
   const onRefresh = () => { loadList(); if (current && !ownTurn) openChat(current.id, { keepScroll: true }); };
-  bus.addEventListener('chat', onChat);
-  bus.addEventListener('refresh', onRefresh);
+  bus.addEventListener('chat', onChat, { signal: ac.signal });
+  bus.addEventListener('refresh', onRefresh, { signal: ac.signal });
   bus.addEventListener('view-unmount', () => {
     bus.removeEventListener('chat', onChat);
     bus.removeEventListener('refresh', onRefresh);

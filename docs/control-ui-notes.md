@@ -2318,3 +2318,27 @@ unchanged (showing the diff on the card is a later idea). Cache v48.
 | Unit edges | wrapped tip dropped; conversation rows stop the climb; an indented rule in a reply is not an edge; no edge within 30 rows → question only; 12 rows → 6 + "… 5 more lines" + question; older menus get no mono | as expected | PASS |
 | All control-ui suites | green | 539/539 | PASS |
 | Neutral render from the real capture, 820 and 390 px | whole dialog readable, no overflow | `artifacts/permission-card.png`, `artifacts/permission-card-phone.png`, 0 px | PASS |
+
+## Tabs stop piling up listeners (#56, 2026-09-29)
+
+Ten views (Memory, Logs, Browser, Channels, Debug, Tasks, Wardens, Agents, Chat, Claude) added
+listeners to the long-lived bus or `document` and never removed them, so every visit left one
+more set behind: a `refresh` tick or an SSE event then ran every old view's load again against
+detached DOM (the Claude tab's `load()` + `loadArtifacts()` each, plus, after leaving mid-load,
+a 45 s reload interval that never stopped). Each view now creates an AbortController before
+its first `await`, aborted on `view-unmount`, and passes its signal to those listeners where
+they already sit (a listener added with an aborted signal is never added, so leaving while a
+view loads cannot leak it). The Claude and Chat tabs also stop wiring anything more when they
+were left while loading. Existing removal code stays. Cache v49.
+Known, not changed: a view left mid-load still finishes painting into the shared view root
+(follow-up).
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Drive A: each of the 10 views × 5 visits, listeners on bus/document/window tagged by the view showing when they were added | 0 alive after leaving; intervals at baseline | 0 for 9 views; Tasks cannot render on the fixture ("runtime unavailable"), so its 0 proves nothing — see Drive C | PASS (9 views) |
+| Drive A control: same drive serving the old view files | the leak shows | 5–17 alive in 7 views; Claude +1 interval | PASS (drive detects it) |
+| Drive B (independent verification): total alive bus/document/window listeners and intervals against a baseline, so a render finishing after you leave is counted too; normal visits and one leave-during-load per view | +0 | new code: +0 for all 10, normal and mid-load, intervals at baseline; old code: +13 normal, and mid-load Agents +1, Chat +1, Claude +3 and one interval | PASS |
+| Drive C (independent verification): Tasks with `/api/v1/tasks` and `/groups` stubbed | no `task` listeners left after leaving; one load per refresh | new: 1 while on the tab, 0 after leaving, 0 after a mid-load leave, 1 load per refresh; old: 5, 5, 6, 5 | PASS |
+| One `refresh` on the Memory tab after the visits | 1 tree load | 1 (old code: 7) | PASS |
+| Live updates still work (after visiting all ten) | each view reloads on its events | Memory `refresh`/`memory`, Wardens, Debug, Channels, Browser, Chat, Claude `refresh`/`csession` reload; the Claude tab lists its sessions after memory → claude | PASS |
+| Page errors | none | none | PASS |

@@ -45,6 +45,11 @@ function row(w, api, readOnly, onChange) {
 }
 
 export async function render(root, api, bus, me) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   let list = await api.get('/api/v1/wardens');
   clear(root);
   const holder = h('div', {});
@@ -61,6 +66,6 @@ export async function render(root, api, bus, me) {
   };
   root.append(header('Wardens', { eyebrow: 'Advanced', count: list.length }), holder);
   draw();
-  bus.addEventListener('warden', (e) => apply(e.detail));
-  bus.addEventListener('refresh', async () => { list = await api.get('/api/v1/wardens'); draw(); });
+  bus.addEventListener('warden', (e) => apply(e.detail), { signal: ac.signal });
+  bus.addEventListener('refresh', async () => { list = await api.get('/api/v1/wardens'); draw(); }, { signal: ac.signal });
 }

@@ -22,6 +22,11 @@ function resultBadge(t) {
 }
 
 export async function render(root, api, bus, me) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   const readOnly = Boolean(me && me.read_only);
   const holder = h('div', {});
   const formHolder = h('div', {});
@@ -107,5 +112,5 @@ export async function render(root, api, bus, me) {
   clear(formHolder);
   if (!readOnly && byFolder.size) formHolder.append(newTaskForm());
   await draw();
-  for (const ev of ['task', 'refresh']) bus.addEventListener(ev, () => { draw().catch(() => {}); });
+  for (const ev of ['task', 'refresh']) bus.addEventListener(ev, () => { draw().catch(() => {}); }, { signal: ac.signal });
 }

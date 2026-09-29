@@ -55,6 +55,11 @@ const provenance = (by) =>
     : String(by));
 
 export async function render(root, api, bus, me) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   const readOnly = Boolean(me && me.read_only);
   const sitesEl = h('div', { class: 'wf-grid' });
   const queueEl = h('div', { class: 'list' });
@@ -362,6 +367,6 @@ export async function render(root, api, bus, me) {
       data = { ...data, jobs: e.detail.jobs };
       draw();
     }
-  });
-  bus.addEventListener('refresh', load);
+  }, { signal: ac.signal });
+  bus.addEventListener('refresh', load, { signal: ac.signal });
 }

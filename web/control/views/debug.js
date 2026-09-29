@@ -5,6 +5,11 @@ import { fmtTime, toast } from '../ui.js';
 const tile = (label, value) => h('div', { class: 'tile' }, h('span', { class: 'eyebrow' }, label), h('div', { class: 'value' }, String(value)));
 
 export async function render(root, api, bus) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   const health = h('div', { class: 'health list' });
   const counts = h('div', { class: 'tiles' });
   const events = h('div', {});
@@ -43,5 +48,5 @@ export async function render(root, api, bus) {
   clear(root);
   root.append(header('Debug', { eyebrow: 'Advanced' }), h('h2', {}, 'Health'), health, h('h2', {}, 'Counts'), counts, h('h2', {}, 'Recent events'), events, h('h2', {}, 'Trace a message'), h('div', { class: 'toolbar' }, traceInput, traceBtn), traceOut);
   await draw();
-  bus.addEventListener('refresh', () => { draw().catch(() => {}); });
+  bus.addEventListener('refresh', () => { draw().catch(() => {}); }, { signal: ac.signal });
 }

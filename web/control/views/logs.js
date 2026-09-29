@@ -19,6 +19,11 @@ function line(e) {
 }
 
 export async function render(root, api, bus, me) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   const readOnly = Boolean(me && me.read_only);
   const source = h('select', { 'aria-label': 'Source' }, h('option', { value: 'host' }, 'host process'));
   const level = h('select', { 'aria-label': 'Minimum level' }, ...['info', 'warn', 'error'].map((l) => h('option', { value: l }, l)));
@@ -76,5 +81,5 @@ export async function render(root, api, bus, me) {
     if (e.detail.dropped) out.append(h('div', { class: 'logline muted' }, `… ${e.detail.dropped} lines dropped`));
     while (out.children.length > 1200) out.removeChild(out.firstChild);
     out.scrollTop = out.scrollHeight;
-  });
+  }, { signal: ac.signal });
 }

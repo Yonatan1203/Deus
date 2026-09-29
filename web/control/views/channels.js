@@ -5,6 +5,11 @@ import { header } from '../app.js';
 import { addButton, catalogue } from '../integrations.js';
 
 export async function render(root, api, bus, me) {
+  // Ends this view's listeners on the next navigation — registered before the first
+  // await, so leaving while it loads cannot leak them (listeners added later with an
+  // already-aborted signal are never added).
+  const ac = new AbortController();
+  bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
   const readOnly = Boolean(me && me.read_only);
   const grid = h('div', { class: 'grid' });
   // A served QR survives redraws: queue/refresh events rebuild the grid while
@@ -127,8 +132,8 @@ export async function render(root, api, bus, me) {
     return panel;
   }
   await draw();
-  for (const ev of ['queue', 'refresh']) bus.addEventListener(ev, () => { draw().catch(() => {}); });
+  for (const ev of ['queue', 'refresh']) bus.addEventListener(ev, () => { draw().catch(() => {}); }, { signal: ac.signal });
   const onVisible = () => { if (!document.hidden) draw().catch(() => {}); }; // back from the Google tab
-  document.addEventListener('visibilitychange', onVisible);
+  document.addEventListener('visibilitychange', onVisible, { signal: ac.signal });
   bus.addEventListener('view-unmount', () => document.removeEventListener('visibilitychange', onVisible), { once: true });
 }
