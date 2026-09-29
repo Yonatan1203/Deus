@@ -206,6 +206,7 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 .page-head .count { font-family: var(--mono); font-size: 14px; font-weight: 400; color: var(--muted); margin-left: 8px; }
 .page-head .actions { display: flex; gap: 8px; align-items: center; }
 .view h2 { font-size: 13px; color: var(--muted); font-family: var(--mono); font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; margin: 26px 0 10px; }
+.view-slot { display: contents; }
 .view h2:first-of-type { margin-top: 4px; }
 
 /* Bottom tab bar (mobile): 4 primaries + More */
@@ -958,7 +959,7 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
   .app:has(> .view[data-view="claude"]) > #update { grid-row: 2; grid-column: 2; }
   .app:has(> .view[data-view="claude"]) > #view { grid-row: 3; grid-column: 2; }
   .view[data-view="claude"] { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding-bottom: 16px; }
-  .view[data-view="claude"] > .claude-layout { flex: 1; min-height: 0; }
+  .view[data-view="claude"] > .view-slot > .claude-layout { flex: 1; min-height: 0; }
   .claude-side { min-height: 0; overflow-y: auto; }
   /* The stage takes the pane's 1fr row even while Details (row 2) is hidden. */
   .claude-pane > .claude-stage { grid-row: 3; height: auto; min-height: 360px; }

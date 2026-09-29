@@ -1427,6 +1427,7 @@ served `sw.js`:
 | Reload with no new version | no notice | hidden | PASS |
 | Served `sw.js` changes, `registration.update()` | the bar with Reload, in the content column | text and button as specified; bar x = rail's right edge — `artifacts/update-bar.png`, `update-bar-mobile.png` (390 px) | PASS |
 | Reload | new cache, old cache gone, bar hidden | `deus-control-v99-drive` present, v25 gone, hidden | PASS |
+| Independent drive with realistic stubs (System paints a real page): fast A→B→C, same-tab re-route, Claude/Chat/Agents left mid-load at 390 px, a slow tab that stays current | one slot, next page intact, body classes clear; the current tab still paints and still shows its own late error | all as expected; element boxes identical new vs old for 7 tabs × 2 widths; old CSS with new JS drops the Claude layout to 313 px (the selector change is needed) | PASS |
 | Page errors | none | none | PASS |
 
 Fixture rule, again: run any fixture with `CONTROL_UI_TMUX_SOCKET=deus-dash-fixture`
@@ -2341,4 +2342,25 @@ Known, not changed: a view left mid-load still finishes painting into the shared
 | Drive C (independent verification): Tasks with `/api/v1/tasks` and `/groups` stubbed | no `task` listeners left after leaving; one load per refresh | new: 1 while on the tab, 0 after leaving, 0 after a mid-load leave, 1 load per refresh; old: 5, 5, 6, 5 | PASS |
 | One `refresh` on the Memory tab after the visits | 1 tree load | 1 (old code: 7) | PASS |
 | Live updates still work (after visiting all ten) | each view reloads on its events | Memory `refresh`/`memory`, Wardens, Debug, Channels, Browser, Chat, Claude `refresh`/`csession` reload; the Claude tab lists its sessions after memory → claude | PASS |
+| Independent drive with realistic stubs (System paints a real page): fast A→B→C, same-tab re-route, Claude/Chat/Agents left mid-load at 390 px, a slow tab that stays current | one slot, next page intact, body classes clear; the current tab still paints and still shows its own late error | all as expected; element boxes identical new vs old for 7 tabs × 2 widths; old CSS with new JS drops the Claude layout to 313 px (the selector change is needed) | PASS |
+| Page errors | none | none | PASS |
+
+## A tab left while loading no longer paints over the next one (#63, 2026-09-29)
+
+Leaving a tab before its first request answered let that tab finish later into the shared view
+root: its page (or its error, which first cleared the root) landed on top of the tab now shown,
+and a late finish also moved focus. `route()` now gives every visit its own `.view-slot`
+(`display: contents`, so each view's flex/grid layout is unchanged) and ignores focus and error
+painting from any visit that is no longer current. A late finish writes into its detached slot,
+which nothing shows. The one selector that named a view's element as a direct child of `.view`
+(the Claude layout's full-height rule) now goes through the slot. Cache v50.
+Not covered: a late render can still touch global state it owns (for example a body class or a
+`document` listener added after `view-unmount` fired); the #56 abort signals cover the listeners.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Drive: 12 tabs × {late success, late 500}, leave after 150 ms for System (itself an error page under the empty stubs), API answers after 1.5 s | System's page exactly as a clean visit (text, one slot, body classes) | new: 24/24 clean; old code (control): 12/24 leaked text (the late error replaced System's page) and several more late finishes took focus | PASS |
+| Focus on clean visits | same as before | identical new vs old (Logs focuses the view; tabs still loading do not) | PASS |
+| Layout: 13 tabs at 1280 and 390, new vs old | unchanged | 18 identical; 8 differ by 1–10 px (focus-ring edge, status dot, log clock); Claude layout `flex-grow: 1`, height 775 px in both | PASS |
+| Independent drive with realistic stubs (System paints a real page): fast A→B→C, same-tab re-route, Claude/Chat/Agents left mid-load at 390 px, a slow tab that stays current | one slot, next page intact, body classes clear; the current tab still paints and still shows its own late error | all as expected; element boxes identical new vs old for 7 tabs × 2 widths; old CSS with new JS drops the Claude layout to 313 px (the selector change is needed) | PASS |
 | Page errors | none | none | PASS |

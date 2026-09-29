@@ -241,6 +241,8 @@ function drawNav() {
     h('span', { class: 'eyebrow' }, 'Advanced'), ...inGroup('advanced').map(link));
 }
 
+let navSeq = 0;
+
 async function route() {
   drawNav();
   const more = $('more');
@@ -249,14 +251,20 @@ async function route() {
   const root = $('view');
   root.dataset.view = currentView();
   clear(root);
-  root.append(h('p', { class: 'muted' }, 'Loading…'));
+  // Each visit renders into its own slot (display: contents, so the view's layout is unchanged).
+  // A view left while still loading finishes into its detached slot, never into the next tab's page.
+  const seq = ++navSeq;
+  const slot = h('div', { class: 'view-slot' });
+  root.append(slot);
+  slot.append(h('p', { class: 'muted' }, 'Loading…'));
   try {
-    await VIEWS[currentView()].render(root, api, bus, me);
-    root.focus({ preventScroll: true });
+    await VIEWS[currentView()].render(slot, api, bus, me);
+    if (seq === navSeq) root.focus({ preventScroll: true });
   } catch (err) {
+    if (seq !== navSeq) return;
     if (err.message !== 'unauthorized') {
-      clear(root);
-      root.append(h('p', { class: 'error' }, err.message));
+      clear(slot);
+      slot.append(h('p', { class: 'error' }, err.message));
     }
   }
 }
