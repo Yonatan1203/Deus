@@ -706,6 +706,8 @@ table.kv input { min-height: 36px; }
 .conv-command { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 13px; }
 .conv-command code { color: var(--accent-text); }
 .conv-command .muted, .conv-note { color: var(--muted); font-size: 13px; }
+.conv-command-link { font-size: 13px; color: var(--accent-text); }
+.conv-slash-alias { color: var(--muted); font-weight: 400; }
 .conv-note { text-align: center; }
 .conv-ask { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); border-radius: 10px; }
 .conv-ask.answered { border-color: var(--line); background: var(--surface); color: var(--muted); }

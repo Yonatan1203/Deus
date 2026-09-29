@@ -28,6 +28,10 @@ const number = (n) => {
 
 export const pickKeys = (n) => [number(n)];
 export const nextKeys = () => [RIGHT];
+const UP = '\x1b[A';
+const DOWN = '\x1b[B';
+/** Menus without numbers: move the cursor from row `selected` to row `n`. */
+export const arrowKeys = (selected, n) => Array(Math.abs(n - selected)).fill(n < selected ? UP : DOWN);
 /**
  * The most ← presses a jump may take: headroom over the six tabs the screen
  * parser reads (TABS_MAX in ask-screen.js), so a longer set still fails

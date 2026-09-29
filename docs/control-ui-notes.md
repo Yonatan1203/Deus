@@ -2256,3 +2256,42 @@ listeners. Filter logic: `web/control/artifact-filter.js`. Cache v46.
 | Listener count after 6 visits + 1 leave-during-load | one document keydown, one of each bus listener | 1 / 1 / 1 / 1 | PASS |
 | Phone 390 px | no horizontal overflow | 0 px | PASS |
 | Neutral renders | fixture titles only | `artifacts/artifacts-search.png`, `artifacts/artifacts-search-phone.png` | PASS |
+
+## `/rc` and other built-in commands from the Claude tab (#57, 2026-09-29)
+
+The `/` menu in the Claude tab now offers Claude Code's `/remote-control` (alias `/rc`),
+`/rename` (`/name`), `/usage` (`/cost`, `/stats`) and `/status` beside the five it had.
+Matching puts an exact name or alias first, then prefixes, then substrings, so `/rc` +
+Enter picks `/remote-control` and keeps `/rc` in the box (before, it picked the first
+command whose name merely contained "rc"). A real project or personal command with the
+same name, or with an alias's name, still wins.
+
+Built-in commands such as `/remote-control` are written to the transcript as `system`
+rows (`local_command`, then `bridge_status` with the session's claude.ai link). The
+conversation view now reads them: the command shows with "Remote Control is on · Open on
+claude.ai ↗" (the link is kept only when it is a `https://claude.ai/code/session_…` URL),
+and "Remote Control disconnected." when it is switched off.
+
+Running `/rc` again while connected opens a menu without numbers (Disconnect this session /
+Show QR code / Continue). `parseMenuScreen` reads such menus when the screen has no
+numbered rows at all, and the card answers them with arrow keys, one at a time, reading the
+screen before each: nothing is sent once the menu is gone, and Enter is sent only after the
+screen shows the cursor on the chosen row. An arrow key that reaches the idle prompt would
+recall an earlier message from its history (and the next composer send would submit it with
+`/rc` appended — found by the verification pass), so if the menu closes right after an Up key,
+one Down puts the empty draft back. "Show QR code" is drawn disabled ("Only in
+the terminal"), since the QR screen is not something the card can read. Cache v47.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Unit: composer, commands, conversation, menu screen, ask screen, ask keys, render | alias ordering and pick; built-ins + aliases, real commands win; system rows in captured order, link only for claude.ai session URLs; arrow menu read, negatives null; arrowKeys; QR disabled | control-ui suites 534/534 | PASS |
+| Drive, throwaway session (removed after): `/rc` from the composer | first row `/remote-control /rc`; box keeps `/rc`; conversation shows the link | as expected | PASS |
+| Drive: `/rc` again | menu card with 3 options, QR disabled, no "can't show yet" banner | as expected | PASS |
+| Drive: Esc in the terminal at the moment of the click, 3 rounds | not confirmed, no Enter, terminal input still empty | `arrows, not confirmed`, input `❯ ` each round | PASS |
+| Drive: Disconnect | `arrows then Enter`; "Remote Control disconnected." shown; card gone | as expected | PASS |
+| Neutral render | example link and menu only | `artifacts/rc-command.png` | PASS |
+
+First version of the arrow path sent its keys without re-reading the screen: when the menu
+had closed, the Up keys recalled history into the idle prompt ("seen once" in the first
+drive; reproduced by the verification pass). Fixed as above; Continue and Cancel both leave
+the input empty.

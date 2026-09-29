@@ -67,6 +67,78 @@ describe('buildConversation', () => {
     expect(c.effort).toBe('high');
   });
 
+  it('shows /remote-control from its system rows, with the session link (#57)', () => {
+    const sys = (subtype: string, content: string) => ({
+      type: 'system',
+      subtype,
+      content,
+    });
+    const cmd =
+      '<command-name>/remote-control</command-name>\n            <command-message>remote-control</command-message>\n            <command-args></command-args>';
+    const link = 'https://claude.ai/code/session_0000TESTfixture0000';
+    const c = buildConversation([
+      sys('local_command', cmd),
+      sys('local_command', '<local-command-stdout></local-command-stdout>'),
+      sys(
+        'bridge_status',
+        `/remote-control is active · Continue here, on your phone, or at ${link}`,
+      ),
+      sys('local_command', cmd),
+      sys(
+        'local_command',
+        '<local-command-stdout>Remote Control disconnected.</local-command-stdout>',
+      ),
+      sys('turn_duration', 'ignored'),
+    ]);
+    expect(c.items).toEqual([
+      {
+        k: 'command',
+        name: '/remote-control',
+        args: '',
+        output: `/remote-control is active · Continue here, on your phone, or at ${link}`,
+        link,
+      },
+      {
+        k: 'command',
+        name: '/remote-control',
+        args: '',
+        output: 'Remote Control disconnected.',
+      },
+    ]);
+  });
+
+  it('keeps a bridge_status link only when it is a claude.ai session URL', () => {
+    const run = (status: string) =>
+      buildConversation([
+        {
+          type: 'system',
+          subtype: 'local_command',
+          content: '<command-name>/rc</command-name>',
+        },
+        { type: 'system', subtype: 'bridge_status', content: status },
+      ]).items[0] as { link?: string };
+    expect(
+      run('active at https://evil.example/code/session_0000TESTfixture').link,
+    ).toBeUndefined();
+    expect(
+      run('active at https://claude.ai/code/session_0000TESTfixture0000"><b>')
+        .link,
+    ).toBeUndefined();
+    expect(
+      run('active at https://claude.ai/code/session_0000TESTfixture0000').link,
+    ).toBe('https://claude.ai/code/session_0000TESTfixture0000');
+    // no command before it → a note, never attached to something else
+    expect(
+      buildConversation([
+        {
+          type: 'system',
+          subtype: 'bridge_status',
+          content: 'Remote Control on',
+        },
+      ]).items,
+    ).toEqual([{ k: 'note', text: 'Remote Control on' }]);
+  });
+
   it('turns a `!` command and its result row into one shell item', () => {
     const key = 'sk-ant-api03-' + 'B'.repeat(90);
     const c = buildConversation([

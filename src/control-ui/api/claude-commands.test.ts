@@ -48,6 +48,25 @@ describe('readSlashCommands', () => {
     );
   });
 
+  it('lists remote-control, rename, usage and status with their aliases (#57)', () => {
+    const repo = tree({
+      '.claude/skills/status/SKILL.md': skill('status', 'Project status'),
+      '.claude/commands/name.md': 'A project command called name.',
+    });
+    const list = readSlashCommands(repo, tree({}), { fresh: true });
+    const by = Object.fromEntries(list.map((c) => [c.name, c]));
+    expect(by['remote-control']).toMatchObject({
+      source: 'built-in',
+      aliases: ['rc'],
+    });
+    expect(by.usage.aliases).toEqual(['cost', 'stats']);
+    // a real command wins over a built-in of the same name…
+    expect(by.status.source).toBe('project');
+    // …and over another built-in's alias
+    expect(by.rename.aliases).toBeUndefined();
+    expect(by.name.source).toBe('project');
+  });
+
   it('skips non-invocable skills, bad names, big files and outside symlinks', () => {
     const outside = tree({ 'x/SKILL.md': skill('escape', 'outside') });
     const repo = tree({

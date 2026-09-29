@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   parseAskScreen,
   parseIdlePrompt,
+  parseMenuScreen,
   parseWorking,
 } from '../../web/control/ask-screen.js';
 
@@ -278,5 +279,15 @@ describe('parseIdlePrompt', () => {
   it('plain text without the rules → false', () => {
     expect(parseIdlePrompt(['some reply', '❯ typed', 'more'])).toBe(false);
     expect(parseIdlePrompt([])).toBe(false);
+  });
+});
+
+describe('parseMenuScreen leaves question, review and idle screens alone (#57)', () => {
+  it('returns null for each; the review screen is claimed by parseAskScreen first', () => {
+    for (const screen of [SINGLE, MULTI, PROMPT])
+      expect(parseMenuScreen(screen)).toBeNull();
+    // claude.js tries parseAskScreen before parseMenuScreen
+    expect(parseAskScreen(REVIEW)?.kind).toBe('review');
+    expect(parseMenuScreen(REVIEW)?.arrows).toBeUndefined();
   });
 });

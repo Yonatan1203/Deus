@@ -143,7 +143,7 @@ export function parseMenuScreen(lines) {
   // 2a. the numbered rows; the bottommost is the anchor
   const numbered = [];
   buf.forEach((l, i) => { const m = MENU_NUM_RE.exec(l); if (m) numbered.push({ i, m }); });
-  if (numbered.length < 2) return null;
+  if (numbered.length < 2) return numbered.length ? null : parseArrowMenu(buf);
   const anchor = numbered[numbered.length - 1];
   const numberCol = anchor.m[1].length + (anchor.m[2] ? 2 : 0);
   const leading = (l) => l.length - l.trimStart().length;
@@ -178,8 +178,12 @@ export function parseMenuScreen(lines) {
     return o;
   });
   const selected = Number(run.find((r) => r.m[2]).m[3]);
-  // 4. the prompt: skip blank rows above the run, then collect until a rule,
-  // a blank row or a box border, at most PROMPT_MAX rows, in reading order
+  return { kind: 'menu', prompt: menuPrompt(buf, top), options, selected, esc };
+}
+
+// 4. the prompt: skip blank rows above the run, then collect until a rule,
+// a blank row or a box border, at most PROMPT_MAX rows, in reading order
+function menuPrompt(buf, top) {
   let i = top - 1;
   while (i >= 0 && !buf[i].trim()) i--;
   const prompt = [];
@@ -189,7 +193,45 @@ export function parseMenuScreen(lines) {
     prompt.unshift(clip(l));
     i--;
   }
-  return { kind: 'menu', prompt, options, selected, esc };
+  return prompt;
+}
+
+// Menus without numbers (`/remote-control` run again, 2.1.284): a run of rows
+// at one text column, the cursor row starting `❯ ` at that column minus two,
+// an "Enter to select" footer below. Answered with arrow keys (`arrows`).
+// Reached only when the screen has no numbered row at all.
+const ARROW_FOOT_RE = /Enter to select/i;
+const ARROW_CURSOR_RE = /^(\s*)❯ (\S.*)$/;
+const ARROW_MAX = 9;
+function parseArrowMenu(buf) {
+  let foot = -1;
+  for (let i = buf.length - 1; i >= 0; i--) if (ARROW_FOOT_RE.test(buf[i])) { foot = i; break; }
+  if (foot < 0) return null;
+  let last = foot - 1;
+  while (last >= 0 && !buf[last].trim()) last--;
+  let top = last;
+  while (top > 0 && buf[top - 1].trim() && !MENU_RULE_RE.test(buf[top - 1]) && !MENU_BORDER_RE.test(buf[top - 1])) top--;
+  const run = buf.slice(top, last + 1);
+  if (run.length < 2 || run.length > ARROW_MAX) return null;
+  const cursors = run.map((l, k) => [ARROW_CURSOR_RE.exec(l), k]).filter(([m]) => m);
+  if (cursors.length !== 1) return null;
+  const [cm, ck] = cursors[0];
+  const col = cm[1].length + 2;
+  const texts = run.map((l, k) => {
+    if (k === ck) return cm[2];
+    const lead = l.length - l.trimStart().length;
+    return lead === col ? l.trim() : null;
+  });
+  if (texts.some((t) => t === null)) return null;
+  let esc = false;
+  for (let i = foot; i < buf.length; i++) if (MENU_ESC_RE.test(buf[i])) esc = true;
+  const options = texts.map((t, k) => {
+    const [label, ...rest] = t.trim().split(/\s{2,}/);
+    const o = { n: k + 1, label: clip(label) };
+    if (rest.length) o.hint = clip(rest.join(' '));
+    return o;
+  });
+  return { kind: 'menu', prompt: menuPrompt(buf, top), options, selected: ck + 1, esc, arrows: true };
 }
 
 // ---- the reply as it is written, and the running tool (quality pass B).

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error plain JS browser module
 import {
-  backKeys,
-  nextKeys,
   PASTE_END,
   PASTE_START,
+  arrowKeys,
+  backKeys,
+  nextKeys,
   pickKeys,
   submitKeys,
   textKeys,
@@ -50,5 +51,13 @@ describe('ask keys', () => {
     expect(() => pickKeys(0)).toThrow('bad pick');
     expect(() => pickKeys(10)).toThrow('bad pick');
     expect(() => textKeys(0, 'x')).toThrow('bad pick');
+  });
+});
+
+describe('arrowKeys (#57)', () => {
+  it('moves the cursor from the selected row to the picked one', () => {
+    expect(arrowKeys(3, 1)).toEqual(['\x1b[A', '\x1b[A']);
+    expect(arrowKeys(1, 3)).toEqual(['\x1b[B', '\x1b[B']);
+    expect(arrowKeys(2, 2)).toEqual([]);
   });
 });

@@ -18,8 +18,28 @@ export function filterCommands(commands, value, rank = {}) {
   const m = /^\/(\S*)$/.exec(value);
   if (!m || !commands || !commands.length) return null;
   const q = m[1].toLowerCase();
-  const pool = q ? commands : [...commands].sort((a, b) => (rank[a.source] ?? 9) - (rank[b.source] ?? 9));
-  return [...pool.filter((c) => c.name.startsWith(q)), ...pool.filter((c) => !c.name.startsWith(q) && c.name.includes(q))].slice(0, 8);
+  if (!q) return [...commands].sort((a, b) => (rank[a.source] ?? 9) - (rank[b.source] ?? 9)).slice(0, 8);
+  // Exact name or alias, then prefix, then contains; each command once, at
+  // its best tier. `alias` is set when only an alias earned that tier, so a
+  // pick keeps what was typed (`/rc`, not `/remote-control`).
+  const tiers = [[], [], []];
+  for (const c of commands) {
+    const aliases = Array.isArray(c.aliases) ? c.aliases : [];
+    const tests = [(n) => n === q, (n) => n.startsWith(q), (n) => n.includes(q)];
+    for (let t = 0; t < tests.length; t++) {
+      if (tests[t](c.name)) { tiers[t].push(c); break; }
+      const a = aliases.find(tests[t]);
+      if (a) { tiers[t].push({ ...c, alias: a }); break; }
+    }
+  }
+  return tiers.flat().slice(0, 8);
+}
+
+/** The command a `/name` (or `/alias`) at the start of the input refers to. */
+export function commandFor(commands, value) {
+  const t = /^\/(\S+)(\s|$)/.exec(value);
+  if (!t || !commands) return undefined;
+  return commands.find((c) => c.name === t[1] || (Array.isArray(c.aliases) && c.aliases.includes(t[1])));
 }
 
 /** A small pop-up picker: a pill button and its menu. */
@@ -92,7 +112,7 @@ export function createComposer(o) {
   function drawSlash() {
     slash.replaceChildren(...items.map((c, i) => {
       const b = h('button', { type: 'button', role: 'option', 'aria-selected': String(i === sel), class: i === sel ? 'on' : '' },
-        h('code', {}, `/${c.name}`), h('span', {}, c.description));
+        h('code', {}, `/${c.name}`, c.alias ? h('span', { class: 'conv-slash-alias' }, ` /${c.alias}`) : null), h('span', {}, c.description));
       b.addEventListener('mousedown', (e) => e.preventDefault());
       b.addEventListener('click', () => pick(c));
       return b;
@@ -100,8 +120,7 @@ export function createComposer(o) {
     slash.hidden = items.length === 0;
   }
   function updateToken() {
-    const t = /^\/(\S+)(\s|$)/.exec(input.value);
-    const cmd = t && (o.commands() || []).find((c) => c.name === t[1]);
+    const cmd = commandFor(o.commands(), input.value);
     token.hidden = !cmd;
     if (cmd) token.replaceChildren(h('code', {}, `/${cmd.name}`), h('span', {}, cmd.description));
   }
@@ -112,7 +131,7 @@ export function createComposer(o) {
     updateToken();
   }
   function pick(c) {
-    input.value = `/${c.name} `;
+    input.value = `/${c.alias || c.name} `;
     items = [];
     drawSlash();
     updateToken();

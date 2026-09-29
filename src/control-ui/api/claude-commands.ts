@@ -11,6 +11,8 @@ export interface SlashCommand {
   name: string;
   description: string;
   source: 'built-in' | 'project' | 'personal' | 'amos';
+  /** Built-ins only: other names Claude Code accepts (`/rc`). */
+  aliases?: string[];
 }
 
 const NAME_RE = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
@@ -19,13 +21,21 @@ const DESC_MAX = 160;
 const LIST_MAX = 300;
 const TTL_MS = 60_000;
 
-// Confirmed present in Claude Code 2.1.283.
-const BUILT_INS: [string, string][] = [
+// Confirmed present in Claude Code 2.1.284, aliases included.
+const BUILT_INS: [string, string, string[]?][] = [
   ['model', 'Switch the model for this session'],
   ['effort', 'Set how hard Claude thinks: low, medium, high, xhigh or max'],
   ['compact', 'Summarise the conversation so far to free up context'],
   ['clear', 'Start a fresh conversation in this session'],
   ['context', 'Show how much of the context window is used'],
+  [
+    'remote-control',
+    'Continue this session on your phone or at claude.ai/code; run again to disconnect',
+    ['rc'],
+  ],
+  ['rename', 'Rename this conversation', ['name']],
+  ['usage', 'Show cost, plan usage and activity', ['cost', 'stats']],
+  ['status', 'Show version, model, account and connection status'],
 ];
 
 function safeReal(p: string): string | null {
@@ -138,9 +148,17 @@ export function readSlashCommands(
   const out = new Map<string, SlashCommand>();
   scan(repoRoot, 'project', out);
   scan(homeDir, 'personal', out);
-  for (const [name, description] of BUILT_INS)
-    if (!out.has(name))
-      out.set(name, { name, description, source: 'built-in' });
+  for (const [name, description, aliases] of BUILT_INS) {
+    if (out.has(name)) continue;
+    // A real command with the alias's name keeps it.
+    const own = (aliases ?? []).filter((a) => !out.has(a));
+    out.set(name, {
+      name,
+      description,
+      source: 'built-in',
+      ...(own.length ? { aliases: own } : {}),
+    });
+  }
   const list = [...out.values()]
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, LIST_MAX);

@@ -130,10 +130,16 @@ export function menuCard(st, h, handlers = {}) {
   // option reads as the decline; the terminal's cursor is a styling cue only
   // (clicking any option is equally valid), never a selection announced to AT.
   const kindOf = (o, i) => (/^no\b/i.test(o.label) ? 'decline' : i === 0 ? 'primary' : 'neutral');
+  // A QR code is drawn in the terminal and leads to a screen this card does
+  // not read, so that row is shown but only the terminal can take it.
+  const terminalOnly = (o) => /QR code/i.test(o.label);
   const opts = st.options.map((o, i) => h('button', {
     type: 'button', class: `conv-opt menu-opt menu-${kindOf(o, i)}`, 'data-n': String(o.n), 'data-cursor': o.n === st.selected ? 'true' : null, dir: 'auto',
+    disabled: terminalOnly(o),
     onclick: () => handlers.pick && handlers.pick(o.n),
-  }, h('span', { class: 'menu-label' }, o.label), o.hint && !KEY_HINT_RE.test(o.hint) ? h('span', { class: 'muted menu-hint' }, o.hint) : null));
+  }, h('span', { class: 'menu-label' }, o.label),
+  terminalOnly(o) ? h('span', { class: 'muted menu-hint' }, 'Only in the terminal')
+    : o.hint && !KEY_HINT_RE.test(o.hint) ? h('span', { class: 'muted menu-hint' }, o.hint) : null));
   // Esc is a second way to decline; when a "No…" option is on the card it
   // would only duplicate it, so Cancel shows on menus without one.
   const hasDecline = st.options.some((o, i) => kindOf(o, i) === 'decline');
@@ -221,7 +227,7 @@ const itemKey = (it) => {
     case 'user': return `user:${it.queued ? 'q' : ''}${it.clipped ? 'c' : ''}:${it.text}`;
     case 'assistant': return `assistant:${it.clipped ? 'c' : ''}:${it.text}`;
     case 'tools': return `tools:${it.label}:${it.calls.length}:${it.files.map((f) => `${f.file}${f.added}${f.removed}`).join(',')}:${it.artifacts.map((a) => a.url || a.summary).join(',')}`;
-    case 'command': return `command:${it.name}:${it.args || ''}:${it.output || ''}`;
+    case 'command': return `command:${it.name}:${it.args || ''}:${it.output || ''}:${it.link || ''}`;
     case 'shell': return `shell:${it.command}:${it.output || ''}:${it.error || ''}`;
     case 'ask': return `ask:${it.id}:${it.answered ? 'a' : ''}:${JSON.stringify(it.answer || null)}`;
     default: return `${it.k}:${it.text || ''}`;
@@ -245,7 +251,11 @@ export function renderConversation(el, items, h, handlers = {}) {
       case 'shell': return shellCard(it, h);
       case 'command': return h('div', { class: 'conv-command' },
         h('code', {}, [it.name, it.args].filter(Boolean).join(' ')),
-        it.output ? h('span', { class: 'muted' }, it.output) : null);
+        // `/remote-control`: the server only sets `link` to a claude.ai session URL.
+        it.link
+          ? [h('span', { class: 'muted' }, 'Remote Control is on'),
+            h('a', { href: it.link, target: '_blank', rel: 'noopener noreferrer', class: 'conv-command-link' }, 'Open on claude.ai ↗')]
+          : it.output ? h('span', { class: 'muted' }, it.output) : null);
       case 'note': return h('div', { class: 'conv-note' }, it.text);
       case 'ask': return askCard(it, h, handlers);
       default: return null;

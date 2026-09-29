@@ -51,7 +51,14 @@ export type ConvItem = (
       answered: boolean;
       answer?: string;
     }
-  | { k: 'command'; name: string; args: string; output?: string }
+  | {
+      k: 'command';
+      name: string;
+      args: string;
+      output?: string;
+      /** `/remote-control`: the claude.ai page for this session. */
+      link?: string;
+    }
   /** A command the operator ran with `!` in the terminal, and what it printed. */
   | { k: 'shell'; command: string; output?: string; error?: string }
   | { k: 'note'; text: string }
@@ -295,6 +302,9 @@ export function parseAskAnswer(text: string): string {
   return clip(found.join(' · '), 400);
 }
 
+const REMOTE_SESSION_RE =
+  /^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]{8,80}$/;
+
 export function buildConversation(
   rows: Record<string, unknown>[],
   limit = DEFAULT_LIMIT,
@@ -370,6 +380,19 @@ export function buildConversation(
     const m = clipMarked(unwrapPastes(s), TEXT_MAX);
     items.push(marked({ k: 'user' as const, text: m.text }, m.clipped));
   };
+  const bridgeStatus = (raw: string) => {
+    const text = clip(raw.trim(), OUTPUT_MAX);
+    if (!text) return;
+    const prev = items[items.length - 1];
+    // The command row comes first, then an empty stdout row, then this one.
+    if (prev && prev.k === 'command' && !prev.output) {
+      prev.output = text;
+      const url = (raw.match(/https:\/\/\S+/g) ?? []).find((u) =>
+        REMOTE_SESSION_RE.test(u),
+      );
+      if (url) prev.link = url;
+    } else items.push({ k: 'note', text });
+  };
 
   // A message typed while Claude works is a queue-operation row: `enqueue`,
   // then either a user row with the same text (delivered as the next turn —
@@ -430,6 +453,15 @@ export function buildConversation(
     if (e.isSidechain === true || e.isMeta === true) continue;
     const msg = e.message as { content?: unknown; model?: unknown } | undefined;
     const content = msg?.content;
+    // Built-in commands such as `/remote-control` are written as system rows:
+    // `local_command` carries the same markup as a user-row command, and
+    // `bridge_status` says Remote Control is on, with the session's link.
+    if (e.type === 'system') {
+      if (typeof e.content !== 'string') continue;
+      if (e.subtype === 'local_command') userText(e.content);
+      else if (e.subtype === 'bridge_status') bridgeStatus(e.content);
+      continue;
+    }
     if (e.type === 'user') {
       if (typeof content === 'string') {
         // A queued message delivered as the next turn (with or without a

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   dayLabel,
   daySeparators,
+  menuCard,
   renderConversation,
 } from '../../web/control/conversation.js';
 
@@ -216,5 +217,63 @@ describe('append instead of redraw', () => {
     expect([el.replaced, el.appended]).toEqual([4, 1]); // a new day: redraw, not append
     renderConversation(el, [{ k: 'user', text: 'a' }], h, { now }); // no state: always a redraw
     expect(el.replaced).toBe(5);
+  });
+});
+
+describe('/remote-control in the conversation (#57)', () => {
+  const el = {
+    last: [] as unknown[],
+    replaceChildren(...nodes: unknown[]) {
+      this.last = nodes;
+    },
+  };
+  it('shows the claude.ai link of a command, and the plain output without one', () => {
+    const link = 'https://claude.ai/code/session_0000TESTfixture0000';
+    renderConversation(
+      el,
+      [
+        { k: 'command', name: '/remote-control', args: '', output: 'x', link },
+        {
+          k: 'command',
+          name: '/remote-control',
+          args: '',
+          output: 'Remote Control disconnected.',
+        },
+      ],
+      h,
+      {},
+    );
+    const a = find(el.last[0], (n) => n.tag === 'a');
+    expect(a?.attrs.href).toBe(link);
+    expect(a?.attrs.rel).toBe('noopener noreferrer');
+    expect(text(el.last[0])).toContain('Remote Control is on');
+    expect(find(el.last[1], (n) => n.tag === 'a')).toBeNull();
+    expect(text(el.last[1])).toContain('Remote Control disconnected.');
+  });
+  it('draws the QR row of the Remote Control menu disabled, the others live', () => {
+    const picks: number[] = [];
+    const card = menuCard(
+      {
+        kind: 'menu',
+        prompt: ['This session is available…'],
+        options: [
+          { n: 1, label: 'Disconnect this session' },
+          { n: 2, label: 'Show QR code', hint: 'Scan with your phone' },
+          { n: 3, label: 'Continue' },
+        ],
+        selected: 3,
+        esc: true,
+        arrows: true,
+      },
+      h,
+      { pick: (n: number) => picks.push(n) },
+    );
+    const btn = (n: string) =>
+      find(card, (x) => x.tag === 'button' && x.attrs['data-n'] === n);
+    expect(btn('2')?.attrs.disabled).toBe(true);
+    expect(text(btn('2'))).toContain('Only in the terminal');
+    expect(btn('1')?.attrs.disabled).toBe(false);
+    (btn('1')?.attrs.onclick as () => void)();
+    expect(picks).toEqual([1]);
   });
 });

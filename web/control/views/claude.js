@@ -6,7 +6,7 @@ import { confirmTyped, fmtTime, limitToast, serverError, toast } from '../ui.js'
 import { createInputQueue } from '../input-queue.js';
 import { parseAskScreen, parseIdlePrompt, parseLiveReply, parseMenuScreen, parseRunningTool, parseWorking } from '../ask-screen.js';
 import { createMissCounter } from '../ask-fallback.js';
-import { BACK_MAX, backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
+import { BACK_MAX, arrowKeys, backKeys, nextKeys, pickKeys, submitKeys, textKeys } from '../ask-keys.js';
 import { fallbackNotice, menuCard, renderConversation } from '../conversation.js';
 import { parseMarkdown, renderBlocks } from '../markdown.js';
 import { autosizeTextarea, createComposer } from '../composer.js';
@@ -853,14 +853,41 @@ export async function render(root, api, bus, me) {
       if (disposed || askSending || !view()) return;
       askSending = true; askEl.dataset.sending = 'true';
       try {
-        view().send(String(n), { focus: false });
-        await later(350);
+        const arrows = Boolean(lastMenu.arrows);
+        if (arrows) {
+          // No numbers to type: walk the cursor there one key at a time,
+          // reading the screen before every key. If the menu has gone (closed
+          // in the terminal meanwhile) nothing is sent: an arrow key at the
+          // idle prompt would recall an earlier message from its history.
+          let lastKey = '';
+          for (let step = 0; step <= lastMenu.options.length; step++) {
+            const now = view() ? parseMenuScreen(view().screenLines()) : null;
+            if (!sameMenu(now)) {
+              // Closed between the read and the key: an Up may have reached
+              // the idle prompt and recalled history; one Down puts the empty
+              // draft back (and does nothing at a prompt already on it).
+              if (lastKey === UP_KEY && view()) view().send(DOWN_KEY, { focus: false });
+              break;
+            }
+            if (now.selected === n) break;
+            lastKey = arrowKeys(now.selected, n)[0];
+            view().send(lastKey, { focus: false });
+            await later(150);
+          }
+          await later(100);
+        } else {
+          view().send(String(n), { focus: false });
+          await later(350);
+        }
         // `lastMenu.options[0]` exists: a pick comes from a drawn button.
+        // Enter only once the same menu shows the cursor on the pick — never
+        // on a cursor that could not be confirmed (a wrap, an overshoot, a
+        // menu closed in the terminal meanwhile).
         const again = view() ? parseMenuScreen(view().screenLines()) : null;
-        if (again && again.selected === n && again.options.length === lastMenu.options.length && again.options[0].label === lastMenu.options[0].label) {
+        if (sameMenu(again) && again.selected === n) {
           view().send('\r', { focus: false });
-          menuSend = 'digit then Enter';
-        } else menuSend = 'digit alone';
+          menuSend = arrows ? 'arrows then Enter' : 'digit then Enter';
+        } else menuSend = arrows ? 'arrows, not confirmed' : 'digit alone';
         askEl.dataset.send = menuSend; // observed, for the record (drive reads it)
       } finally { askSending = false; delete askEl.dataset.sending; }
       await later(250);
@@ -868,6 +895,10 @@ export async function render(root, api, bus, me) {
     }
     let lastMenu = null;
     let menuSend = '';
+    const [UP_KEY] = arrowKeys(2, 1);
+    const [DOWN_KEY] = arrowKeys(1, 2);
+    // The menu the card was drawn from is still the one on screen.
+    const sameMenu = (st) => Boolean(st && lastMenu && st.options.length === lastMenu.options.length && st.options[0].label === lastMenu.options[0].label && Boolean(st.arrows) === Boolean(lastMenu.arrows));
     function drawMenu(st) {
       lastMenu = st;
       askEl.dataset.kind = 'menu';

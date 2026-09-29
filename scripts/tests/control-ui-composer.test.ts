@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 // The pure helpers of a browser module; the DOM parts are driven in a browser.
 // @ts-expect-error — plain JS module without type declarations
-import { cleanInput, filterCommands } from '../../web/control/composer.js';
+import {
+  cleanInput,
+  commandFor,
+  filterCommands,
+} from '../../web/control/composer.js';
 
 const cmds = [
   { name: 'add-slack', description: '', source: 'project' },
@@ -31,5 +35,55 @@ describe('composer helpers', () => {
     expect(
       filterCommands(cmds, '/', rank).map((c: { name: string }) => c.name),
     ).toEqual(['compress', 'preferences', 'effort', 'add-slack']);
+  });
+
+  it('an exact alias leads, and the pick keeps what was typed (#57)', () => {
+    const list = [
+      { name: 'deep-research', description: '', source: 'personal' },
+      { name: 'rcfile', description: '', source: 'project' },
+      {
+        name: 'remote-control',
+        description: '',
+        source: 'built-in',
+        aliases: ['rc'],
+      },
+      {
+        name: 'rename',
+        description: '',
+        source: 'built-in',
+        aliases: ['name'],
+      },
+    ];
+    const got = filterCommands(list, '/rc');
+    expect(got.map((c: { name: string }) => c.name)).toEqual([
+      'remote-control',
+      'rcfile',
+      'deep-research',
+    ]);
+    expect(got[0].alias).toBe('rc');
+    expect(got[1].alias).toBeUndefined();
+    // exact name beats a prefix of a longer name
+    expect(
+      filterCommands(list, '/rename').map((c: { name: string }) => c.name)[0],
+    ).toBe('rename');
+    // alias prefix counts as a prefix match, each command listed once
+    expect(
+      filterCommands(list, '/na').map((c: { name: string }) => c.name),
+    ).toEqual(['rename']);
+  });
+
+  it('commandFor recognises a typed name or alias', () => {
+    const list = [
+      {
+        name: 'remote-control',
+        description: 'x',
+        source: 'built-in',
+        aliases: ['rc'],
+      },
+    ];
+    expect(commandFor(list, '/rc ')?.name).toBe('remote-control');
+    expect(commandFor(list, '/remote-control')?.name).toBe('remote-control');
+    expect(commandFor(list, '/r')).toBeUndefined();
+    expect(commandFor(null, '/rc')).toBeUndefined();
   });
 });

@@ -116,6 +116,23 @@ const PERMISSION = [
   '',
 ];
 
+// Claude Code 2.1.284, `/remote-control` run a second time while connected
+// (captured 2026-09-29 from a throwaway session; the session id replaced).
+// No numbers: the cursor row starts with ❯, the others sit at its text column.
+const RC_MENU = [
+  '▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔',
+  '   Remote Control',
+  '',
+  '   This session is available in the Claude mobile app and at https://claude.ai/code/session_0000TESTfixture0000.',
+  '',
+  '     Disconnect this session',
+  '     Show QR code              Scan with your phone to open this session',
+  '   ❯ Continue',
+  '',
+  '   Enter to select · Esc to continue',
+  '',
+];
+
 describe('parseMenuScreen', () => {
   it('reads the plan-approval menu: options, the hint under option 3, no esc, a one-row prompt', () => {
     const st = parseMenuScreen(PLAN_APPROVAL);
@@ -185,6 +202,44 @@ describe('parseMenuScreen', () => {
     expect(st && st.prompt[0]).toBe('prompt row 5'); // the eight nearest rows, in reading order
     expect(st && st.prompt[7]).toBe('prompt row 12');
   });
+  it('reads an unnumbered cursor menu (/remote-control) as an arrow menu (#57)', () => {
+    expect(parseMenuScreen(RC_MENU)).toEqual({
+      kind: 'menu',
+      prompt: [
+        'This session is available in the Claude mobile app and at https://claude.ai/code/session_0000TESTfixture0000.',
+      ],
+      options: [
+        { n: 1, label: 'Disconnect this session' },
+        {
+          n: 2,
+          label: 'Show QR code',
+          hint: 'Scan with your phone to open this session',
+        },
+        { n: 3, label: 'Continue' },
+      ],
+      selected: 3,
+      esc: true,
+      arrows: true,
+    });
+    // numbered menus are unchanged: no arrows flag
+    expect(parseMenuScreen(PERMISSION).arrows).toBeUndefined();
+  });
+
+  it('reads no arrow menu without the footer, with two cursors, or with ragged rows', () => {
+    const noFooter = RC_MENU.slice(0, 8);
+    expect(parseMenuScreen(noFooter)).toBeNull();
+    const twoCursors = [...RC_MENU];
+    twoCursors[5] = '   ❯ Disconnect this session';
+    expect(parseMenuScreen(twoCursors)).toBeNull();
+    const ragged = [...RC_MENU];
+    ragged[6] = '       Show QR code';
+    expect(parseMenuScreen(ragged)).toBeNull();
+    // a malformed numbered menu is not re-read as an arrow menu
+    expect(
+      parseMenuScreen(['Pick one', '  2. a', '❯ 3. b', '', 'Enter to select']),
+    ).toBeNull();
+  });
+
   it('is null for a numbered list in a reply, a lone prompt, and a run without a cursor', () => {
     expect(
       parseMenuScreen([
