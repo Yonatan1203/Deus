@@ -20,32 +20,33 @@ export function createArtifactPane(api) {
   let expectLoad = false;
   let disposed = false;
   const title = h('span', { class: 'ap-title', dir: 'auto' });
-  // "Published by <session>" when the registry knows which session's
+  // "by <session>" when the registry knows which session's
   // transcript proved the publish (a captured entry); else the generic line.
-  const what = h('div', { class: 'ap-what muted' }, 'Page written by a Claude session');
+  const what = h('span', { class: 'ap-what muted' }, 'by a Claude session');
   const kind = h('span', { class: 'chip' });
-  const link = h('a', { target: '_blank', rel: 'noopener noreferrer', class: 'small linkish', hidden: true }, icon('external', { size: 14 }), 'Open on claude.ai');
-  const closeBtn = h('button', { type: 'button', class: 'small ghost', 'aria-label': 'Close the artifact pane' }, icon('x', { size: 14 }), 'Close');
+  const link = h('a', { target: '_blank', rel: 'noopener noreferrer', class: 'icon-btn', hidden: true, 'aria-label': 'Open on claude.ai', title: 'Open on claude.ai' }, icon('external', { size: 16 }));
+  const closeBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close the page', title: 'Close' }, icon('x', { size: 16 }));
   // Expand: the pane takes the conversation's column too; the layout decides how (opts.onExpand).
-  const expandBtn = h('button', { type: 'button', class: 'small ghost ap-expand', 'aria-pressed': 'false' }, 'Expand');
+  const expandBtn = h('button', { type: 'button', class: 'icon-btn ap-expand', 'aria-pressed': 'false', 'aria-label': 'Expand', title: 'Expand' }, icon('expand', { size: 16 }));
   // A short-lived line when the session published a newer version and the pane followed it.
   const updated = h('div', { class: 'ap-updated', role: 'status', hidden: true });
   let updatedTimer = null;
   const frame = h('iframe', { class: 'ap-frame', sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', title: 'Artifact' });
   const note = h('div', { class: 'ap-note', role: 'status', hidden: true });
   const el = h('aside', { class: 'artifact-pane', 'aria-label': 'Artifact', hidden: true, tabindex: '-1' },
+    // One line: title · by <session> · kind · actions (the title and "by" shrink first).
     h('div', { class: 'ap-head' },
-      what,
-      h('div', { class: 'ap-row' }, title, kind),
-      updated,
-      h('div', { class: 'ap-actions' }, link, expandBtn, closeBtn)),
+      h('div', { class: 'ap-row' }, title, what, kind, h('div', { class: 'ap-actions' }, link, expandBtn, closeBtn)),
+      updated),
     frame, note);
   let onClose = () => {};
   let onExpand = () => {};
   let expanded = false;
   function setExpanded(v) {
     expanded = v;
-    expandBtn.textContent = v ? 'Restore' : 'Expand';
+    const label = v ? 'Restore' : 'Expand';
+    expandBtn.replaceChildren(icon(v ? 'collapse' : 'expand', { size: 16 }));
+    expandBtn.setAttribute('aria-label', label); expandBtn.title = label;
     expandBtn.setAttribute('aria-pressed', String(v));
     onExpand(v);
   }
@@ -123,8 +124,8 @@ export function createArtifactPane(api) {
     kind.textContent = artifact.kind;
     frame.title = artifact.title;
     if (artifact.session && artifact.session.id && artifact.session.name) {
-      what.replaceChildren('Published by ', h('a', { href: `#/claude/${artifact.session.id}`, class: 'ap-by', dir: 'auto' }, artifact.session.name));
-    } else what.replaceChildren('Page written by a Claude session');
+      what.replaceChildren('by ', h('a', { href: `#/claude/${artifact.session.id}`, class: 'ap-by', dir: 'auto' }, artifact.session.name));
+    } else what.replaceChildren('by a Claude session');
     if (current.url) { link.href = current.url; link.hidden = false; } else { link.hidden = true; link.removeAttribute('href'); }
     note.hidden = true; delete note.dataset.copy;
     version = '';

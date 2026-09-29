@@ -2134,7 +2134,7 @@ which grows to the widest unbreakable line in the session; they are now
 ## A page beside the conversation fills the screen (#57, 2026-09-28)
 
 Operator report (24" and 27" screens): an expanded page was only as tall as the session
-list. On a desktop window at least 1100 × 640 the app shell is now exactly one window
+list. On a desktop window at least 1100 × 640 (900 × 640 since #74) the app shell is now exactly one window
 high on the Claude tab (a banner or the update bar takes its own row), the list scrolls
 on its own, and the conversation/terminal stage fills its row (it was 62vh; it also
 auto-placed into the wrong row while Details was hidden). Expand now shows only the
@@ -2444,3 +2444,36 @@ Cache v54. No button changes in this part — that is part 3.
 | Every icon name the code uses, and every tab's menu icon, exists in the set | none missing | 0 missing; no `icon:` warning on any tab | PASS |
 | Before/after screenshots (Claude, Chat, System × light/dark × 1280/390) | same layout, new shapes | same layout; icons redrawn | PASS |
 | Committed file = generator output; licence text included | equal | equal | PASS |
+
+## The Claude tab gives the screen to the session and the page (#74, 2026-09-29)
+
+Operator: "really minimize [the list] when using artifact view… a more compact view to the list and a
+minimized option" and "the top section is going to waste". At desktop widths (≥ 900 px):
+- **Compact list:** one line per session — dot, name, "needs you · 6m" — and the pin only on hover.
+- **Minimized strip:** 56 px of initials with the state dot; hover or a screen reader gives
+  "name — state · time". A button at the top of the list switches strip ⇄ full list; the choice is kept
+  separately for "a page open beside" (strip by default) and "no page" (full by default). With nothing open the
+  full list always shows; Hide sessions (#68) still hides it completely, and then New session moves into the
+  session's bar. One function decides the mode, so the list is never both hidden and minimized.
+- **No title row:** "OPERATE / Claude" and its New session button are gone on desktop; New session sits at the
+  top of the list (and the strip). With the menu hidden (#68) the tab keeps clear of the Show-menu button.
+- **Page header on one line:** title · by <session> · kind · open / expand / close icons (labelled); the title
+  and "by" shrink first, and "by" drops when the pane is narrower than 380 px (the file's first container query).
+- Phone: unchanged apart from 44 px one-line rows. Cache v55.
+- The Claude tab's one-window layout (the session and a page beside it reach the bottom of the window, no page
+  scroll) now starts at 900 px instead of 1100 px: without the title row, a fixed stage height left a live
+  conversation 49–137 px too tall at 900–1099 px, where the session bar wraps.
+- `Deviation:` the plan gave the strip toggle `aria-expanded`; it was dropped on code review because its label
+  already says what it does ("Minimize the session list" / "Expand the session list") and the two signals
+  repeated each other.
+
+| Check (1280 × 900, page beside unless noted) | Before | After | Disposition |
+|-------|--------|-------|-------------|
+| Session row height | 63 px | 38 px | PASS |
+| Session starts at | y = 109 | y = 32 | PASS |
+| List width, page beside | 240 px | 56 px (strip) | PASS |
+| Conversation / page width, page beside | 320 / 408 px | 462 / 450 px | PASS |
+| Page header height | 97 px | 42 px | PASS |
+| Live session, 1000 × 800 | page 1156 px tall on an 800 px window | no page scroll; message box 26 px above the bottom | PASS |
+| Live session, 1280 × 900 and 1100 × 640 (list, and strip beside a page) | no page scroll | no page scroll; strip 56 px | PASS |
+| Modes: strip toggle, remembered per context, full list with nothing open, Hide sessions → New session in the bar, rail hidden → strip clear of the Show-menu button, phone 44 px rows with no strip | as described | 18/18 | PASS |

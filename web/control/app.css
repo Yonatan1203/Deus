@@ -615,24 +615,28 @@ table.kv input { min-height: 36px; }
 .claude-layout { display: grid; gap: 16px; }
 .claude-sessions { display: grid; gap: 4px; align-content: start; }
 .session-row {
-  display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: center; width: 100%; min-width: 0;
-  min-height: 56px; padding: 8px 12px; text-align: left; font-weight: 400;
+  /* One line: dot · name · state and time (#74). */
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-width: 0;
+  min-height: 36px; padding: 4px 10px; text-align: left; font-weight: 400;
   background: transparent; border-color: transparent;
 }
+@media (max-width: 767px) { .session-row { min-height: 44px; } } /* touch */
+.session-initials { display: none; }
 .session-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px; border-radius: var(--radius-sm); border: 1px solid transparent; }
 .session-item:hover { background: var(--surface-2); }
 .session-item.selected { background: var(--surface-2); border-color: var(--line-strong); }
 .session-item .session-row:hover { background: transparent; }
-.session-group { margin: 10px 12px 2px; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.session-group { margin: 8px 10px 2px; font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .session-group:first-child { margin-top: 0; }
 /* The row's pin stays out of the way until the row is hovered, focused or pinned. */
 .session-item .pin-btn { margin-right: 6px; opacity: 0; }
-.session-item:hover .pin-btn, .session-item .pin-btn:focus-visible, .session-item .pin-btn.on { opacity: 1; }
+.session-item:hover .pin-btn, .session-item .pin-btn:focus-visible { opacity: 1; } /* pinned rows: the Pinned group says it */
 @media (hover: none) { .session-item .pin-btn { opacity: 1; } }
 .pin-btn.on { color: color-mix(in srgb, var(--warn) 60%, var(--text)); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 .session-main { display: grid; gap: 2px; min-width: 0; }
 .session-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-sub { color: var(--muted); font-size: 13px; }
+.session-sub { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.session-item .pin-btn { min-height: 28px; width: 28px; padding: 0; justify-content: center; }
 .session-item.running .session-sub, .claude-title .status.running { color: var(--accent-text); }
 .session-item.running { background: color-mix(in srgb, var(--primary) 7%, transparent); }
 .session-item.running.selected { background: color-mix(in srgb, var(--primary) 12%, var(--surface-2)); }
@@ -640,8 +644,38 @@ table.kv input { min-height: 36px; }
 .session-item .dot.running::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--primary); opacity: 0; animation: ring 1.6s ease-out infinite; }
 .spin { display: inline-block; margin-right: 5px; color: var(--primary); animation: spin 2.4s linear infinite; }
 .claude-side { display: grid; align-content: start; min-width: 0; }
+.icon-btn { width: 34px; min-height: 34px; padding: 0; justify-content: center; flex: none; }
+@media (max-width: 767px) { .icon-btn { width: 44px; min-height: 44px; } }
+/* Above the list at ≥ 900 px: New session · running count · minimize (#74). Below, the page head has New session. */
+.side-head { display: none; }
+.bar-new { display: none; }
 .running-summary[hidden] { display: none; }
 .running-summary { display: flex; align-items: center; gap: 2px; margin: 0 12px 6px; font-size: 13px; color: var(--accent-text); }
+@media (min-width: 900px) {
+  .side-head { display: flex; align-items: center; gap: 6px; padding: 0 2px 6px; }
+  .side-head .running-summary { margin: 0; flex: 1; min-width: 0; font-size: 12px; }
+  .side-head .mini-toggle { margin-left: auto; }
+  .claude-layout:not(.has-session) .mini-toggle { display: none; } /* nothing open: always the full list */
+  .claude-layout.sessions-hidden .bar-new { display: inline-flex; }
+  /* No title row on the Claude tab: the list and the session start at the top (#74). */
+  .view[data-view="claude"] .page-head { display: none; }
+  body.rail-hidden .view[data-view="claude"] { padding-left: 64px; } /* clear of the Show menu button */
+  /* The minimized strip: a 56 px column of initials with the state dot. */
+  .claude-layout.sessions-mini { grid-template-columns: 56px minmax(0, 1fr); }
+  .claude-layout.sessions-mini > .claude-side { overflow-x: hidden; scrollbar-width: none; }
+  .claude-layout.sessions-mini > .claude-side::-webkit-scrollbar { display: none; }
+  .claude-layout.sessions-mini > .claude-side .side-head { flex-direction: column; padding: 0 0 6px; }
+  .claude-layout.sessions-mini > .claude-side .side-head .mini-toggle { margin-left: 0; }
+  .claude-layout.sessions-mini > .claude-side .running-summary { flex: none; justify-content: center; }
+  .claude-layout.sessions-mini > .claude-side .running-summary > span:not(.spin) { display: none; }
+  .claude-layout.sessions-mini > .claude-side .running-summary::after { content: attr(data-count); font-variant-numeric: tabular-nums; }
+  .claude-layout.sessions-mini > .claude-side .session-group { height: 1px; margin: 6px 8px; background: var(--line); font-size: 0; }
+  .claude-layout.sessions-mini > .claude-side .session-item { grid-template-columns: 1fr; justify-items: center; }
+  .claude-layout.sessions-mini > .claude-side .session-row { grid-template-columns: 1fr; place-items: center; width: 40px; height: 40px; min-height: 40px; padding: 0; position: relative; }
+  .claude-layout.sessions-mini > .claude-side .session-name, .claude-layout.sessions-mini > .claude-side .session-sub, .claude-layout.sessions-mini > .claude-side .pin-btn { display: none; }
+  .claude-layout.sessions-mini > .claude-side .session-initials { display: block; font: 600 12px/1 var(--sans); letter-spacing: 0.02em; }
+  .claude-layout.sessions-mini > .claude-side .session-row .dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; }
+}
 @keyframes ring { 0% { transform: scale(0.6); opacity: 0.8; } 100% { transform: scale(1.5); opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .session-item .dot.running::after, .spin { animation: none; } .session-item .dot.running::after { opacity: 0.5; transform: none; } }
@@ -822,6 +856,11 @@ table.kv input { min-height: 36px; }
 .conv-send.busy { background: var(--surface-3); color: var(--text); }
 @media (prefers-reduced-motion: reduce) { .conv-fold .chev { transition: none; } }
 @media (min-width: 900px) { .claude-stage { height: calc(100dvh - 220px); } }
+/* No title row on the Claude tab (#74): 80 px more for the stage in short windows, where the page scrolls
+   anyway; everywhere else from 900 px the one-window layout below sizes it from the space left. */
+@media (min-width: 900px) and (max-height: 639px) {
+  .view[data-view="claude"] .claude-stage { height: calc(100dvh - 140px); }
+}
 @media (max-width: 767px) {
   body.claude-full .claude-stage { height: calc(100dvh - 196px); min-height: 280px; }
   .conv-col { padding: 4px 2px 12px; }
@@ -892,16 +931,21 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 /* The artifact pane beside the conversation (artifact-pane.js). */
 .artifact-pane { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; min-height: 0; border-left: 1px solid var(--line); padding-left: 16px; }
 .artifact-pane[hidden] { display: none; }
-.ap-head { display: grid; gap: 6px; padding-bottom: 10px; }
-.ap-what { font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
-.ap-by { color: var(--accent); text-transform: none; letter-spacing: 0; }
+.ap-head { display: grid; gap: 4px; padding-bottom: 8px; }
+.artifact-pane { container-type: inline-size; } /* the file's first container query: "by …" drops when narrow */
+.ap-what { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+.ap-by { color: var(--accent); }
+@container (max-width: 380px) { .ap-what { display: none; } }
 /* A page this session just published (views/claude.js): a notice with "Open beside". */
 .conv-published { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 8%, var(--bg)); margin-bottom: 8px; }
 .conv-published[hidden] { display: none; }
 .conv-published .cp-title { font-weight: 500; max-width: min(60%, 320px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ap-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ap-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ap-actions { display: flex; align-items: center; gap: 8px; }
+.ap-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+.ap-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: none; }
+.ap-actions .icon-btn { background: none; border-color: transparent; color: var(--muted); }
+.ap-actions a.icon-btn { display: inline-flex; align-items: center; }
+.ap-actions .icon-btn:hover { color: var(--text); background: var(--surface-2); }
 .ap-frame { width: 100%; height: 100%; min-height: 320px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
 .ap-frame[data-loaded] { background: #fff; } /* the page's own canvas; no white flash before it */
 .artifact-pane:focus { outline: none; }
@@ -927,6 +971,8 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
   .claude-layout.with-artifact { grid-template-columns: minmax(200px, 240px) minmax(320px, 1fr) minmax(340px, var(--art-w, 45%)); }
   /* Sessions hidden with a page open: conversation + page share the width. Same specificity as the
      Expand rule below — keep this one FIRST, so Expand wins. */
+  /* The strip beside a page — before the hidden and Expand rules (same specificity): they must win. */
+  .claude-layout.with-artifact.sessions-mini { grid-template-columns: 56px minmax(320px, 1fr) minmax(340px, var(--art-w, 45%)); }
   .claude-layout.with-artifact.sessions-hidden { grid-template-columns: minmax(320px, 1fr) minmax(340px, var(--art-w, 45%)); }
   /* Expand: only the page — the list, the conversation and the page head step aside
      (Restore is in the pane's own header) */
@@ -1012,13 +1058,15 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
 /* Claude tab on a desktop window tall enough for it: exactly one window high, so the
    list, the conversation and a page beside it all reach the bottom. A banner or the
    update bar takes its own row; shorter or narrower windows scroll as before. */
-@media (min-width: 1100px) and (min-height: 640px) {
+@media (min-width: 900px) and (min-height: 640px) {
   .app:has(> .view[data-view="claude"]) { height: 100dvh; grid-template-rows: auto auto minmax(0, 1fr); }
   .view[data-view="claude"] { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding-bottom: 16px; }
   .view[data-view="claude"] > .view-slot > .claude-layout { flex: 1; min-height: 0; }
   .claude-side { min-height: 0; overflow-y: auto; }
   /* The stage takes the pane's 1fr row even while Details (row 2) is hidden. */
-  .claude-pane > .claude-stage { grid-row: 3; height: auto; min-height: 360px; }
+  /* 240 px, not more: at 900–1000 px the session bar wraps to three rows, and with Details open a taller
+     minimum pushed the message box below a 640 px window (#74). */
+  .claude-pane > .claude-stage { grid-row: 3; height: auto; min-height: 240px; }
   .claude-pane > .claude-ended { grid-row: 4; }
 }
 /* Very wide screens: a roomier session list (the page's default width is in views/claude.js) */

@@ -25,6 +25,20 @@ const ago = (ms) => {
   if (m < 1440) return `${Math.round(m / 60)} h ago`;
   return `${Math.round(m / 1440)} d ago`;
 };
+const agoShort = (ms) => {
+  if (!ms) return '';
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.round(m / 60)}h`;
+  return `${Math.round(m / 1440)}d`;
+};
+/** Two letters for the minimized list: word initials, or the first two characters of a one-word or hex name. */
+function initials(name) {
+  const words = String(name).split(/[\s_-]+/).filter(Boolean);
+  const two = words.length > 1 && !/^[0-9a-f]{6,}$/i.test(name) ? words[0][0] + words[1][0] : String(name).slice(0, 2);
+  return two.toUpperCase();
+}
 function stateOf(s) {
   if (s.state === 'blocked') return ['needs you', 'warn'];
   if (s.status === 'busy') return ['working', 'ok'];
@@ -285,6 +299,12 @@ async function openLive(api, host, session, onEnd) {
 }
 
 const SESS_KEY = 'deus-control.claude-sessions-hidden';
+// Full list or the minimized strip, remembered separately for "a page open beside" and "no page".
+const LIST_KEYS = { beside: 'deus-control.claude-list-beside', alone: 'deus-control.claude-list-alone' };
+function listPref(ctx) {
+  try { const v = localStorage.getItem(LIST_KEYS[ctx]); if (v === 'mini' || v === 'full') return v; } catch { /* default */ }
+  return ctx === 'beside' ? 'mini' : 'full';
+}
 
 export async function render(root, api, bus, me) {
   // Ends this view's listeners on the next navigation — registered before the first
@@ -297,7 +317,10 @@ export async function render(root, api, bus, me) {
   const pane = h('section', { class: 'claude-pane' });
   const runningText = h('span', {});
   const summary = h('div', { class: 'running-summary', role: 'status', hidden: true }, spinner(), runningText);
-  const side = h('div', { class: 'claude-side' }, summary, list);
+  const miniBtn = h('button', { type: 'button', class: 'icon-btn mini-toggle' });
+  const newSide = h('button', { type: 'button', class: 'icon-btn side-new', 'aria-label': 'New session', title: 'New session' }, icon('new-session', { size: 16 }));
+  const sideHead = h('div', { class: 'side-head' }, readOnly ? null : newSide, summary, miniBtn);
+  const side = h('div', { class: 'claude-side' }, sideHead, list);
   const wrap = h('div', { class: 'claude-layout' }, side, pane);
   // A page a session published, beside the conversation (artifact-pane.js).
   // Only artifacts the registry holds a local copy of can open here; the
@@ -347,9 +370,10 @@ export async function render(root, api, bus, me) {
     if (!a || !a.local) return;
     if (!artPane.el.isConnected) wrap.append(artPane.el); // attached first, so open() can focus it
     wrap.classList.add('with-artifact');
+    applyListMode(); // a page beside: the list takes its "beside" mode (the strip by default)
     artPane.open(a, {
       updated,
-      onClose: () => { wrap.classList.remove('with-artifact', 'artifact-expanded'); },
+      onClose: () => { wrap.classList.remove('with-artifact', 'artifact-expanded'); applyListMode(); },
       onExpand: (v) => { wrap.classList.toggle('artifact-expanded', v); },
     });
   }
@@ -413,7 +437,9 @@ export async function render(root, api, bus, me) {
       h('label', { class: 'wide' }, 'First message', promptInput)),
     h('p', { class: 'hint' }, 'Starts in auto mode in the Deus repo, the same as a terminal session.'),
     h('div', { class: 'editor-actions' }, h('button', { type: 'button', onclick: () => { form.hidden = true; } }, 'Cancel'), startBtn));
-  const newBtn = readOnly ? null : h('button', { type: 'button', class: 'small primary', onclick: () => { form.hidden = !form.hidden; if (!form.hidden) nameInput.focus(); } }, icon('plus', { size: 14 }), 'New session');
+  const toggleForm = () => { form.hidden = !form.hidden; if (!form.hidden) nameInput.focus(); };
+  const newBtn = readOnly ? null : h('button', { type: 'button', class: 'small primary', onclick: toggleForm }, icon('plus', { size: 14 }), 'New session');
+  newSide.addEventListener('click', toggleForm);
 
   // ---- list ----
   async function setPinned(s, pinned) {
@@ -435,14 +461,16 @@ export async function render(root, api, bus, me) {
     const [label, kind] = stateOf(s);
     // Two sibling buttons, never one inside the other.
     const running = label === 'working';
+    const when = s.last_active || s.started_at;
+    const full = `${s.name} — ${[label, ago(when)].filter(Boolean).join(' · ')}`;
     return h('div', { role: 'listitem', class: `session-item${current && current.id === s.id ? ' selected' : ''}${s.pinned ? ' pinned' : ''}${running ? ' running' : ''}`, 'data-id': s.id },
-      h('button', { type: 'button', class: 'session-row', onclick: () => select(s) },
+      h('button', { type: 'button', class: 'session-row', onclick: () => select(s), 'aria-label': full, title: full },
         h('span', { class: `dot ${kind}${running ? ' running' : ''}`, 'aria-hidden': 'true' }),
-        h('span', { class: 'session-main' },
-          h('span', { class: 'session-name' }, s.name),
-          h('span', { class: 'session-sub' },
-            running ? spinner() : null,
-            [label, ago(s.last_active || s.started_at)].filter(Boolean).join(' · ')))),
+        h('span', { class: 'session-initials', 'aria-hidden': 'true' }, initials(s.name)),
+        h('span', { class: 'session-name', 'aria-hidden': 'true' }, s.name),
+        h('span', { class: 'session-sub', 'aria-hidden': 'true' },
+          running ? spinner() : null,
+          [label, agoShort(when)].filter(Boolean).join(' · '))),
       readOnly ? null : pinButton(s, false));
   }
   function draw() {
@@ -454,6 +482,7 @@ export async function render(root, api, bus, me) {
     const busy = sessions.filter((s) => stateOf(s)[0] === 'working').length;
     const text = busy ? `${busy} ${busy === 1 ? 'session' : 'sessions'} running` : '';
     if (runningText.textContent !== text) runningText.textContent = text;
+    summary.dataset.count = String(busy);
     summary.hidden = !busy;
     const pinned = sorted.filter((s) => s.pinned);
     const rest = sorted.filter((s) => !s.pinned);
@@ -490,8 +519,29 @@ export async function render(root, api, bus, me) {
     current = null;
     pagesRefresh = () => {}; pagesOutside = () => {};
     document.body.classList.remove('claude-full');
-    wrap.classList.remove('sessions-hidden'); // nothing open: the list is always there to pick from
+    applyListMode(); // nothing open: the list is always there to pick from
   }
+  /** The list's one mode — full, the minimized strip, or hidden — from the open session, the page beside and the saved choices. */
+  function applyListMode() {
+    const open = Boolean(current);
+    let hidden = false;
+    try { hidden = localStorage.getItem(SESS_KEY) === '1'; } catch { /* shown */ }
+    const ctx = wrap.classList.contains('with-artifact') ? 'beside' : 'alone';
+    const mode = !open ? 'full' : hidden ? 'hidden' : listPref(ctx);
+    wrap.classList.toggle('has-session', open);
+    wrap.classList.toggle('sessions-hidden', mode === 'hidden');
+    wrap.classList.toggle('sessions-mini', mode === 'mini');
+    const label = mode === 'mini' ? 'Expand the session list' : 'Minimize the session list';
+    miniBtn.replaceChildren(icon(mode === 'mini' ? 'show-sessions' : 'hide-sessions', { size: 16 }));
+    miniBtn.setAttribute('aria-label', label); miniBtn.title = label;
+    if (current && current.sessionsBtn) current.sessionsBtn.textContent = mode === 'hidden' ? 'Show sessions' : 'Hide sessions';
+  }
+  miniBtn.addEventListener('click', () => {
+    const ctx = wrap.classList.contains('with-artifact') ? 'beside' : 'alone';
+    const next = wrap.classList.contains('sessions-mini') ? 'full' : 'mini';
+    try { localStorage.setItem(LIST_KEYS[ctx], next); } catch { /* remembered for this page only */ }
+    applyListMode();
+  });
   async function select(s) {
     closeCurrent();
     current = { id: s.id, view: null };
@@ -537,19 +587,19 @@ export async function render(root, api, bus, me) {
     pagesRefresh();
     // Hide sessions (≥ 900 px): the open session takes the list's width; remembered in this browser.
     const sessionsBtn = h('button', { type: 'button', class: 'small sessions-toggle' });
-    const showSessions = (hidden) => {
-      wrap.classList.toggle('sessions-hidden', hidden);
-      sessionsBtn.textContent = hidden ? 'Show sessions' : 'Hide sessions';
-    };
+    current.sessionsBtn = sessionsBtn;
     sessionsBtn.addEventListener('click', () => {
       const hidden = !wrap.classList.contains('sessions-hidden');
-      showSessions(hidden);
       try { localStorage.setItem(SESS_KEY, hidden ? '1' : '0'); } catch { /* remembered for this page only */ }
+      applyListMode();
     });
+    // With the list hidden, New session lives in the bar (≥ 900 px; CSS shows it only then).
+    const barNew = readOnly ? null : h('button', { type: 'button', class: 'icon-btn bar-new', 'aria-label': 'New session', title: 'New session', onclick: toggleForm }, icon('new-session', { size: 16 }));
     const bar = h('div', { class: 'claude-bar' },
       h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to sessions', onclick: () => { closeCurrent(); draw(); placeholder(); } }, '←'),
       h('div', { class: 'claude-title' }, h('span', { class: 'session-name' }, s.name), statusEl),
       h('div', { class: 'claude-actions' },
+        barNew,
         sessionsBtn,
         pagesWrap,
         pinSlot,
@@ -561,9 +611,7 @@ export async function render(root, api, bus, me) {
           catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
         } }, 'Stop')));
     pane.append(bar, details);
-    let hideList = false;
-    try { hideList = localStorage.getItem(SESS_KEY) === '1'; } catch { /* shown */ }
-    showSessions(hideList);
+    applyListMode();
 
     if (s.kind !== 'background') {
       pane.append(h('div', { class: 'claude-empty' }, h('p', {}, 'This session runs in a terminal window, so it can only be used there.')));
@@ -1097,6 +1145,7 @@ export async function render(root, api, bus, me) {
     } catch (err) { clear(list); list.append(h('div', { class: 'empty' }, err.status === 429 ? 'Too many refreshes — wait a minute.' : serverError(err, 'Something went wrong — try again.'))); }
   }
 
+  applyListMode();
   clear(root);
   root.append(header('Claude', { eyebrow: 'Operate', actions: newBtn ? [newBtn] : [] }), form, wrap);
   // A draft handed over by another tab (Agents → Add agent): used once.
