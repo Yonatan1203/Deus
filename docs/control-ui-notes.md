@@ -2427,3 +2427,20 @@ footer and, on a phone, in the More sheet; the choice is remembered in this brow
 | Terminal told about a switch | `deus-theme` fires | on every switch | PASS |
 | Phone | switch in the More sheet, comfortable tap targets | shown; buttons 48×44 px | PASS |
 | Page errors | none | none | PASS |
+
+## Lucide icons (#70 part 2 of 3, 2026-09-29)
+
+Operator picked Lucide (option C on the samples page). Every icon in the dashboard now comes from Lucide
+0.469.0, drawn at stroke 1.6. `scripts/control-ui-lucide.mjs` writes `web/control/lucide-icons.js` with only
+the icons the dashboard uses or is about to use in part 3 (56 names — 32 drawn today, 24 staged for the
+icon-only buttons — keyed by the dashboard's own names, ~10 KB) and Lucide's ISC licence text;
+the file is committed, so there is no runtime dependency and no CDN (the CSP allows neither). `lucide` is a
+devDependency pinned exactly. An unknown icon name now shows a question mark and warns once, instead of
+silently drawing another icon. `web-shell.test.ts` checks the committed file equals the generator's output.
+Cache v54. No button changes in this part — that is part 3.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Every icon name the code uses, and every tab's menu icon, exists in the set | none missing | 0 missing; no `icon:` warning on any tab | PASS |
+| Before/after screenshots (Claude, Chat, System × light/dark × 1280/390) | same layout, new shapes | same layout; icons redrawn | PASS |
+| Committed file = generator output; licence text included | equal | equal | PASS |

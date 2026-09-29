@@ -48,4 +48,11 @@ describe('dashboard shell', () => {
     expect(head).toMatch(/<script src="\/theme-init\.js"><\/script>/);
     expect(read('theme-init.js')).toContain("'deus-control.theme'");
   });
+
+  it('ships exactly the generated Lucide subset (no hand edits, nothing stale)', async () => {
+    // @ts-expect-error - plain .mjs build script, no type declarations
+    const gen = await import('../../scripts/control-ui-lucide.mjs');
+    expect(read('lucide-icons.js')).toBe(gen.render());
+    expect(Object.keys(gen.MAP)).toContain('circle-help');
+  });
 });
