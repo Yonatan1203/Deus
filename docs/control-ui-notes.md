@@ -2295,3 +2295,26 @@ First version of the arrow path sent its keys without re-reading the screen: whe
 had closed, the Up keys recalled history into the idle prompt ("seen once" in the first
 drive; reproduced by the verification pass). Fixed as above; Continue and Cancel both leave
 the input empty.
+
+## The permission card says what it is asking about (#58, 2026-09-29)
+
+Reported with a screenshot: a card read only "Do you want to proceed? / Yes / No". Claude
+Code 2.1.284's Bash permission dialog separates its body from the question with blank rows
+(title, tip, command, description, "This command requires approval", question), and the
+card's prompt stopped at the first blank row. When the prompt stops at a blank row, the card
+now reads up to the dialog's top edge (a rule or border starting at column 0, within 30 rows;
+a rule inside a reply is indented and never counts): the tip paragraph is
+left out, the command and its description show in monospace, and over 8 rows it keeps the
+first 6, says "… N more lines — see the terminal", and ends with the question. It never climbs
+into the conversation: a row that starts like a reply, the input or a tool result stops it,
+and without an edge that close the question alone shows, as before. The Edit dialog was
+captured too; its question sits right under the diff and already names the file, so it is
+unchanged (showing the diff on the card is a later idea). Cache v48.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Unit, real Bash capture (neutral command) | title, command, description, "requires approval", question; command rows mono | as expected | PASS |
+| Unit, real Edit capture | question only, no mono | as expected | PASS |
+| Unit edges | wrapped tip dropped; conversation rows stop the climb; an indented rule in a reply is not an edge; no edge within 30 rows → question only; 12 rows → 6 + "… 5 more lines" + question; older menus get no mono | as expected | PASS |
+| All control-ui suites | green | 539/539 | PASS |
+| Neutral render from the real capture, 820 and 390 px | whole dialog readable, no overflow | `artifacts/permission-card.png`, `artifacts/permission-card-phone.png`, 0 px | PASS |

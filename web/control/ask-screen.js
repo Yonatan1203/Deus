@@ -178,22 +178,78 @@ export function parseMenuScreen(lines) {
     return o;
   });
   const selected = Number(run.find((r) => r.m[2]).m[3]);
-  return { kind: 'menu', prompt: menuPrompt(buf, top), options, selected, esc };
+  return { kind: 'menu', ...menuPrompt(buf, top), options, selected, esc };
 }
 
 // 4. the prompt: skip blank rows above the run, then collect until a rule,
-// a blank row or a box border, at most PROMPT_MAX rows, in reading order
+// a blank row or a box border, at most PROMPT_MAX rows, in reading order.
+// A dialog that separates its body from the question with blank rows (Bash
+// permission, 2.1.284: title, tip, command, description, "This command
+// requires approval", question) is read up to its top edge instead — see
+// dialogBody. Returns { prompt, mono? }: `mono` lists the rows indented deeper
+// than the rest (the command and its description), present only when any are.
 function menuPrompt(buf, top) {
   let i = top - 1;
   while (i >= 0 && !buf[i].trim()) i--;
-  const prompt = [];
-  while (i >= 0 && prompt.length < PROMPT_MAX) {
+  const rows = [];
+  let atBlank = false;
+  while (i >= 0 && rows.length < PROMPT_MAX) {
     const l = buf[i];
-    if (!l.trim() || MENU_RULE_RE.test(l) || MENU_BORDER_RE.test(l)) break;
-    prompt.unshift(clip(l));
+    if (!l.trim()) { atBlank = true; break; }
+    if (MENU_RULE_RE.test(l) || MENU_BORDER_RE.test(l)) break;
+    rows.unshift(l);
     i--;
   }
-  return prompt;
+  const body = atBlank ? dialogBody(buf, top) : null;
+  return body ? shapePrompt(body, true) : shapePrompt(rows, false);
+}
+
+// The rows between the dialog's top edge (a rule or border starting at column
+// 0, within DIALOG_REACH rows) and the options, blank rows and the tip
+// paragraph left out. A rule inside a reply is indented, so it is not an edge.
+// Null when there is no edge that close, or when a row looks like the
+// conversation (a reply, the input, a tool result) — never climb into it.
+const DIALOG_REACH = 30;
+const CONVERSATION_RE = /^[●❯⎿]/;
+function dialogBody(buf, top) {
+  let edge = -1;
+  for (let k = top - 1; k >= 0 && k >= top - DIALOG_REACH; k--) {
+    if (/^\S/.test(buf[k]) && (MENU_RULE_RE.test(buf[k]) || MENU_BORDER_RE.test(buf[k]))) { edge = k; break; }
+  }
+  if (edge < 0) return null;
+  const rows = [];
+  let tip = false;
+  for (const l of buf.slice(edge + 1, top)) {
+    const t = l.trim();
+    if (!t) { tip = false; continue; }
+    if (t.startsWith('Tip:')) tip = true;
+    if (tip) continue;
+    if (CONVERSATION_RE.test(t)) return null;
+    rows.push(l);
+  }
+  return rows.length ? rows : null;
+}
+
+// Over PROMPT_MAX rows: the first ones, a count of what was left out, and the
+// last row (the question) — never a silent drop.
+function shapePrompt(raw, withMono) {
+  let rows = raw;
+  let marker = -1;
+  if (raw.length > PROMPT_MAX) {
+    const keep = PROMPT_MAX - 2;
+    rows = [...raw.slice(0, keep), null, raw[raw.length - 1]];
+    marker = keep;
+  }
+  const indent = (l) => l.length - l.trimStart().length;
+  const real = rows.filter((l) => l !== null);
+  const least = real.length ? Math.min(...real.map(indent)) : 0;
+  const mono = [];
+  const prompt = rows.map((l, k) => {
+    if (k === marker) return `… ${raw.length - PROMPT_MAX + 1} more lines — see the terminal`;
+    if (withMono && indent(l) > least) mono.push(k);
+    return clip(l);
+  });
+  return mono.length ? { prompt, mono } : { prompt };
 }
 
 // Menus without numbers (`/remote-control` run again, 2.1.284): a run of rows
@@ -231,7 +287,7 @@ function parseArrowMenu(buf) {
     if (rest.length) o.hint = clip(rest.join(' '));
     return o;
   });
-  return { kind: 'menu', prompt: menuPrompt(buf, top), options, selected: ck + 1, esc, arrows: true };
+  return { kind: 'menu', ...menuPrompt(buf, top), options, selected: ck + 1, esc, arrows: true };
 }
 
 // ---- the reply as it is written, and the running tool (quality pass B).

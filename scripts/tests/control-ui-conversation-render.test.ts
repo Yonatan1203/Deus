@@ -277,3 +277,37 @@ describe('/remote-control in the conversation (#57)', () => {
     expect(picks).toEqual([1]);
   });
 });
+
+describe('permission card (#58)', () => {
+  it('draws the command rows in mono, the rest as text', () => {
+    const card = menuCard(
+      {
+        kind: 'menu',
+        prompt: [
+          'Bash command',
+          'ls -la',
+          'List files',
+          'Do you want to proceed?',
+        ],
+        mono: [1, 2],
+        options: [
+          { n: 1, label: 'Yes' },
+          { n: 2, label: 'No' },
+        ],
+        selected: 1,
+        esc: true,
+      },
+      h,
+      {},
+    );
+    const rows = find(card, (x) => String(x.attrs.class) === 'ask-prompt')!
+      .children as Node[];
+    expect(rows.map((r) => r.attrs.class ?? null)).toEqual([
+      null,
+      'ask-prompt-code',
+      'ask-prompt-code',
+      null,
+    ]);
+    expect(text(rows[1])).toBe('ls -la');
+  });
+});

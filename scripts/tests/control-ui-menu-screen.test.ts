@@ -133,6 +133,61 @@ const RC_MENU = [
   '',
 ];
 
+// Claude Code 2.1.284 permission dialogs, captured 2026-09-29 from throwaway
+// sessions in default permission mode (neutral commands; the edit declined).
+// The Bash dialog separates its body from the question with blank rows.
+const RULE_W = '─'.repeat(110);
+const PERMISSION_REAL = [
+  '  Counting the demo lines',
+  '  ⎿  $ cd /tmp && printf "a\\nb\\n" | grep -c . ; python3 -c "print(2+2)"',
+  '',
+  RULE_W,
+  ' Bash command',
+  ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+  '',
+  '   cd /tmp && printf "a\\nb\\n" | grep -c . ; python3 -c "print(2+2)"',
+  '   Count the demo lines',
+  '',
+  ' This command requires approval',
+  '',
+  ' Do you want to proceed?',
+  ' ❯ 1. Yes',
+  '   2. Yes, and allow access to /tmp and "python3 -c \\"print(2+2)\\"" commands',
+  '   3. Yes, and switch to auto mode · auto mode handles these prompts for you',
+  '   4. No',
+  '',
+  ' Esc to cancel · Tab to amend',
+  '',
+];
+const EDIT_REAL = [
+  '● Update(demo.txt)',
+  '',
+  RULE_W,
+  ' Edit file',
+  ' demo.txt',
+  '╌'.repeat(110),
+  ' 1  alpha',
+  ' 2 -beta',
+  ' 2 +BETA',
+  ' 3  gamma',
+  '╌'.repeat(110),
+  ' Do you want to make this edit to demo.txt?',
+  ' ❯ 1. Yes',
+  '   2. Yes, and allow Claude to edit files in its ~/.claude folder for this session',
+  '   3. No',
+  '',
+  ' Esc to cancel · Tab to amend',
+  '',
+];
+const MENU_TAIL = [
+  '',
+  ' Do you want to proceed?',
+  ' ❯ 1. Yes',
+  '   2. No',
+  '',
+  ' Esc to cancel',
+];
+
 describe('parseMenuScreen', () => {
   it('reads the plan-approval menu: options, the hint under option 3, no esc, a one-row prompt', () => {
     const st = parseMenuScreen(PLAN_APPROVAL);
@@ -206,6 +261,7 @@ describe('parseMenuScreen', () => {
     expect(parseMenuScreen(RC_MENU)).toEqual({
       kind: 'menu',
       prompt: [
+        'Remote Control',
         'This session is available in the Claude mobile app and at https://claude.ai/code/session_0000TESTfixture0000.',
       ],
       options: [
@@ -223,6 +279,89 @@ describe('parseMenuScreen', () => {
     });
     // numbered menus are unchanged: no arrows flag
     expect(parseMenuScreen(PERMISSION).arrows).toBeUndefined();
+  });
+
+  it('shows the whole Bash permission dialog, the command in mono (#58)', () => {
+    const st = parseMenuScreen(PERMISSION_REAL);
+    expect(st.prompt).toEqual([
+      'Bash command',
+      'cd /tmp && printf "a\\nb\\n" | grep -c . ; python3 -c "print(2+2)"',
+      'Count the demo lines',
+      'This command requires approval',
+      'Do you want to proceed?',
+    ]);
+    expect(st.mono).toEqual([1, 2]);
+    expect(st.options.map((o: { label: string }) => o.label)[3]).toBe('No');
+    expect(st.selected).toBe(1);
+    expect(st.esc).toBe(true);
+  });
+
+  it('keeps the edit dialog question as it was, with no mono key', () => {
+    const st = parseMenuScreen(EDIT_REAL);
+    expect(st.prompt).toEqual(['Do you want to make this edit to demo.txt?']);
+    expect('mono' in st).toBe(false);
+  });
+
+  it('drops a wrapped tip paragraph, and never climbs into the conversation', () => {
+    const wrapped = [
+      RULE_W,
+      ' Bash command',
+      ' Tip: auto mode handles these prompts for you — choose "switch',
+      ' to auto mode" below',
+      '',
+      '   ls',
+      ...MENU_TAIL,
+    ];
+    expect(parseMenuScreen(wrapped).prompt).toEqual([
+      'Bash command',
+      'ls',
+      'Do you want to proceed?',
+    ]);
+    const chat = [
+      '● An earlier reply',
+      RULE_W,
+      '● More of the reply',
+      ...MENU_TAIL,
+    ];
+    expect(parseMenuScreen(chat).prompt).toEqual(['Do you want to proceed?']);
+    // a rule inside a reply (indented) is not the dialog's edge
+    const hr = [
+      '● Here is the summary',
+      '  ────────────────',
+      '  plain reply text without a marker',
+      ...MENU_TAIL,
+    ];
+    expect(parseMenuScreen(hr).prompt).toEqual(['Do you want to proceed?']);
+    // an older menu with uneven indentation gets no mono key
+    expect(
+      'mono' in
+        parseMenuScreen(['   Pick one', '     wrapped', ' ❯ 1. a', '   2. b']),
+    ).toBe(false);
+    // no edge within 30 rows: the question alone, as before
+    const far = [RULE_W, ...Array(31).fill(' filler'), ...MENU_TAIL];
+    expect(parseMenuScreen(far).prompt).toEqual(['Do you want to proceed?']);
+  });
+
+  it('says how many lines it left out of a long dialog', () => {
+    const long = [
+      RULE_W,
+      ' Bash command',
+      '',
+      ...Array.from({ length: 10 }, (_, i) => `   line ${i + 1}`),
+      ...MENU_TAIL,
+    ];
+    const st = parseMenuScreen(long);
+    expect(st.prompt).toEqual([
+      'Bash command',
+      'line 1',
+      'line 2',
+      'line 3',
+      'line 4',
+      'line 5',
+      '… 5 more lines — see the terminal',
+      'Do you want to proceed?',
+    ]);
+    expect(st.mono).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('reads no arrow menu without the footer, with two cursors, or with ragged rows', () => {

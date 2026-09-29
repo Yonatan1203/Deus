@@ -125,7 +125,9 @@ function askCard(it, h, handlers) {
 // A hint that names a key chord is the terminal's; on a touch screen it promises nothing.
 const KEY_HINT_RE = /\b(shift|ctrl|alt|cmd)\s*\+/i;
 export function menuCard(st, h, handlers = {}) {
-  const prompt = st.prompt.length ? h('div', { class: 'ask-prompt', dir: 'auto' }, ...st.prompt.map((l) => h('div', {}, l))) : null;
+  // `mono` rows are the command being approved and its description.
+  const mono = new Set(Array.isArray(st.mono) ? st.mono : []);
+  const prompt = st.prompt.length ? h('div', { class: 'ask-prompt', dir: 'auto' }, ...st.prompt.map((l, k) => h('div', mono.has(k) ? { class: 'ask-prompt-code', dir: 'ltr' } : {}, l))) : null;
   // The first option is Claude Code's default and reads as primary; a "No…"
   // option reads as the decline; the terminal's cursor is a styling cue only
   // (clicking any option is equally valid), never a selection announced to AT.
