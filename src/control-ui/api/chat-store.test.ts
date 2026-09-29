@@ -76,7 +76,9 @@ describe('chat store: caps', () => {
     expect(s.list()).toHaveLength(CHATS_MAX);
   });
 
-  it('refuses the 401st message, and a message that would pass the byte budget', () => {
+  // Every append rewrites the whole chat file (atomic write), so these two fill loops are slow by design;
+  // each runs on its own with room to spare on a busy machine (it timed out at the 5 s default).
+  it('refuses the 401st message', () => {
     const s = createChatStore(path.join(tmp(), 'chats'));
     const c = s.create();
     if ('error' in c) throw new Error(c.error);
@@ -84,7 +86,11 @@ describe('chat store: caps', () => {
     expect(s.append(c.id, user('one more'))).toEqual({
       error: 'this chat is full — start a new chat',
     });
+  }, 20000);
+
+  it('refuses a message that would pass the byte budget', () => {
     // Under the message count but over the byte budget.
+    const s = createChatStore(path.join(tmp(), 'chats'));
     const d = s.create();
     if ('error' in d) throw new Error(d.error);
     const big = 'y'.repeat(30 * 1024);
@@ -95,7 +101,7 @@ describe('chat store: caps', () => {
     const size = fs.statSync(path.join(s.dir, `${d.id}.json`)).size;
     expect(size).toBeLessThanOrEqual(CHAT_BYTES_MAX);
     expect(s.get(d.id)?.messages.length).toBeGreaterThan(100);
-  });
+  }, 20000);
 
   it('caps text, activity and titles', () => {
     const s = createChatStore(path.join(tmp(), 'chats'));
