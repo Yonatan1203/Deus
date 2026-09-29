@@ -98,7 +98,7 @@ export async function render(root, api, bus, me) {
   }
   function drawList() {
     clear(side);
-    if (!readOnly) side.append(h('button', { type: 'button', class: 'primary new-chat', onclick: newChat }, icon('plus', { size: 16 }), 'New chat'));
+    if (!readOnly) side.append(h('button', { type: 'button', 'aria-label': 'New chat', title: 'New chat', class: 'small primary new-chat icon-btn', onclick: newChat }, icon('new-session', { size: 16 })));
     if (!chats.length) { side.append(h('div', { class: 'empty' }, readOnly ? 'No chats yet.' : 'No chats yet — start one.')); return; }
     let group = '';
     for (const c of chats) {
@@ -152,8 +152,8 @@ export async function render(root, api, bus, me) {
     const statusEl = h('small', { class: 'chat-status' });
     const titleEl = h('span', { class: 'session-name' }, current.title);
     const actions = readOnly ? null : h('div', { class: 'claude-actions' },
-      h('button', { type: 'button', class: 'small', onclick: rename }, 'Rename'),
-      h('button', { type: 'button', class: 'small danger', onclick: remove }, 'Delete'));
+      h('button', { type: 'button', 'aria-label': 'Rename', title: 'Rename', class: 'small icon-btn', onclick: rename }, icon('edit', { size: 16 })),
+      h('button', { type: 'button', 'aria-label': 'Delete', title: 'Delete', class: 'small danger icon-btn', onclick: remove }, icon('trash', { size: 16 })));
     const bar = h('div', { class: 'claude-bar chat-bar' },
       h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to chats', onclick: () => { document.body.classList.remove('chat-open'); current = null; drawList(); placeholder(); } }, '←'),
       avatar(),

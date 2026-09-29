@@ -51,7 +51,7 @@ export async function render(root, api, bus, me) {
       h('label', { class: 'wide' }, 'URL', urlInput, h('span', { class: 'hint' }, 'claude.ai links, or a host the operator allowed on the server')),
       h('label', { class: 'wide' }, 'Description', descInput)),
     h('div', { class: 'editor-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => { form.hidden = true; } }, 'Cancel'), addBtn));
-  const addAction = readOnly ? null : h('button', { type: 'button', class: 'small', onclick: () => { createForm.hidden = true; form.hidden = !form.hidden; if (!form.hidden) titleInput.focus(); } }, 'Add a link');
+  const addAction = readOnly ? null : h('button', { type: 'button', 'aria-label': 'Add a link', title: 'Add a link', class: 'small icon-btn', onclick: () => { createForm.hidden = true; form.hidden = !form.hidden; if (!form.hidden) titleInput.focus(); } }, icon('plus', { size: 16 }));
 
   // Create: a Claude session builds and publishes it, then registers the link.
   const createForm = h('div', { class: 'card new-artifact', hidden: true });
@@ -83,7 +83,7 @@ export async function render(root, api, bus, me) {
       h('label', { class: 'wide' }, 'What should it be?', cDesc, counter)),
     h('p', { class: 'hint' }, 'A Claude session builds and publishes it, then it appears here. You can watch or help it on the Claude tab.'),
     h('div', { class: 'editor-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => { createForm.hidden = true; } }, 'Cancel'), createBtn));
-  const createAction = readOnly ? null : h('button', { type: 'button', class: 'small primary', onclick: () => { form.hidden = true; createForm.hidden = !createForm.hidden; if (!createForm.hidden) cTitle.focus(); } }, icon('plus', { size: 14 }), 'Create artifact');
+  const createAction = readOnly ? null : h('button', { type: 'button', 'aria-label': 'Create artifact', title: 'Create artifact', class: 'small primary icon-btn', onclick: () => { form.hidden = true; createForm.hidden = !createForm.hidden; if (!createForm.hidden) cTitle.focus(); } }, icon('new-session', { size: 16 }));
 
   function titleNode(a) {
     if (typeof a.url === 'string') {
@@ -93,12 +93,12 @@ export async function render(root, api, bus, me) {
     return h('span', { class: 'art-link' }, h('span', {}, a.title), h('span', { class: 'muted' }, ` · ${a.hostname}`));
   }
   function card(a) {
-    const remove = readOnly ? null : h('button', { type: 'button', class: 'small ghost', onclick: async () => {
+    const remove = readOnly ? null : h('button', { type: 'button', 'aria-label': 'Remove', title: 'Remove', class: 'small ghost icon-btn', onclick: async () => {
       const ok = await confirmTyped(a.id, `Remove "${a.title}" from the dashboard? The link is kept in the registry's removed log.`);
       if (!ok) return;
       try { await api.del(`/api/v1/artifacts/${a.id}`, { 'X-Confirm': a.id }); toast('Removed', 'ok'); await load(); }
       catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
-    } }, 'Remove');
+    } }, icon('trash', { size: 16 }));
     return h('div', { class: 'card art-card', 'data-id': a.id },
       h('div', { class: 'title' }, titleNode(a)),
       a.description ? h('p', {}, a.description) : null,

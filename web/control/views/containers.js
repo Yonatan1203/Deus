@@ -4,7 +4,7 @@ import { header } from '../app.js';
 import { confirmTyped, toast } from '../ui.js';
 
 function row(c, api, readOnly, refresh) {
-  const stop = readOnly ? null : h('button', { type: 'button', class: 'small danger', onclick: async () => {
+  const stop = readOnly ? null : h('button', { type: 'button', 'aria-label': 'Stop', title: 'Stop', class: 'small danger icon-btn', onclick: async () => {
     const ok = await confirmTyped(c.name, `Stop ${c.name}? The agent turn running in it is cut short.`);
     if (!ok) return;
     try {
@@ -12,7 +12,7 @@ function row(c, api, readOnly, refresh) {
       toast('Stop requested', 'ok');
       await refresh();
     } catch (err) { toast(err.status === 404 ? 'Not one of this instance’s containers' : err.message, 'error'); }
-  } }, icon('stop', { size: 14 }), 'Stop');
+  } }, icon('stop', { size: 16 }));
   return h('div', { class: 'row', 'data-name': c.name },
     h('div', {},
       h('div', { class: 'name mono' }, c.name),
@@ -35,7 +35,7 @@ export async function render(root, api, bus, me, { embedded = false } = {}) {
   const holder = h('div', {});
   const consoleBox = h('pre', { class: 'console', hidden: true });
   const buildState = h('div', { class: 'build-state muted', hidden: true });
-  const rebuild = readOnly ? null : h('button', { type: 'button', class: 'small', onclick: async () => {
+  const rebuild = readOnly ? null : h('button', { type: 'button', 'aria-label': 'Rebuild', title: 'Rebuild', class: 'small icon-btn', onclick: async () => {
     const ok = await confirmTyped('rebuild', 'Rebuild the agent image? Every future agent turn runs on the result.', ['Runs container/build.sh on the host', 'One build at a time; output streams below']);
     if (!ok) return;
     try {
@@ -45,7 +45,7 @@ export async function render(root, api, bus, me, { embedded = false } = {}) {
       toast(`Build started (${r.image_ref}${r.head ? ` @ ${r.head.slice(0, 7)}${r.dirty ? '+dirty' : ''}` : ''})`, 'ok');
       showBuild(await api.get('/api/v1/containers/build'));
     } catch (err) { toast(err.status === 409 ? 'A build is already running' : err.status === 501 ? 'Rebuild needs a POSIX host' : err.message, 'error'); }
-  } }, icon('refresh', { size: 14 }), 'Rebuild image');
+  } }, icon('refresh', { size: 16 }));
 
   function showBuild(st) {
     buildState.hidden = false;

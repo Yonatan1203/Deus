@@ -85,7 +85,7 @@ function toolsItem(g, h, key, expanded, handlers = {}) {
       h('div', { class: 'conv-card-text' },
         h('span', { class: 'conv-card-title', dir: 'auto', title }, title),
         h('span', { class: 'conv-card-sub' }, 'Page', link ? ' · ' : null, link)),
-      local ? h('button', { type: 'button', class: 'small conv-card-open', onclick: (e) => { if (e) e.stopPropagation(); handlers.openArtifact(local); } }, 'Open beside') : null);
+      local ? h('button', { type: 'button', 'aria-label': 'Open beside', title: 'Open beside', class: 'small conv-card-open icon-btn', onclick: (e) => { if (e) e.stopPropagation(); handlers.openArtifact(local); } }, (handlers.icon ? handlers.icon('beside') : 'Open beside')) : null);
     // The whole card opens it too; the button stays the keyboard target.
     if (local && card.addEventListener) card.addEventListener('click', () => handlers.openArtifact(local));
     return card;
@@ -112,7 +112,7 @@ function askCard(it, h, handlers) {
       h('div', { class: 'conv-opts' }, ...q.options.map((o) => h('span', { class: 'conv-opt', dir: 'auto' }, o))))),
     answered && it.answer ? h('div', { class: 'ask-answer', dir: 'auto' }, 'You answered: ', it.answer) : null,
     !answered && handlers.openTerminal
-      ? h('button', { type: 'button', class: 'small', onclick: () => handlers.openTerminal() }, 'Answer in terminal') : null);
+      ? h('button', { type: 'button', 'aria-label': 'Answer in terminal', title: 'Answer in terminal', class: 'small icon-btn', onclick: () => handlers.openTerminal() }, (handlers.icon ? handlers.icon('terminal') : 'Answer in terminal')) : null);
 }
 
 /**
@@ -146,7 +146,7 @@ export function menuCard(st, h, handlers = {}) {
   // would only duplicate it, so Cancel shows on menus without one.
   const hasDecline = st.options.some((o, i) => kindOf(o, i) === 'decline');
   const cancel = st.esc && !hasDecline && handlers.cancel ? h('button', { type: 'button', class: 'small ghost ask-cancel', onclick: () => handlers.cancel() }, 'Cancel') : null;
-  const term = handlers.openTerminal ? h('button', { type: 'button', class: 'small ask-term', onclick: () => handlers.openTerminal() }, 'Answer in terminal') : null;
+  const term = handlers.openTerminal ? h('button', { type: 'button', 'aria-label': 'Answer in terminal', title: 'Answer in terminal', class: 'small ask-term icon-btn', onclick: () => handlers.openTerminal() }, (handlers.icon ? handlers.icon('terminal') : 'Answer in terminal')) : null;
   return h('div', { class: 'ask-menu' },
     h('div', {}, h('strong', {}, 'Claude is asking')),
     prompt,
@@ -187,7 +187,7 @@ function shellCard(it, h) {
 export function fallbackNotice(h, handlers = {}) {
   return h('div', { class: 'conv-banner conv-fallback' },
     h('span', {}, h('span', { class: 'fallback-glyph', 'aria-hidden': 'true' }, '?'), "Claude is asking something this view can't show yet."),
-    handlers.openTerminal ? h('button', { type: 'button', class: 'small', onclick: () => handlers.openTerminal() }, 'Open terminal') : null);
+    handlers.openTerminal ? h('button', { type: 'button', 'aria-label': 'Open terminal', title: 'Open terminal', class: 'small icon-btn', onclick: () => handlers.openTerminal() }, (handlers.icon ? handlers.icon('terminal') : 'Open terminal')) : null);
 }
 
 // ---- day separators: only when the conversation spans more than one day.

@@ -31,7 +31,7 @@ export async function render(root, api, bus, me) {
   const lines = h('select', { 'aria-label': 'Lines' }, ...[100, 200, 500, 1000].map((n) => h('option', { value: String(n), selected: n === 200 }, `${n} lines`)));
   const follow = h('button', { type: 'button', class: 'switch', role: 'switch', 'aria-checked': 'true', 'aria-label': 'Follow live', hidden: readOnly, onclick: () => { follow.setAttribute('aria-checked', follow.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); } });
   const out = h('div', { class: 'log', role: 'log', 'aria-live': 'off' });
-  const exportBtn = readOnly ? null : h('button', { type: 'button', class: 'small', onclick: async () => {
+  const exportBtn = readOnly ? null : h('button', { type: 'button', 'aria-label': 'Export', title: 'Export', class: 'small icon-btn', onclick: async () => {
     try {
       const res = await fetch(`/api/v1/logs/export?level=${encodeURIComponent(level.value)}&q=${encodeURIComponent(q.value)}`, { headers: { 'X-Deus-Session': api.token() }, credentials: 'same-origin' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -40,7 +40,7 @@ export async function render(root, api, bus, me) {
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) { toast(err.message, 'error'); }
-  } }, icon('logs', { size: 14 }), 'Export');
+  } }, icon('download', { size: 16 }));
 
   async function draw() {
     clear(out);

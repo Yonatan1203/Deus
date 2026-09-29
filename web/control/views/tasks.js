@@ -71,12 +71,12 @@ export async function render(root, api, bus, me) {
   function row(t) {
     const runsHolder = h('div', { class: 'runs', hidden: true });
     const actions = readOnly ? [] : [
-      t.status === 'active' ? h('button', { type: 'button', class: 'small', onclick: () => act(() => api.post(`/api/v1/tasks/${encodeURIComponent(t.id)}/run`), 'Queued to run within a minute') }, icon('play', { size: 14 }), 'Run now') : null,
-      h('button', { type: 'button', class: 'small', onclick: () => act(() => api.patch(`/api/v1/tasks/${encodeURIComponent(t.id)}`, { status: t.status === 'paused' ? 'active' : 'paused' }), t.status === 'paused' ? 'Resumed' : 'Paused') }, t.status === 'paused' ? 'Resume' : 'Pause'),
-      h('button', { type: 'button', class: 'small danger', onclick: async () => {
+      t.status === 'active' ? h('button', { type: 'button', 'aria-label': 'Run now', title: 'Run now', class: 'small icon-btn', onclick: () => act(() => api.post(`/api/v1/tasks/${encodeURIComponent(t.id)}/run`), 'Queued to run within a minute') }, icon('play', { size: 16 })) : null,
+      h('button', { type: 'button', class: 'small icon-btn', 'aria-label': t.status === 'paused' ? 'Resume' : 'Pause', title: t.status === 'paused' ? 'Resume' : 'Pause', onclick: () => act(() => api.patch(`/api/v1/tasks/${encodeURIComponent(t.id)}`, { status: t.status === 'paused' ? 'active' : 'paused' }), t.status === 'paused' ? 'Resumed' : 'Paused') }, icon(t.status === 'paused' ? 'play' : 'pause', { size: 16 })),
+      h('button', { type: 'button', 'aria-label': 'Delete', title: 'Delete', class: 'small danger icon-btn', onclick: async () => {
         const ok = await confirmTyped(t.id, `Delete task ${t.id}? Its run history goes with it.`);
         if (ok) act(() => api.del(`/api/v1/tasks/${encodeURIComponent(t.id)}`, { 'X-Confirm': t.id }), 'Deleted');
-      } }, 'Delete'),
+      } }, icon('trash', { size: 16 })),
     ];
     const runsBtn = h('button', { type: 'button', class: 'small ghost', onclick: async () => {
       runsHolder.hidden = !runsHolder.hidden;

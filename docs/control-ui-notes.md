@@ -2477,3 +2477,29 @@ minimized option" and "the top section is going to waste". At desktop widths (�
 | Live session, 1000 × 800 | page 1156 px tall on an 800 px window | no page scroll; message box 26 px above the bottom | PASS |
 | Live session, 1280 × 900 and 1100 × 640 (list, and strip beside a page) | no page scroll | no page scroll; strip 56 px | PASS |
 | Modes: strip toggle, remembered per context, full list with nothing open, Hide sessions → New session in the bar, rail hidden → strip clear of the Show-menu button, phone 44 px rows with no strip | as described | 18/18 | PASS |
+
+## Icon-only buttons (#70 part 3 of 3, 2026-09-29)
+
+Operator: "in general avoid buttons with text." Toolbar, bar, row and card actions are now Lucide icons with the
+label as the screen-reader name and the tooltip (`icon-btn`: 34 px, 44 px on a phone): the Claude session bar
+(hide/show list, Pages with a count, Pin, Details, Stop), New session / New chat / Add agent / Add a link /
+Create artifact, Rename, Delete, Remove, Copy, Open beside, Dismiss, Answer in terminal, Open terminal, Run now,
+Pause/Resume, Stop, Rebuild, Export, Edit, Show pairing QR, Disconnect, Close and Sign out. Text stays where the
+words are the decision or part of a sentence: dialog and form buttons (Confirm, Cancel, Save, Start, Send
+answer, Submit answers, Next, the question's Back), notices (Try again, Reload, Show recent output, New messages ↓),
+setup steps (Set up, Connect Gmail), the model pill and the Runs disclosure. The DOM-free renderers
+(conversation.js, markdown.js) take the icon through their `handlers`, like `h`, and fall back to the text.
+Two icons added to the set (unplug, download). On a touch screen the tooltip does not show; the label is still
+read by screen readers. Cache v56.
+After review: Stop is a stop-in-a-circle (an empty square read as a checkbox), New session / New chat / Create
+artifact use a plus (the pen looked like Rename/Edit), danger icons (Stop, Delete, Remove, Disconnect) sit a
+little apart from their neighbours, the Pin tooltip matches its name ("Pin <session>"), and the phone's Sign out
+is 44 × 44 like every other icon button.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Every visible button on 12 tabs + open chat + open session + page beside (1280, stubbed API) | icon-only buttons all have a name; text only where the rule keeps it | 116 icon-only buttons, 0 without a name; text only on the agent card, the model pill and "Show recent output" | PASS |
+| Page errors / unknown icon names | none | none | PASS |
+| Phone audit (390, 13 tabs + open memory/chat/session, page beside, More sheet) | every icon-only button ≥ 44 × 44, name = tooltip | 47 buttons, all ≥ 44 × 44 except the composer Send (older, task #77) | PASS |
+| Same requests as before (17 actions, old vs new tree) | identical | identical (Chat new/rename/delete, Stop, Pin ×3, Tasks run/pause/resume/delete, Disconnect, QR, Remove, Memory save, Sign out ×2) | PASS |
+| Screenshots light + dark, 1280 + 390 (Claude with a page beside, Tasks, Chat) | clean rows of icons, 44 px on the phone | as expected | PASS |

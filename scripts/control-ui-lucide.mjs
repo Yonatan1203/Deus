@@ -32,7 +32,7 @@ export const MAP = {
   browser: 'AppWindow',
   // actions
   send: 'ArrowUp',
-  stop: 'Square',
+  stop: 'CircleStop',
   plus: 'Plus',
   pin: 'Pin',
   external: 'ExternalLink',
@@ -64,12 +64,14 @@ export const MAP = {
   collapse: 'Minimize2',
   back: 'ChevronLeft',
   copy: 'Copy',
-  'new-session': 'SquarePen',
+  'new-session': 'Plus',
   attach: 'Paperclip',
   terminal: 'SquareTerminal',
   answer: 'MessageSquareReply',
   'hide-sessions': 'PanelLeftClose',
   'show-sessions': 'PanelLeftOpen',
+  unplug: 'Unplug',
+  download: 'Download',
   // shown for a name that is not in this map (so a typo is visible, not silently another icon)
   'circle-help': 'CircleHelp',
 };

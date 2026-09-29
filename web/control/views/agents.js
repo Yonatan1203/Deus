@@ -85,7 +85,7 @@ export async function render(root, api, bus, me) {
       h('div', { class: 'agent-panel-head' },
         h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to agents', onclick: close }, '←'),
         h('h2', {}, a.name),
-        h('button', { type: 'button', class: 'small', onclick: close }, 'Close')),
+        h('button', { type: 'button', 'aria-label': 'Close', title: 'Close', class: 'small icon-btn', onclick: close }, icon('x', { size: 16 }))),
       h('div', { class: 'chips' },
         a.model ? badge(a.model, 'info') : null,
         a.version ? h('span', { class: 'chip' }, `v${a.version}`) : null,
@@ -104,10 +104,10 @@ export async function render(root, api, bus, me) {
     for (const el of grid.querySelectorAll('.agent-card')) el.classList.toggle('selected', el.dataset.name === a.name);
   }
 
-  const addBtn = readOnly ? null : h('button', { type: 'button', class: 'small primary', onclick: () => {
+  const addBtn = readOnly ? null : h('button', { type: 'button', 'aria-label': 'Add agent', title: 'Add agent', class: 'small primary icon-btn', onclick: () => {
     try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ name: 'New agent', prompt: TEMPLATE })); } catch { /* storage off: the form opens empty */ }
     location.hash = '#/claude';
-  } }, icon('plus', { size: 14 }), 'Add agent');
+  } }, icon('plus', { size: 16 }));
 
   const search = h('input', { type: 'search', placeholder: 'Filter agents by name, text or tool…', 'aria-label': 'Filter agents', oninput: (e) => draw(e.target.value) });
   root.append(header('Agents', { eyebrow: 'Advanced', count: list.length, actions: addBtn ? [addBtn] : [] }), h('div', { class: 'toolbar' }, search), layout);

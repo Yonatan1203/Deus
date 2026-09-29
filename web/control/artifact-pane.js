@@ -25,7 +25,7 @@ export function createArtifactPane(api) {
   const what = h('span', { class: 'ap-what muted' }, 'by a Claude session');
   const kind = h('span', { class: 'chip' });
   const link = h('a', { target: '_blank', rel: 'noopener noreferrer', class: 'icon-btn', hidden: true, 'aria-label': 'Open on claude.ai', title: 'Open on claude.ai' }, icon('external', { size: 16 }));
-  const closeBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close the page', title: 'Close' }, icon('x', { size: 16 }));
+  const closeBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close the page', title: 'Close the page' }, icon('x', { size: 16 }));
   // Expand: the pane takes the conversation's column too; the layout decides how (opts.onExpand).
   const expandBtn = h('button', { type: 'button', class: 'icon-btn ap-expand', 'aria-pressed': 'false', 'aria-label': 'Expand', title: 'Expand' }, icon('expand', { size: 16 }));
   // A short-lived line when the session published a newer version and the pane followed it.

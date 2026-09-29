@@ -42,7 +42,7 @@ export async function render(root, api, bus, me) {
       viewer.append(h('p', { class: 'muted' }, readOnly ? 'Read-only mode' : isGroupsClaude ? 'Edit this file from the Groups tab.' : 'Read-only from the dashboard.'));
       return;
     }
-    const edit = h('button', { type: 'button', onclick: () => {
+    const edit = h('button', { type: 'button', 'aria-label': 'Edit', title: 'Edit', class: 'small icon-btn', onclick: () => {
       const area = h('textarea', { class: 'editor-area', spellcheck: 'false' });
       area.value = doc.content;
       const save = h('button', { type: 'button', class: 'primary', onclick: async () => {
@@ -55,7 +55,7 @@ export async function render(root, api, bus, me) {
       } }, 'Save');
       pre.replaceWith(area);
       edit.replaceWith(h('div', { class: 'editor-actions' }, h('button', { type: 'button', class: 'ghost', onclick: () => open(e) }, 'Cancel'), save));
-    } }, 'Edit');
+    } }, icon('edit', { size: 16 }));
     viewer.append(h('div', { class: 'editor-actions' }, edit));
   }
 

@@ -318,7 +318,7 @@ async function logout() {
   if ($('more').open) $('more').close();
   showLogin();
 }
-for (const id of ['logout', 'more-logout']) $(id).prepend(icon('logout', { size: 16 }));
+for (const id of ['logout', 'more-logout']) $(id).append(icon('logout', { size: 16 }));
 $('logout').addEventListener('click', logout);
 
 // Hide the left menu for more room (desktop; remembered in this browser only).

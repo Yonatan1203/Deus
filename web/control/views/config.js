@@ -1,6 +1,7 @@
 import { h, clear } from '../dom.js';
 import { header } from '../app.js';
 import { banner, confirmTyped, toast } from '../ui.js';
+import { icon } from '../icons.js';
 
 export async function render(root, api, bus, me) {
   const readOnly = Boolean(me && me.read_only);
@@ -15,7 +16,7 @@ export async function render(root, api, bus, me) {
         const valueCell = h('td', {}, h('code', {}, k.value));
         const actionCell = h('td', {});
         if (k.editable && !readOnly) {
-          const edit = h('button', { type: 'button', class: 'small ghost', onclick: () => {
+          const edit = h('button', { type: 'button', 'aria-label': 'Edit', title: 'Edit', class: 'small ghost icon-btn', onclick: () => {
             const input = h('input', { type: 'text', value: k.value, 'aria-label': `New value for ${k.key}` });
             const save = h('button', { type: 'button', class: 'small primary', onclick: async () => {
               const ok = await confirmTyped(k.key, `Change ${k.key} in .env? A backup is kept; the assistant must be restarted to apply it.`);
@@ -30,7 +31,7 @@ export async function render(root, api, bus, me) {
             const cancel = h('button', { type: 'button', class: 'small ghost', onclick: () => draw() }, 'Cancel');
             clear(valueCell); valueCell.append(input);
             clear(actionCell); actionCell.append(h('div', { class: 'actions-col' }, save, cancel));
-          } }, 'Edit');
+          } }, icon('edit', { size: 16 }));
           actionCell.append(edit);
         }
         return h('tr', {}, h('td', {}, h('code', {}, k.key)), valueCell, h('td', {}, h('span', { class: 'chip' }, k.source)), actionCell);

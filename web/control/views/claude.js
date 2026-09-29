@@ -298,6 +298,8 @@ async function openLive(api, host, session, onEnd) {
   };
 }
 
+// Icons for the DOM-free conversation and markdown renderers (they take `h` and handlers, not imports).
+const ic16 = (n) => icon(n, { size: 16 });
 const SESS_KEY = 'deus-control.claude-sessions-hidden';
 // Full list or the minimized strip, remembered separately for "a page open beside" and "no page".
 const LIST_KEYS = { beside: 'deus-control.claude-list-beside', alone: 'deus-control.claude-list-alone' };
@@ -438,7 +440,7 @@ export async function render(root, api, bus, me) {
     h('p', { class: 'hint' }, 'Starts in auto mode in the Deus repo, the same as a terminal session.'),
     h('div', { class: 'editor-actions' }, h('button', { type: 'button', onclick: () => { form.hidden = true; } }, 'Cancel'), startBtn));
   const toggleForm = () => { form.hidden = !form.hidden; if (!form.hidden) nameInput.focus(); };
-  const newBtn = readOnly ? null : h('button', { type: 'button', class: 'small primary', onclick: toggleForm }, icon('plus', { size: 14 }), 'New session');
+  const newBtn = readOnly ? null : h('button', { type: 'button', 'aria-label': 'New session', title: 'New session', class: 'small primary icon-btn', onclick: toggleForm }, icon('new-session', { size: 16 }));
   newSide.addEventListener('click', toggleForm);
 
   // ---- list ----
@@ -451,11 +453,11 @@ export async function render(root, api, bus, me) {
   }
   function pinButton(s, withLabel) {
     return h('button', {
-      type: 'button', class: `small pin-btn${s.pinned ? ' on' : ''}`,
+      type: 'button', class: `small pin-btn${s.pinned ? ' on' : ''}${withLabel ? ' icon-btn' : ''}`,
       'aria-pressed': s.pinned ? 'true' : 'false',
-      'aria-label': `${s.pinned ? 'Unpin' : 'Pin'} ${s.name}`, title: s.pinned ? 'Unpin' : 'Pin to the top',
+      'aria-label': `${s.pinned ? 'Unpin' : 'Pin'} ${s.name}`, title: `${s.pinned ? 'Unpin' : 'Pin'} ${s.name}`,
       onclick: (e) => { e.stopPropagation(); setPinned(s, !s.pinned); },
-    }, icon('pin', { size: 14 }), withLabel ? (s.pinned ? 'Unpin' : 'Pin') : null);
+    }, icon('pin', { size: withLabel ? 16 : 14 }));
   }
   function row(s) {
     const [label, kind] = stateOf(s);
@@ -534,7 +536,11 @@ export async function render(root, api, bus, me) {
     const label = mode === 'mini' ? 'Expand the session list' : 'Minimize the session list';
     miniBtn.replaceChildren(icon(mode === 'mini' ? 'show-sessions' : 'hide-sessions', { size: 16 }));
     miniBtn.setAttribute('aria-label', label); miniBtn.title = label;
-    if (current && current.sessionsBtn) current.sessionsBtn.textContent = mode === 'hidden' ? 'Show sessions' : 'Hide sessions';
+    if (current && current.sessionsBtn) {
+      const hid = mode === 'hidden', l = hid ? 'Show sessions' : 'Hide sessions';
+      current.sessionsBtn.replaceChildren(icon(hid ? 'show-sessions' : 'hide-sessions', { size: 16 }));
+      current.sessionsBtn.setAttribute('aria-label', l); current.sessionsBtn.title = l;
+    }
   }
   miniBtn.addEventListener('click', () => {
     const ctx = wrap.classList.contains('with-artifact') ? 'beside' : 'alone';
@@ -560,7 +566,7 @@ export async function render(root, api, bus, me) {
       h('dt', {}, 'Kind'), h('dd', {}, KIND_LABEL[s.kind] || s.kind));
     // "Pages": this session's pages that can open beside the conversation.
     convUrls = new Set();
-    const pagesBtn = h('button', { type: 'button', class: 'small', hidden: true, 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, 'Pages');
+    const pagesBtn = h('button', { type: 'button', class: 'small icon-btn pages-btn', hidden: true, 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': 'Pages', title: 'Pages' }, icon('pages', { size: 16 }));
     const pagesMenu = h('div', { class: 'pages-menu', role: 'menu', hidden: true });
     const pagesWrap = h('div', { class: 'pages-wrap' }, pagesBtn, pagesMenu);
     const sessionPages = () => [...artifactsByUrl.values()]
@@ -570,7 +576,9 @@ export async function render(root, api, bus, me) {
     pagesRefresh = () => {
       const list = sessionPages();
       pagesBtn.hidden = list.length === 0;
-      pagesBtn.textContent = list.length > 1 ? `Pages (${list.length})` : 'Page';
+      const pagesLabel = list.length > 1 ? `Pages (${list.length})` : 'Page';
+      pagesBtn.setAttribute('aria-label', pagesLabel); pagesBtn.title = pagesLabel;
+      pagesBtn.replaceChildren(icon('pages', { size: 16 }), list.length > 1 ? h('span', { class: 'btn-count', 'aria-hidden': 'true' }, String(list.length)) : null);
       pagesMenu.replaceChildren(...list.map((a) => h('button', { type: 'button', class: 'pages-item', role: 'menuitem', onclick: () => { closeMenu(); openArtifact(a); } },
         h('span', { class: 'pages-title', dir: 'auto' }, a.title), h('span', { class: 'muted small' }, a.added_at ? fmtTime(a.added_at) : ''))));
       if (!list.length) closeMenu();
@@ -586,7 +594,7 @@ export async function render(root, api, bus, me) {
     pagesOutside = (t) => { if (!pagesWrap.contains(t)) closeMenu(); };
     pagesRefresh();
     // Hide sessions (≥ 900 px): the open session takes the list's width; remembered in this browser.
-    const sessionsBtn = h('button', { type: 'button', class: 'small sessions-toggle' });
+    const sessionsBtn = h('button', { type: 'button', class: 'small sessions-toggle icon-btn' });
     current.sessionsBtn = sessionsBtn;
     sessionsBtn.addEventListener('click', () => {
       const hidden = !wrap.classList.contains('sessions-hidden');
@@ -603,13 +611,13 @@ export async function render(root, api, bus, me) {
         sessionsBtn,
         pagesWrap,
         pinSlot,
-        h('button', { type: 'button', class: 'small', onclick: () => { details.hidden = !details.hidden; } }, 'Details'),
-        readOnly || s.kind !== 'background' ? null : h('button', { type: 'button', class: 'small danger', onclick: async () => {
+        h('button', { type: 'button', 'aria-label': 'Details', title: 'Details', class: 'small icon-btn', onclick: () => { details.hidden = !details.hidden; } }, icon('details', { size: 16 })),
+        readOnly || s.kind !== 'background' ? null : h('button', { type: 'button', 'aria-label': 'Stop', title: 'Stop', class: 'small danger icon-btn', onclick: async () => {
           const ok = await confirmTyped(s.id, `Stop "${s.name}"? Its conversation is kept; you can resume it later.`);
           if (!ok) return;
           try { await api.post(`/api/v1/claude/sessions/${s.id}/stop`, undefined, { 'X-Confirm': s.id }); toast('Stopped', 'ok'); closeCurrent(); await load(); placeholder(); }
           catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
-        } }, 'Stop')));
+        } }, icon('stop', { size: 16 }))));
     pane.append(bar, details);
     applyListMode();
 
@@ -761,9 +769,9 @@ export async function render(root, api, bus, me) {
     // opens the newest and leaves the others on the notice; Dismiss clears all.
     const cpTitle = h('span', { class: 'cp-title', dir: 'auto' });
     const cpMore = h('span', { class: 'muted' });
-    const cpBtn = h('button', { type: 'button', class: 'small primary' }, 'Open beside');
+    const cpBtn = h('button', { type: 'button', 'aria-label': 'Open beside', title: 'Open beside', class: 'small primary icon-btn' }, icon('beside', { size: 16 }));
     const publishedEl = h('div', { class: 'conv-published', role: 'status', hidden: true }, 'Claude published ', cpTitle, cpMore, cpBtn,
-      h('button', { type: 'button', class: 'small ghost', onclick: () => { published.length = 0; publishedEl.hidden = true; } }, 'Dismiss'));
+      h('button', { type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', class: 'small ghost icon-btn', onclick: () => { published.length = 0; publishedEl.hidden = true; } }, icon('x', { size: 16 })));
     const published = []; // newest last
     function drawPublished() {
       if (!published.length) { publishedEl.hidden = true; return; }
@@ -808,7 +816,7 @@ export async function render(root, api, bus, me) {
     // No "waiting for you in the terminal": the cards answer what the
     // terminal shows. Only when the session is blocked and two interval ticks
     // saw a screen no parser knows does this say so (ask-fallback.js).
-    const banner = fallbackNotice(h, { openTerminal });
+    const banner = fallbackNotice(h, { openTerminal, icon: ic16 });
     banner.hidden = true;
     const missCounter = createMissCounter(2);
     const modeEl = h('span', { class: 'conv-mode' });
@@ -991,11 +999,11 @@ export async function render(root, api, bus, me) {
     function drawMenu(st) {
       lastMenu = st;
       askEl.dataset.kind = 'menu';
-      askEl.replaceChildren(menuCard(st, h, { pick: sendPick, cancel: () => sendKeys(['\x1b']), openTerminal }));
+      askEl.replaceChildren(menuCard(st, h, { pick: sendPick, cancel: () => sendKeys(['\x1b']), openTerminal, icon: ic16 }));
     }
     function drawAsk(st) {
       askEl.dataset.kind = st.kind;
-      const term = h('button', { type: 'button', class: 'small ask-term', onclick: openTerminal }, 'Answer in terminal');
+      const term = h('button', { type: 'button', 'aria-label': 'Answer in terminal', title: 'Answer in terminal', class: 'small ask-term icon-btn', onclick: openTerminal }, icon('terminal', { size: 16 }));
       if (st.kind === 'review') {
         askEl.replaceChildren(
           h('div', {}, h('strong', {}, 'Review your answers')),
@@ -1067,7 +1075,7 @@ export async function render(root, api, bus, me) {
         const lastA = [...r.items].reverse().find((it) => it.k === 'assistant');
         lastAssistantText = lastA ? lastA.text : '';
         if (liveText && lastAssistantText.includes(liveText.slice(0, 60))) updateLive(null);
-        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact, copy, state: renderState });
+        if (r.items.length) renderConversation(listEl, r.items, h, { openTerminal, expanded, localArtifact, openArtifact, copy, state: renderState, icon: ic16 });
         else listEl.replaceChildren(h('div', { class: 'conv-note' }, 'No messages yet. Write the first one below — text only, no attachments.'));
         if (!first && !near) newerBtn.hidden = false;
         truncNote.hidden = !r.truncated;

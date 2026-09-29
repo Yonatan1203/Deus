@@ -135,7 +135,7 @@ function renderInline(spans, h, handlers = {}) {
       const a = h('a', { href: s.href, target: '_blank', rel: 'noopener noreferrer' }, s.text);
       const entry = canOpen ? handlers.localArtifact(s.href) : null;
       if (!entry) return [a];
-      return [a, h('button', { type: 'button', class: 'md-open-beside', onclick: () => handlers.openArtifact(entry) }, 'Open beside')];
+      return [a, h('button', { type: 'button', 'aria-label': 'Open beside', title: 'Open beside', class: 'md-open-beside icon-btn', onclick: () => handlers.openArtifact(entry) }, (handlers.icon ? handlers.icon('beside') : 'Open beside'))];
     }
     return [s.text];
   });
@@ -156,7 +156,7 @@ export function renderBlocks(blocks, h, handlers = {}) {
       case 'ul':
       case 'ol': return h(b.type, { dir: 'auto' }, ...b.items.map(li));
       case 'code': return h('div', { class: 'md-codewrap' },
-        handlers.copy ? h('button', { type: 'button', class: 'small ghost md-copy', 'aria-label': 'Copy the code', onclick: () => handlers.copy(b.text) }, 'Copy') : null,
+        handlers.copy ? h('button', { type: 'button', 'aria-label': 'Copy the code', title: 'Copy the code', class: 'small ghost md-copy icon-btn', onclick: () => handlers.copy(b.text) }, (handlers.icon ? handlers.icon('copy') : 'Copy the code')) : null,
         h('pre', { class: 'md-code', dir: 'ltr' }, h('code', {}, b.text)));
       case 'table': return h('table', { class: 'md-table', dir: 'auto' },
         h('thead', {}, h('tr', {}, ...b.head.map((c) => h('th', { dir: 'auto' }, ...renderInline(c, h, handlers))))),

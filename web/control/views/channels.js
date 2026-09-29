@@ -49,7 +49,7 @@ export async function render(root, api, bus, me) {
           p.pairing_code_available ? badge('pairing code available', 'info') : null));
         if (!p.needs_pairing) served.delete(c.name);
         if (p.needs_pairing && p.qr_available && !readOnly) {
-          card.append(h('button', { type: 'button', onclick: async () => {
+          card.append(h('button', { type: 'button', 'aria-label': 'Show pairing QR', title: 'Show pairing QR', class: 'small icon-btn', onclick: async () => {
             const ok = await confirmTyped('whatsapp', "This links a phone as the assistant's WhatsApp. Unlink later from WhatsApp → Linked devices.");
             if (!ok) return;
             try {
@@ -57,7 +57,7 @@ export async function render(root, api, bus, me) {
               served.set(c.name, r);
               await draw(); // rebuild from state: a redraw may have replaced this card mid-request
             } catch (err) { toast(err.status === 409 ? 'Already paired' : err.message, 'error'); }
-          } }, icon('qr', { size: 16 }), 'Show pairing QR'), panel);
+          } }, icon('qr', { size: 16 })), panel);
         }
       }
       if (c.name === 'gmail') card.append(await gmailPanel());
@@ -82,7 +82,7 @@ export async function render(root, api, bus, me) {
       const age = st.token_age_ms != null ? `token refreshed ${Math.max(1, Math.round(st.token_age_ms / 3_600_000))}h ago` : null;
       panel.append(h('p', {}, `Connected as ${st.email || 'unknown account'}${age ? ` · ${age}` : ''}`));
       if (!readOnly) {
-        panel.append(h('button', { type: 'button', class: 'small danger', onclick: async () => {
+        panel.append(h('button', { type: 'button', 'aria-label': 'Disconnect', title: 'Disconnect', class: 'small danger icon-btn', onclick: async () => {
           const ok = await confirmTyped('gmail', 'Disconnect this Gmail account? The token is revoked at Google and the assistant stops reading the mailbox.');
           if (!ok) return;
           try {
@@ -91,7 +91,7 @@ export async function render(root, api, bus, me) {
             if (!r.deleted) toast('A token file reappeared; disconnect again in a moment', 'error');
             await draw();
           } catch (err) { toast(err.message, 'error'); }
-        } }, 'Disconnect'));
+        } }, icon('unplug', { size: 16 })));
       }
       return panel;
     }
