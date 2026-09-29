@@ -2540,3 +2540,17 @@ phones. Cache v57.
 | Server route tests | 428 without confirm, 400 bad model and floor, 404 unknown and `../x`, 200 with commit sha and audit fields, 403 read-only | passed | PASS |
 | `npx vitest run src/control-ui` | green | 457 passed | PASS |
 | Drive (stubbed API; 1280, 390, refused, read-only) | options + value, cancel sends nothing, confirm text, PUT body + X-Confirm, viewer + card + toast after save, Haiku off on code-reviewer, 409 reverts with the reason, picker only on warden rows that are agents, no sideways scroll, no page errors, read-only shows text | all 29 checks pass (after the row fix) | PASS |
+
+## Wardens tab writes only what changed (#78 part 1, 2026-09-29)
+
+Found while planning the GPT second opinion: with no `.claude/wardens/config.json` (the live checkout has none,
+and the gate hooks read only that file, for every worktree), turning any warden on or off wrote the whole
+`config.json.example` into it — including `code-reviewer.backends: ["claude","gpt"]`, which makes every commit
+wait for a codex review that cannot run here. Now the tab lists every warden from the example and config.json
+together (config.json's values win), a switch writes just that warden's `enabled` into config.json (created from
+`{}`), and the example's `backends` are never shown or copied — the tab shows the gate the hooks actually use.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `wardens.test.ts` | toggle without config.json writes only `{role: {enabled}}`, no `gpt`; every example warden still listed and switchable; config.json's backends shown, example's not; a write keeps other fields and roles | 4 passed (the old assertion that expected the example's backends in the written file was the bug; rewritten) | PASS |
+| `npx vitest run src/control-ui` | green | 459 passed | PASS |

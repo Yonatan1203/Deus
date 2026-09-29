@@ -13,7 +13,7 @@ const EXAMPLE = {
   'code-reviewer': {
     enabled: true,
     tools: ['Bash'],
-    backends: ['claude'],
+    backends: ['claude', 'gpt'],
     custom_instructions: null,
   },
   'session-retrospective': {
@@ -67,7 +67,50 @@ describe('control-ui wardens', () => {
     const written = JSON.parse(
       fs.readFileSync(path.join(dir, 'config.json'), 'utf-8'),
     );
-    expect(written['plan-reviewer'].enabled).toBe(true);
-    expect(written['code-reviewer'].backends).toEqual(['claude']);
+    expect(written).toEqual({ 'plan-reviewer': { enabled: true } });
+  });
+
+  it('never copies the example into config.json, so no gate appears from it', () => {
+    const dir = fixture();
+    setWardenEnabled(dir, 'session-retrospective', true);
+    const text = fs.readFileSync(path.join(dir, 'config.json'), 'utf-8');
+    expect(JSON.parse(text)).toEqual({
+      'session-retrospective': { enabled: true },
+    });
+    expect(text).not.toContain('gpt');
+    // Every example warden is still listed and can still be toggled.
+    expect(listWardens(dir).map((w) => w.name)).toEqual([
+      'code-reviewer',
+      'plan-reviewer',
+      'session-retrospective',
+    ]);
+    expect(setWardenEnabled(dir, 'code-reviewer', false)?.enabled).toBe(false);
+  });
+
+  it("shows only config.json's backends, and keeps other fields on a write", () => {
+    const dir = fixture();
+    expect(listWardens(dir)[0].backends).toBeUndefined();
+    fs.writeFileSync(
+      path.join(dir, 'config.json'),
+      JSON.stringify({
+        'code-reviewer': { backends: ['claude'], custom_instructions: 'y' },
+        extra: { enabled: true },
+      }),
+    );
+    const cr = listWardens(dir).find((w) => w.name === 'code-reviewer');
+    expect(cr?.backends).toEqual(['claude']);
+    expect(cr?.tools).toEqual(['Bash']);
+    expect(listWardens(dir).map((w) => w.name)).toContain('extra');
+    setWardenEnabled(dir, 'code-reviewer', false);
+    expect(
+      JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf-8')),
+    ).toEqual({
+      'code-reviewer': {
+        backends: ['claude'],
+        custom_instructions: 'y',
+        enabled: false,
+      },
+      extra: { enabled: true },
+    });
   });
 });

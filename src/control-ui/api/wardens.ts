@@ -13,27 +13,39 @@ export interface WardenInfo {
 
 type RawConfig = Record<string, Record<string, unknown>>;
 
-function readConfig(wardensDir: string): {
-  raw: RawConfig;
-  fromExample: boolean;
-} {
-  const candidates = [
-    ['config.json', false],
-    ['config.json.example', true],
-  ] as const;
-  for (const [file, fromExample] of candidates) {
-    try {
-      const parsed: unknown = JSON.parse(
-        fs.readFileSync(path.join(wardensDir, file), 'utf-8'),
-      );
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return { raw: parsed as RawConfig, fromExample };
-      }
-    } catch {
-      // fall through to the next candidate
-    }
+function readJson(file: string): RawConfig | null {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      return parsed as RawConfig;
+  } catch {
+    // missing or unreadable
   }
-  return { raw: {}, fromExample: true };
+  return null;
+}
+
+/** The gitignored config.json the gate hooks read; {} when there is none. */
+function readLive(wardensDir: string): { raw: RawConfig; exists: boolean } {
+  const raw = readJson(path.join(wardensDir, 'config.json'));
+  return { raw: raw ?? {}, exists: raw !== null };
+}
+
+/**
+ * What the tab shows: every warden named in the example or in config.json,
+ * config.json's values over the example's. The example's `backends` are left
+ * out — the gate reads config.json only, so they would show a gate that does
+ * not exist.
+ */
+function readMerged(wardensDir: string): RawConfig {
+  const example = readJson(path.join(wardensDir, 'config.json.example')) ?? {};
+  const { raw } = readLive(wardensDir);
+  const out: RawConfig = {};
+  for (const name of new Set([...Object.keys(example), ...Object.keys(raw)])) {
+    const base = { ...(example[name] ?? {}) };
+    delete base.backends;
+    out[name] = { ...base, ...(raw[name] ?? {}) };
+  }
+  return out;
 }
 
 function rulesFileFor(name: string, files: string[]): string | null {
@@ -73,11 +85,35 @@ function mdFiles(wardensDir: string): string[] {
 }
 
 export function listWardens(wardensDir: string): WardenInfo[] {
-  const { raw } = readConfig(wardensDir);
+  const raw = readMerged(wardensDir);
   const files = mdFiles(wardensDir);
   return Object.keys(raw)
     .sort()
     .map((name) => toInfo(name, raw[name] ?? {}, files));
+}
+
+/**
+ * Sets one field of one warden in config.json and nothing else: the file is
+ * never seeded from the example, whose `backends` would change every commit's
+ * gate.
+ */
+function writeField(
+  wardensDir: string,
+  name: string,
+  field: string,
+  value: unknown,
+): WardenInfo | null {
+  if (!Object.prototype.hasOwnProperty.call(readMerged(wardensDir), name))
+    return null;
+  const { raw, exists } = readLive(wardensDir);
+  raw[name] = { ...(raw[name] ?? {}), [field]: value };
+  const target = path.join(wardensDir, 'config.json');
+  if (exists) {
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    fs.copyFileSync(target, `${target}.bak-${stamp}`);
+  }
+  fs.writeFileSync(target, JSON.stringify(raw, null, 2) + '\n');
+  return toInfo(name, readMerged(wardensDir)[name], mdFiles(wardensDir));
 }
 
 export function setWardenEnabled(
@@ -85,14 +121,5 @@ export function setWardenEnabled(
   name: string,
   enabled: boolean,
 ): WardenInfo | null {
-  const { raw, fromExample } = readConfig(wardensDir);
-  if (!Object.prototype.hasOwnProperty.call(raw, name)) return null;
-  raw[name] = { ...raw[name], enabled };
-  const target = path.join(wardensDir, 'config.json');
-  if (!fromExample) {
-    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-    fs.copyFileSync(target, `${target}.bak-${stamp}`);
-  }
-  fs.writeFileSync(target, JSON.stringify(raw, null, 2) + '\n');
-  return toInfo(name, raw[name], mdFiles(wardensDir));
+  return writeField(wardensDir, name, 'enabled', enabled);
 }
