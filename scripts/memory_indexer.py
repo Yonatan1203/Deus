@@ -4120,6 +4120,42 @@ def backfill_atom_angles(
     return stats
 
 
+def _link_entities(db: sqlite3.Connection, content: str, today: str,
+                   atom_ids: list[int]) -> tuple[int, int]:
+    """Extract entities/relationships from a session log, upsert them and link the given atoms.
+
+    Returns (entities, relationships) as extracted. Idempotent: upserts, and INSERT OR IGNORE links.
+    """
+    ent_rel = extract_entities_and_relations(content)
+    entities = ent_rel.get("entities", [])
+    relationships = ent_rel.get("relationships", [])
+
+    entity_refs: list[tuple[str, str]] = []
+    for ent in entities:
+        if isinstance(ent, dict) and "name" in ent and "entity_type" in ent:
+            domain = classify_domain(ent.get("summary", ent["name"]))
+            upsert_entity(db, ent["name"], ent["entity_type"], domain, today)
+            entity_refs.append((ent["name"], ent["entity_type"]))
+
+    for rel in relationships:
+        if isinstance(rel, dict) and "source" in rel and "target" in rel and "rel_type" in rel:
+            src_row = db.execute(
+                "SELECT id FROM entities WHERE name = ?", [rel["source"].strip().lower()]
+            ).fetchone()
+            tgt_row = db.execute(
+                "SELECT id FROM entities WHERE name = ?", [rel["target"].strip().lower()]
+            ).fetchone()
+            if src_row and tgt_row:
+                upsert_relationship(db, src_row[0], tgt_row[0], rel["rel_type"],
+                                    rel.get("confidence", 0.5), today)
+
+    for atom_id in atom_ids:
+        link_atom_entities(db, atom_id, entity_refs)
+
+    db.commit()
+    return len(entities), len(relationships)
+
+
 def cmd_extract(session_path: str, no_contradict: bool = False):
     path = Path(session_path).expanduser().resolve()
     if not path.exists():
@@ -4210,40 +4246,15 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
     db.commit()
     print(f"Extracted {new_count + corroborated_count} atoms ({new_count} new, {corroborated_count} corroborated)")
 
-    # Phase 2: entity/relationship extraction + contradiction detection
+    # Phase 2: entity/relationship extraction + contradiction detection.
+    # SystemExit too: load_api_key exits when a Gemini fallback has no key, and that must not end
+    # --extract before the contradiction check (2026-09-29, an old indexer copy lost both phases).
     try:
-        ent_rel = extract_entities_and_relations(content)
-        entities = ent_rel.get("entities", [])
-        relationships = ent_rel.get("relationships", [])
-
-        entity_refs: list[tuple[str, str]] = []
-        for ent in entities:
-            if isinstance(ent, dict) and "name" in ent and "entity_type" in ent:
-                domain = classify_domain(ent.get("summary", ent["name"]))
-                upsert_entity(db, ent["name"], ent["entity_type"], domain, today)
-                entity_refs.append((ent["name"], ent["entity_type"]))
-
-        for rel in relationships:
-            if isinstance(rel, dict) and "source" in rel and "target" in rel and "rel_type" in rel:
-                src_row = db.execute(
-                    "SELECT id FROM entities WHERE name = ?", [rel["source"].strip().lower()]
-                ).fetchone()
-                tgt_row = db.execute(
-                    "SELECT id FROM entities WHERE name = ?", [rel["target"].strip().lower()]
-                ).fetchone()
-                if src_row and tgt_row:
-                    upsert_relationship(db, src_row[0], tgt_row[0], rel["rel_type"],
-                                        rel.get("confidence", 0.5), today)
-
-        # Link new atoms to entities
-        for atom_id, atom_text, _ in new_atom_ids:
-            link_atom_entities(db, atom_id, entity_refs)
-
-        db.commit()
-        if entities:
-            print(f"  graph: {len(entities)} entities, {len(relationships)} relationships")
-    except Exception as e:
-        print(f"  WARN: entity extraction failed: {e}", file=sys.stderr)
+        n_entities, n_relationships = _link_entities(db, content, today, [i for i, _, _ in new_atom_ids])
+        if n_entities:
+            print(f"  graph: {n_entities} entities, {n_relationships} relationships")
+    except (Exception, SystemExit) as e:
+        print(f"  WARN: entity extraction failed: {e!r}", file=sys.stderr)
 
     # Contradiction detection for new atoms
     if not no_contradict and new_atom_ids:
@@ -4266,8 +4277,9 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
             ).fetchone()[0]
             if backlog:
                 print(f"  review backlog: {backlog} unresolved conflict(s) pending (use --resolve-conflicts)")
-        except Exception as e:
-            print(f"  WARN: contradiction detection failed: {e}", file=sys.stderr)
+        except (Exception, SystemExit) as e:
+            print(f"  WARN: contradiction detection failed: {e!r} — {len(new_atom_ids)} new atom(s) unchecked",
+                  file=sys.stderr)
 
 
 def cmd_rebuild():

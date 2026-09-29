@@ -3131,6 +3131,64 @@ def test_cmd_extract_prints_review_backlog(mi, fresh_vault, monkeypatch, capsys)
     assert "review backlog: 1 unresolved conflict(s) pending (use --resolve-conflicts)" in out
 
 
+def _missing_key():
+    # What load_api_key does when GEMINI_API_KEY is absent (memory_indexer.load_api_key).
+    raise SystemExit(3)
+
+
+def test_cmd_extract_entity_key_exit_still_runs_contradictions(mi, fresh_vault, monkeypatch, capsys):
+    """A missing Gemini key during entity extraction (SystemExit from load_api_key) must not end
+    --extract: atoms stay stored, a WARN is printed and the contradiction phase still runs.
+    2026-09-29: a session running an old indexer copy lost both phases this way, silently."""
+    session = _extract_session(mi, fresh_vault, monkeypatch)
+    monkeypatch.setattr(mi, "extract_entities_and_relations", lambda c: _missing_key())
+    seen = []
+    monkeypatch.setattr(mi, "detect_contradictions",
+                        lambda db, i, t, v, breaker=None: seen.append(i) or mi.ContradictionResult())
+
+    mi.cmd_extract(str(session))  # must return, not raise SystemExit
+
+    err = capsys.readouterr().err
+    assert "WARN: entity extraction failed" in err
+    assert len(seen) == 1
+
+
+def test_cmd_extract_contradiction_key_exit_warns_unchecked(mi, fresh_vault, monkeypatch, capsys):
+    """Same for the contradiction phase: WARN naming how many new atoms went unchecked; no exit."""
+    session = _extract_session(mi, fresh_vault, monkeypatch)
+    monkeypatch.setattr(mi, "extract_entities_and_relations", lambda c: {"entities": [], "relationships": []})
+    monkeypatch.setattr(mi, "detect_contradictions", lambda *a, **k: _missing_key())
+
+    mi.cmd_extract(str(session))
+
+    err = capsys.readouterr().err
+    assert "WARN: contradiction detection failed" in err
+    assert "1 new atom(s) unchecked" in err
+
+
+def test_link_entities_takes_plain_atom_ids(mi, fresh_vault, monkeypatch):
+    """_link_entities is the phase-2 body, callable on its own with atom ids (repair path)."""
+    db = mi.open_db()
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type) VALUES ('a.md', '2024-01-01', 'uses sqlite', 'atom')")
+    atom_id = cur.lastrowid
+    db.commit()
+    monkeypatch.setattr(mi, "extract_entities_and_relations", lambda c: {
+        "entities": [{"name": "Deus", "entity_type": "project", "summary": "assistant"},
+                     {"name": "SQLite", "entity_type": "tool", "summary": "db"}],
+        "relationships": [{"source": "deus", "target": "sqlite", "rel_type": "uses", "confidence": 0.9}],
+    })
+
+    n_ent, n_rel = mi._link_entities(db, "log text", "2024-01-01", [atom_id])
+
+    assert (n_ent, n_rel) == (2, 1)
+    names = {r[0] for r in db.execute("SELECT name FROM entities")}
+    assert names == {"deus", "sqlite"}
+    assert db.execute("SELECT COUNT(*) FROM relationships").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM atom_entities WHERE atom_id = ?", [atom_id]).fetchone()[0] == 2
+    db.close()
+
+
 def test_cmd_extract_no_backlog_line_when_clean(mi, fresh_vault, monkeypatch, capsys):
     """No backlog reminder when every conflict is resolved (queue is clean)."""
     db = mi.open_db()
