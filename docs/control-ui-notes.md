@@ -2503,3 +2503,40 @@ is 44 × 44 like every other icon button.
 | Phone audit (390, 13 tabs + open memory/chat/session, page beside, More sheet) | every icon-only button ≥ 44 × 44, name = tooltip | 47 buttons, all ≥ 44 × 44 except the composer Send (older, task #77) | PASS |
 | Same requests as before (17 actions, old vs new tree) | identical | identical (Chat new/rename/delete, Stop, Pin ×3, Tasks run/pause/resume/delete, Disconnect, QR, Remove, Memory save, Sign out ×2) | PASS |
 | Screenshots light + dark, 1280 + 390 (Claude with a page beside, Tasks, Chat) | clean rows of icons, 44 px on the phone | as expected | PASS |
+
+## Choose each agent's model (#75, 2026-09-29)
+
+The Agents viewer and the Wardens rows that are agents (plan-reviewer, code-reviewer, threat-modeler,
+architecture-snapshot, session-retrospective) have a **Model** select: Fable 5.1, Opus 5.5, Sonnet 5.5 or
+Haiku 4.5. The review gates (plan-reviewer, code-reviewer, threat-modeler, verification-gate, ai-eng-warden) cannot
+go to Haiku. Saving asks the typed confirm (the agent's name).
+
+The choice is **committed** (operator's decision; keeping it local across every worktree was reviewed three
+times and dropped): `PUT /api/v1/agents/:name/model` rewrites the one `model:` line in the agent's frontmatter in
+the live checkout and commits that file alone on the checked-out branch — `chore(agents): <name> runs on
+<model>`, body "Changed from Amos Control." The nightly job pushes it to the fork with everything else.
+`src/control-ui/api/agent-models.ts`:
+
+- Refuses (409, nothing written) when the checkout is not on a branch, a merge/rebase/cherry-pick/revert is under
+  way, the file is untracked or already has local edits (staged or not), or the frontmatter has 0 or 2+ `model:`
+  lines. The agent is found by its frontmatter name; the file must be a plain file directly in `.claude/agents`.
+- Before the commit: the diff must be exactly `1 1 <file>` and HEAD unchanged. After: the commit must be exactly
+  that one line. On a failed commit the old bytes go back only if HEAD has not moved and the file still holds what
+  was written. `index.lock` held elsewhere → 409 "the checkout is busy; try again".
+- `git commit --no-verify --only -- <file>` with `commit.gpgsign=false`; git runs with only PATH, HOME, LANG and
+  LC_* from the server's environment. Hooks are skipped because the message is built here and the change is held
+  to one line; a unit test runs the repo's commitlint on the message. Changes run one at a time.
+- Audit: `control_ui_agent_model {agent, from, to, commit, remoteAddr, actor}`; 6 changes a minute.
+
+**After a change, worktrees are one commit behind the live branch**: rebase on (or merge) `sync-upstream`
+before the next `git merge --ff-only` deploy, which otherwise refuses. Undo: pick the old model again, or
+`git revert <commit>`. The GPT second opinion for wardens is task #78 (waiting on the key decision). The Wardens
+list rows now let their text column shrink (`minmax(0, 1fr)`), which also fixed a 21 px sideways scroll on
+phones. Cache v57.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `agent-models.test.ts` (temp git repo, failing pre-commit hook) | 17 cases: one-line commit, hooks skipped, name ≠ file, no-op, staged work untouched, dirty/staged/detached/merge/untracked/symlink/two-lines refused, lock → busy + file restored, concurrent changes serialised, commitlint passes | 17 passed | PASS |
+| Server route tests | 428 without confirm, 400 bad model and floor, 404 unknown and `../x`, 200 with commit sha and audit fields, 403 read-only | passed | PASS |
+| `npx vitest run src/control-ui` | green | 457 passed | PASS |
+| Drive (stubbed API; 1280, 390, refused, read-only) | options + value, cancel sends nothing, confirm text, PUT body + X-Confirm, viewer + card + toast after save, Haiku off on code-reviewer, 409 reverts with the reason, picker only on warden rows that are agents, no sideways scroll, no page errors, read-only shows text | all 29 checks pass (after the row fix) | PASS |

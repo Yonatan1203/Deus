@@ -18,6 +18,13 @@ import { logger } from '../logger.js';
 import { homeDir } from '../platform.js';
 import { createRateLimiter } from '../rate-limiter.js';
 import { listAgents, readAgent } from './api/agents.js';
+import {
+  AGENT_NAME_RE,
+  AgentModelError,
+  changeAgentModel,
+  floorError,
+  isModel,
+} from './api/agent-models.js';
 import { listChannels, whatsappQr } from './api/channels.js';
 import { abortChatTurn, startChatTurn } from './api/chat.js';
 import { listGroups, readClaudeMd, writeClaudeMd } from './api/groups.js';
@@ -287,6 +294,7 @@ const ACTIVE_TASK_CAP = 100;
 const SESSION_COUNTERS_MAX = 1000;
 const MEMORY_WRITES_PER_MIN = 12;
 const CONFIG_WRITES_PER_MIN = 6;
+const AGENT_MODEL_CHANGES_PER_MIN = 6;
 const DOCKER_READS_PER_MIN = 30;
 const SYSTEM_POLL_MS = 30_000;
 const LOG_BATCH_MS = 500;
@@ -500,6 +508,10 @@ export function createControlServer(
   const chatLimiter = createRateLimiter(CHAT_CHANGES_PER_MIN, 60_000);
   const memoryLimiter = createRateLimiter(MEMORY_WRITES_PER_MIN, 60_000);
   const configLimiter = createRateLimiter(CONFIG_WRITES_PER_MIN, 60_000);
+  const agentModelLimiter = createRateLimiter(
+    AGENT_MODEL_CHANGES_PER_MIN,
+    60_000,
+  );
   const dockerReadLimiter = createRateLimiter(DOCKER_READS_PER_MIN, 60_000);
   const docker = opts.docker ?? createDockerRunner(deps.bin ?? 'docker');
   const claudeStartLimiter = createRateLimiter(
@@ -799,6 +811,49 @@ export function createControlServer(
     const a = readAgent(agentsDir, ctx.params.name);
     if (!a) return writeJson(ctx.res, 404, { error: 'not found' });
     writeJson(ctx.res, 200, a);
+  });
+  // Model change: one line of one agent file, committed on the live branch.
+  router.add('PUT', '/api/v1/agents/:name/model', async (ctx) => {
+    const name = ctx.params.name;
+    if (!AGENT_NAME_RE.test(name))
+      return writeJson(ctx.res, 404, { error: 'not found' });
+    if (header(ctx.req, 'x-confirm') !== name)
+      return writeJson(ctx.res, 428, { error: 'confirmation required' });
+    const model = (ctx.body as { model?: unknown } | undefined)?.model;
+    if (!isModel(model))
+      return writeJson(ctx.res, 400, {
+        error: 'model must be fable, opus, sonnet or haiku',
+      });
+    const floor = floorError(name, model);
+    if (floor) return writeJson(ctx.res, 400, { error: floor });
+    if (
+      agentModelLimiter.isRateLimited(
+        ctx.session?.shortId ?? ctx.remoteAddr,
+        now(),
+      )
+    )
+      return writeJson(ctx.res, 429, { error: 'too many model changes' });
+    try {
+      const r = await changeAgentModel(deps.repoRoot, name, model);
+      logger.info(
+        {
+          event: 'control_ui_agent_model',
+          agent: name,
+          from: r.from,
+          to: r.to,
+          commit: r.commit,
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI agent model changed',
+      );
+      const info = listAgents(agentsDir).find((a) => a.name === name);
+      writeJson(ctx.res, 200, { ...info, commit: r.commit });
+    } catch (err) {
+      if (err instanceof AgentModelError)
+        return writeJson(ctx.res, err.status, { error: err.message });
+      throw err;
+    }
   });
   router.add('GET', '/api/v1/wardens', (ctx) =>
     writeJson(ctx.res, 200, listWardens(wardensDir)),
@@ -3448,6 +3503,7 @@ export function createControlServer(
     if (logTimer) clearInterval(logTimer);
     if (unsubscribeLog) unsubscribeLog();
     configLimiter.dispose();
+    agentModelLimiter.dispose();
     dockerReadLimiter.dispose();
     loginLimiter.dispose();
     claudeMdLimiter.dispose();

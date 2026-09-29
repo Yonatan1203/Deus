@@ -10,6 +10,7 @@ vi.mock('../router-state.js', () => ({ getAvailableGroups: vi.fn(() => []) }));
 vi.mock('../webui-consolidation.js', () => ({
   consolidateWebConversation: vi.fn(),
 }));
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -460,6 +461,82 @@ describe('control-ui server', () => {
     });
     expect(r.status).toBe(403);
     expect(JSON.parse(r.text)).toEqual({ error: 'read-only mode' });
+  });
+
+  it('changes an agent model as one commit, behind confirm, enum and floor', async () => {
+    const agentsDir = path.join(root, '.claude', 'agents');
+    fs.writeFileSync(
+      path.join(agentsDir, 'b.md'),
+      '---\nname: beta\ndescription: d\nmodel: sonnet\n---\nbody\n',
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, 'cr.md'),
+      '---\nname: code-reviewer\ndescription: d\nmodel: opus\n---\n',
+    );
+    const git = (...a: string[]) =>
+      execFileSync('git', ['-C', root, ...a], {
+        encoding: 'utf-8',
+        env: { PATH: process.env.PATH, HOME: root },
+      }).trim();
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 't@example.com');
+    git('config', 'user.name', 'T');
+    git('add', '.claude/agents');
+    git('commit', '-q', '--no-verify', '-m', 'init');
+    // Not restored: other suites share this spy (vi.spyOn returns it).
+    const info = vi.spyOn(logger, 'info');
+    await boot();
+    const { auth } = await login();
+    const put = (name: string, body: string, confirm?: string) =>
+      request({
+        method: 'PUT',
+        path: `/api/v1/agents/${name}/model`,
+        headers: {
+          ...auth,
+          ...H,
+          ...(confirm ? { 'X-Confirm': confirm } : {}),
+        },
+        body,
+      });
+    expect((await put('beta', '{"model":"opus"}')).status).toBe(428);
+    expect((await put('beta', '{"model":"gpt-5"}', 'beta')).status).toBe(400);
+    expect(
+      (await put('code-reviewer', '{"model":"haiku"}', 'code-reviewer')).status,
+    ).toBe(400);
+    expect((await put('nobody', '{"model":"opus"}', 'nobody')).status).toBe(
+      404,
+    );
+    expect((await put('..%2Fx', '{"model":"opus"}', '../x')).status).toBe(404);
+    const ok = await put('beta', '{"model":"haiku"}', 'beta');
+    expect(ok.status).toBe(200);
+    const body = JSON.parse(ok.text);
+    expect(body).toMatchObject({ name: 'beta', model: 'haiku' });
+    expect(body.commit).toBe(git('rev-parse', 'HEAD'));
+    expect(git('log', '-1', '--format=%s')).toBe(
+      'chore(agents): beta runs on haiku',
+    );
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'control_ui_agent_model',
+        agent: 'beta',
+        from: 'sonnet',
+        to: 'haiku',
+        commit: body.commit,
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('refuses an agent model change in read-only mode', async () => {
+    await boot({ readOnly: true });
+    const { auth } = await login();
+    const r = await request({
+      method: 'PUT',
+      path: '/api/v1/agents/alpha/model',
+      headers: { ...auth, ...H, 'X-Confirm': 'alpha' },
+      body: '{"model":"opus"}',
+    });
+    expect(r.status).toBe(403);
   });
 
   it('rejects oversized and non-JSON bodies', async () => {

@@ -3,6 +3,7 @@ import { header } from '../app.js';
 import { icon } from '../icons.js';
 import { serverError, toast } from '../ui.js';
 import { parseMarkdown, renderBlocks } from '../markdown.js';
+import { modelLabel, modelPicker } from './agent-model.js';
 
 // Agents: the Claude Code subagents in this repo's .claude/agents. Each card
 // opens its full file — description, settings and instructions — as text
@@ -30,7 +31,7 @@ const setHash = (name) => history.replaceState(null, '', name ? `#/agents/${enco
 function card(a, onOpen) {
   const desc = cleanDesc(a.description);
   return h('button', { type: 'button', class: 'card agent-card', 'data-name': a.name, onclick: () => onOpen(a.name) },
-    h('div', { class: 'title' }, h('span', {}, a.name), a.model ? badge(a.model, 'info') : null),
+    h('div', { class: 'title' }, h('span', {}, a.name), a.model ? badge(modelLabel(a.model), 'info') : null),
     h('p', {}, desc.length > PREVIEW ? `${desc.slice(0, PREVIEW)}…` : desc),
     h('div', { class: 'chips' },
       a.explores_code ? h('span', { class: 'chip' }, 'explores code') : null,
@@ -86,8 +87,13 @@ export async function render(root, api, bus, me) {
         h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to agents', onclick: close }, '←'),
         h('h2', {}, a.name),
         h('button', { type: 'button', 'aria-label': 'Close', title: 'Close', class: 'small icon-btn', onclick: close }, icon('x', { size: 16 }))),
+      modelPicker(a, api, readOnly, (updated) => {
+        const i = list.findIndex((x) => x.name === updated.name);
+        if (i !== -1) list[i] = { ...list[i], model: updated.model };
+        draw(search.value);
+        open(updated.name);
+      }),
       h('div', { class: 'chips' },
-        a.model ? badge(a.model, 'info') : null,
         a.version ? h('span', { class: 'chip' }, `v${a.version}`) : null,
         a.explores_code ? h('span', { class: 'chip' }, 'explores code') : null),
       desc ? h('p', { class: 'agent-desc' }, desc) : null,

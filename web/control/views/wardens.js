@@ -1,13 +1,14 @@
 import { h, clear } from '../dom.js';
 import { banner, confirmTyped, toast } from '../ui.js';
 import { header } from '../app.js';
+import { modelPicker } from './agent-model.js';
 
 function updateBanner(list) {
   const off = list.filter((w) => !w.enabled).length;
   banner(off ? `${off} warden${off === 1 ? '' : 's'} disabled — review gates are weakened.` : '');
 }
 
-function row(w, api, readOnly, onChange) {
+function row(w, agent, api, readOnly, onChange, onModel) {
   const sw = h('button', {
     class: 'switch', type: 'button', role: 'switch', 'aria-checked': String(w.enabled), 'aria-label': `${w.name} enabled`,
     hidden: readOnly,
@@ -39,7 +40,8 @@ function row(w, api, readOnly, onChange) {
         h('div', { class: 'chips' },
           ...w.tools.map((t) => h('span', { class: 'chip' }, t)),
           ...(w.backends || []).map((b) => h('span', { class: 'chip' }, `backend: ${b}`)),
-          w.auto_threshold != null ? h('span', { class: 'chip' }, `auto: ${w.auto_threshold}`) : null))),
+          w.auto_threshold != null ? h('span', { class: 'chip' }, `auto: ${w.auto_threshold}`) : null),
+        agent ? modelPicker(agent, api, readOnly, onModel) : null)),
     sw);
   return el;
 }
@@ -50,14 +52,22 @@ export async function render(root, api, bus, me) {
   // already-aborted signal are never added).
   const ac = new AbortController();
   bus.addEventListener('view-unmount', () => ac.abort(), { once: true });
-  let list = await api.get('/api/v1/wardens');
+  let [list, agents] = await Promise.all([
+    api.get('/api/v1/wardens'),
+    api.get('/api/v1/agents').catch(() => []),
+  ]);
+  const agentFor = (name) => agents.find((a) => a.name === name) || null;
+  const onModel = (updated) => {
+    agents = agents.map((a) => (a.name === updated.name ? { ...a, model: updated.model } : a));
+    draw();
+  };
   clear(root);
   const holder = h('div', {});
   const readOnly = Boolean(me && me.read_only);
   const draw = () => {
     clear(holder);
     if (list.length === 0) holder.append(h('div', { class: 'empty' }, 'No wardens configured.'));
-    else holder.append(h('div', { class: 'list' }, ...list.map((w) => row(w, api, readOnly, apply))));
+    else holder.append(h('div', { class: 'list' }, ...list.map((w) => row(w, agentFor(w.name), api, readOnly, apply, onModel))));
     updateBanner(list);
   };
   const apply = (updated) => {
