@@ -266,6 +266,8 @@ async function openLive(api, host, session, onEnd) {
   };
 }
 
+const SESS_KEY = 'deus-control.claude-sessions-hidden';
+
 export async function render(root, api, bus, me) {
   // Ends this view's listeners on the next navigation — registered before the first
   // await, so leaving while it loads cannot leak them (listeners added later with an
@@ -470,6 +472,7 @@ export async function render(root, api, bus, me) {
     current = null;
     pagesRefresh = () => {}; pagesOutside = () => {};
     document.body.classList.remove('claude-full');
+    wrap.classList.remove('sessions-hidden'); // nothing open: the list is always there to pick from
   }
   async function select(s) {
     closeCurrent();
@@ -514,10 +517,22 @@ export async function render(root, api, bus, me) {
     pagesMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeMenu(); pagesBtn.focus(); } });
     pagesOutside = (t) => { if (!pagesWrap.contains(t)) closeMenu(); };
     pagesRefresh();
+    // Hide sessions (≥ 900 px): the open session takes the list's width; remembered in this browser.
+    const sessionsBtn = h('button', { type: 'button', class: 'small sessions-toggle' });
+    const showSessions = (hidden) => {
+      wrap.classList.toggle('sessions-hidden', hidden);
+      sessionsBtn.textContent = hidden ? 'Show sessions' : 'Hide sessions';
+    };
+    sessionsBtn.addEventListener('click', () => {
+      const hidden = !wrap.classList.contains('sessions-hidden');
+      showSessions(hidden);
+      try { localStorage.setItem(SESS_KEY, hidden ? '1' : '0'); } catch { /* remembered for this page only */ }
+    });
     const bar = h('div', { class: 'claude-bar' },
       h('button', { type: 'button', class: 'small back', 'aria-label': 'Back to sessions', onclick: () => { closeCurrent(); draw(); placeholder(); } }, '←'),
       h('div', { class: 'claude-title' }, h('span', { class: 'session-name' }, s.name), statusEl),
       h('div', { class: 'claude-actions' },
+        sessionsBtn,
         pagesWrap,
         pinSlot,
         h('button', { type: 'button', class: 'small', onclick: () => { details.hidden = !details.hidden; } }, 'Details'),
@@ -528,6 +543,9 @@ export async function render(root, api, bus, me) {
           catch (err) { toast(serverError(err, 'Something went wrong — try again.'), 'error'); }
         } }, 'Stop')));
     pane.append(bar, details);
+    let hideList = false;
+    try { hideList = localStorage.getItem(SESS_KEY) === '1'; } catch { /* shown */ }
+    showSessions(hideList);
 
     if (s.kind !== 'background') {
       pane.append(h('div', { class: 'claude-empty' }, h('p', {}, 'This session runs in a terminal window, so it can only be used there.')));

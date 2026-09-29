@@ -39,6 +39,7 @@ const VIEWS = {
 const ALIASES = { containers: 'system' }; // old links keep working
 const MOBILE_PRIMARY = ['chat', 'claude', 'artifacts', 'tasks'];
 const ADVANCED_KEY = 'deus-control.nav-advanced';
+const RAIL_KEY = 'deus-control.rail-hidden';
 const DEFAULT_VIEW = 'chat';
 
 // Page header shared by every view: eyebrow (group), title, optional count
@@ -318,6 +319,17 @@ async function logout() {
 }
 for (const id of ['logout', 'more-logout']) $(id).prepend(icon('logout', { size: 16 }));
 $('logout').addEventListener('click', logout);
+
+// Hide the left menu for more room (desktop; remembered in this browser only).
+function setRail(hidden, { focus = false } = {}) {
+  document.body.classList.toggle('rail-hidden', hidden);
+  try { localStorage.setItem(RAIL_KEY, hidden ? '1' : '0'); } catch { /* remembered for this page only */ }
+  if (focus) $(hidden ? 'rail-show' : 'rail-hide').focus(); // after the class, so the target is shown
+}
+for (const id of ['rail-hide', 'rail-show']) $(id).append(icon('sidebar', { size: 18 }));
+$('rail-hide').addEventListener('click', () => setRail(true, { focus: true }));
+$('rail-show').addEventListener('click', () => setRail(false, { focus: true }));
+try { document.body.classList.toggle('rail-hidden', localStorage.getItem(RAIL_KEY) === '1'); } catch { /* shown */ }
 $('more-logout').addEventListener('click', logout);
 $('more').addEventListener('click', (e) => { if (e.target === $('more')) $('more').close(); });
 

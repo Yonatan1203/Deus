@@ -36,7 +36,7 @@
   </div>
   <div id="app" class="app" hidden>
     <aside class="rail">
-      <div class="brand"><span class="mark"></span><span id="brand-name">Deus</span></div>
+      <div class="brand"><span class="mark"></span><span id="brand-name">Deus</span><button id="rail-hide" class="rail-toggle" type="button" aria-label="Hide menu" title="Hide menu"></button></div>
       <nav id="nav" class="nav" aria-label="Sections"></nav>
       <div class="rail-foot">
         <div class="status-line"><span id="live-dot" class="dot" aria-hidden="true"></span><span id="status-text">connecting</span></div>
@@ -44,6 +44,7 @@
         <button id="logout" class="signout" type="button">Sign out</button>
       </div>
     </aside>
+    <button id="rail-show" class="rail-show" type="button" aria-label="Show menu" title="Show menu"></button>
     <div id="banner" class="banner" role="status" hidden></div>
     <div id="update" class="update-bar" role="status" hidden></div>
     <main id="view" class="view" tabindex="-1"></main>

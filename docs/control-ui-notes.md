@@ -2364,3 +2364,27 @@ Not covered: a late render can still touch global state it owns (for example a b
 | Layout: 13 tabs at 1280 and 390, new vs old | unchanged | 18 identical; 8 differ by 1–10 px (focus-ring edge, status dot, log clock); Claude layout `flex-grow: 1`, height 775 px in both | PASS |
 | Independent drive with realistic stubs (System paints a real page): fast A→B→C, same-tab re-route, Claude/Chat/Agents left mid-load at 390 px, a slow tab that stays current | one slot, next page intact, body classes clear; the current tab still paints and still shows its own late error | all as expected; element boxes identical new vs old for 7 tabs × 2 widths; old CSS with new JS drops the Claude layout to 313 px (the selector change is needed) | PASS |
 | Page errors | none | none | PASS |
+
+## Hide the menu and the session list for more room (#68, 2026-09-29)
+
+Operator: "add an option to close the left tab of the Amos Control and the sessions in claude tab, to
+maximize the screen". Desktop widths only (a phone already uses the whole screen).
+- **Hide menu** (top of the left menu, every tab): the menu folds to 0 px and a small button at the top
+  left brings it back. The page title, the banner and the update bar keep clear of that button, and so
+  does a page expanded on the Claude tab.
+- **Hide sessions** (the open session's bar on the Claude tab, ≥ 900 px): the session takes the list's
+  width, or shares it with a page open beside it; Expand still shows only the page. With no session open
+  the list is always shown, so there is always something to pick. The running-sessions summary lives in
+  the list, so it is out of sight while the list is hidden.
+- Both choices are remembered in this browser only. Cache v51.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Drive at 1280 and 1920 px (web/control from disk, /api stubbed, one stub session) | menu hides to 0 px, Show menu appears focused, remembered after reload, Enter brings it back with focus on Hide menu | 46/49: all of these as expected; the 3 misses were the harness — Memory renders no title under empty stubs (x=null), and at 1920 a normal tab keeps its 1600 px cap (hiding the menu re-centres it; the Claude tab has no cap and gains the width). Title position re-measured on the Claude tab (follow-up drive, 10/10) and on a real System page by the verification gate (x=80 at 1280, x=240 at 1920) | PASS |
+| Nothing under the Show menu button | page title, banner, update bar and an expanded page start right of it | title x=80, banner/update text x=56, expanded layout x=64; button ends at x=52 | PASS |
+| Hide sessions | list gone, session takes the width, label flips, remembered, list back whenever nothing is open | pane 876→1232 px (1280) and 1516→1872 px (1920); all states as expected | PASS |
+| Column rules | page beside + sessions hidden = 2 columns; Expand still 1 | 2 and 1 | PASS |
+| Phone (390 px) with both choices stored | no toggles, tab bar as before, no sideways scroll | as expected | PASS |
+| Page errors | none | none | PASS |
+Found while driving, not changed here: with the banner and the update bar shown at the same time the
+update bar stretches down the page (the app grid has two rows); logged as its own task.

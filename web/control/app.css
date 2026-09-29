@@ -168,6 +168,7 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 
 /* Brand */
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+.rail-show { display: none; } /* shown only at desktop widths, while the menu is hidden */
 .brand .mark {
   width: 22px; height: 22px; border-radius: 6px; background: var(--primary);
   display: grid; place-items: center; flex: none;
@@ -256,6 +257,20 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
     position: sticky; top: 0; height: 100dvh; overflow-y: auto;
   }
   .rail .brand { padding: 0 8px; }
+  /* Hide menu: the rail keeps its grid cell at 0 px, so every row/column rule stays as it is. */
+  .rail-toggle { margin-left: auto; min-height: 32px; width: 32px; padding: 0; background: none; border-color: transparent; color: var(--muted); }
+  .rail-toggle:hover { color: var(--text); }
+  body.rail-hidden .app { grid-template-columns: 0 1fr; }
+  body.rail-hidden .rail { visibility: hidden; padding: 0; border: 0; overflow: hidden; }
+  body.rail-hidden .rail-show {
+    display: inline-flex; position: fixed; top: 12px; left: 12px; z-index: 15; /* over the page; under toasts (20) and panels (30) */
+    width: 40px; min-height: 40px; padding: 0; color: var(--muted); background: var(--bg);
+  }
+  body.rail-hidden .rail-show:hover { color: var(--text); }
+  /* Keep text out from under the Show menu button. */
+  body.rail-hidden .page-head, body.rail-hidden .banner, body.rail-hidden .update-bar { padding-left: 56px; }
+  /* An expanded page hides the page head, so its own header would sit under the button. */
+  body.rail-hidden .view:has(.claude-layout.artifact-expanded) { padding-left: 64px; }
   .nav { display: grid; gap: 12px; }
   .nav-group { display: grid; gap: 2px; }
   .nav-group .eyebrow { padding: 0 10px 6px; font-size: 10px; color: var(--faint); }
@@ -617,7 +632,12 @@ table.kv input { min-height: 36px; }
 @media (min-width: 900px) {
   .claude-layout { grid-template-columns: minmax(260px, 340px) 1fr; align-items: stretch; }
   .claude-pane { border-left: 1px solid var(--line); padding-left: 20px; }
+  /* Hide sessions: the open session takes the whole width (only while one is open — claude.js). */
+  .claude-layout.sessions-hidden { grid-template-columns: minmax(0, 1fr); }
+  .claude-layout.sessions-hidden > .claude-side { display: none; }
+  .claude-layout.sessions-hidden > .claude-pane { border-left: 0; padding-left: 0; }
 }
+@media (max-width: 899px) { .sessions-toggle { display: none; } }
 /* Phone: an open session takes the whole screen, with a key bar for the keys
    a phone keyboard cannot send. */
 @media (max-width: 767px) {
@@ -868,6 +888,9 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
   /* the session list gives way first, so the conversation keeps room for its header;
      the pane's width is the operator's (drag handle, --art-w, default 45 %) */
   .claude-layout.with-artifact { grid-template-columns: minmax(200px, 240px) minmax(320px, 1fr) minmax(340px, var(--art-w, 45%)); }
+  /* Sessions hidden with a page open: conversation + page share the width. Same specificity as the
+     Expand rule below — keep this one FIRST, so Expand wins. */
+  .claude-layout.with-artifact.sessions-hidden { grid-template-columns: minmax(320px, 1fr) minmax(340px, var(--art-w, 45%)); }
   /* Expand: only the page — the list, the conversation and the page head step aside
      (Restore is in the pane's own header) */
   .claude-layout.with-artifact.artifact-expanded { grid-template-columns: minmax(0, 1fr); }
