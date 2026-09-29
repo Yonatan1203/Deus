@@ -45,6 +45,7 @@ from warden_review import registry  # noqa: E402
 from warden_review.backends.base import ReviewRequest, Verdict  # noqa: E402
 from warden_review.constants import (  # noqa: E402
     BACKEND_GPT,
+    BACKEND_OPENAI_COMPAT,
     VERDICT_COULD_NOT_RUN,
     VERDICT_SHIP,
     store_key,
@@ -114,6 +115,8 @@ def run_review(
     # Load WARDEN_GLM_* from ~/deus/.env (gitignored) if present — scoped to the GLM prefix so it
     # cannot affect any other backend. No-op when the file is absent or the keys are already set.
     _load_glm_env()
+    # The OpenAI reviewer's settings, and the key it may use, only when that backend runs.
+    api_key = _load_openai_compat_env() if backend == BACKEND_OPENAI_COMPAT else None
 
     spec = ROLE_SPECS[role]
     skey = store_key(role, backend)
@@ -187,7 +190,7 @@ def run_review(
     verdict = backend_impl.review(ReviewRequest(
         role=role, rules_path=str(resolved_rules), content=content, cwd=str(root),
         cross_context=cross_context, model=model, timeout=timeout,
-        is_diff=spec.is_diff, max_files=max_files,
+        is_diff=spec.is_diff, max_files=max_files, api_key=api_key,
     ))
 
     message = ""
@@ -217,6 +220,47 @@ def run_review(
             if verdict.could_not_run else SUCCESS)
     return ReviewOutcome(code, payload, verdict, False, root, marker_root, skey, message,
                          verdict.files_not_reviewed)
+
+
+_OPENAI_COMPAT_ENV_KEYS = (
+    "WARDEN_OPENAI_COMPAT_BASE_URL",
+    "WARDEN_OPENAI_COMPAT_MODEL",
+    "WARDEN_OPENAI_COMPAT_MAX_TOKENS",
+    "WARDEN_OPENAI_COMPAT_MAX_CALLS_PER_DAY",
+)
+
+
+def _read_env_file(env_path: Path) -> dict[str, str]:
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return {}
+    out: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        out[key] = value.strip().strip('"').strip("'")
+    return out
+
+
+def _load_openai_compat_env(path: Path | None = None) -> str | None:
+    """For ``--backend openai_compat`` only: load the reviewer's settings
+    (``_OPENAI_COMPAT_ENV_KEYS``) from ``~/deus/.env`` when not already exported, and
+    return ``OPENAI_API_KEY``'s value (exported first, else the file) WITHOUT putting it in
+    ``os.environ`` — so codex or any other child never sees it. The backend uses it only for
+    https://api.openai.com. Called from ``run_review`` for that backend alone, so every other
+    backend's environment is unchanged. ``path`` is for tests."""
+    values = _read_env_file(path or (Path.home() / "deus" / ".env"))
+    for key in _OPENAI_COMPAT_ENV_KEYS:
+        if key not in os.environ and values.get(key):
+            os.environ[key] = values[key]
+    key = os.environ.get("OPENAI_API_KEY", "").strip() or values.get("OPENAI_API_KEY", "")
+    return key or None
 
 
 def _load_glm_env(path: Path | None = None) -> None:

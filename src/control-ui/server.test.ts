@@ -388,6 +388,114 @@ describe('control-ui server', () => {
     ).toBe(404);
   });
 
+  it('turns the GPT second opinion on only with confirm and a set-up .env', async () => {
+    const envPath = path.join(root, '.env');
+    fs.writeFileSync(envPath, 'OPENAI_API_KEY=sk-not-shown\n');
+    fs.writeFileSync(
+      path.join(root, '.claude', 'wardens', 'config.json.example'),
+      JSON.stringify({
+        'plan-reviewer': { enabled: true },
+        'code-reviewer': { enabled: true, backends: ['claude', 'gpt'] },
+      }),
+    );
+    const info = vi.spyOn(logger, 'info');
+    // Not restored: other suites share this spy (vi.spyOn returns it).
+    await boot({ envPath });
+    const { auth } = await login();
+    const patch = (name: string, body: string, confirm?: string) =>
+      request({
+        method: 'PATCH',
+        path: `/api/v1/wardens/${name}`,
+        headers: {
+          ...auth,
+          ...H,
+          ...(confirm ? { 'X-Confirm': confirm } : {}),
+        },
+        body,
+      });
+    const status = async () =>
+      JSON.parse(
+        (
+          await request({
+            method: 'GET',
+            path: '/api/v1/wardens/second-opinion',
+            headers: auth,
+          })
+        ).text,
+      );
+    expect(await status()).toEqual({ available: false, model: null });
+    expect(JSON.stringify(await status())).not.toContain('sk-not');
+    expect((await patch('code-reviewer', '{}')).status).toBe(400);
+    expect(
+      (
+        await patch(
+          'code-reviewer',
+          '{"enabled":true,"second_opinion":true}',
+          'code-reviewer',
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await patch(
+          'code-reviewer',
+          '{"second_opinion":"yes"}',
+          'code-reviewer',
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (await patch('code-reviewer', '{"second_opinion":true}')).status,
+    ).toBe(428);
+    expect(
+      (await patch('code-reviewer', '{"second_opinion":true}', 'code-reviewer'))
+        .status,
+    ).toBe(409);
+    fs.writeFileSync(
+      envPath,
+      'OPENAI_API_KEY=sk-not-shown\n' +
+        'WARDEN_OPENAI_COMPAT_BASE_URL=https://api.openai.com/v1\n' +
+        'WARDEN_OPENAI_COMPAT_MODEL=gpt-4.1-nano\n',
+    );
+    expect(await status()).toEqual({ available: true, model: 'gpt-4.1-nano' });
+    expect(
+      (await patch('plan-reviewer', '{"second_opinion":true}', 'plan-reviewer'))
+        .status,
+    ).toBe(404);
+    const on = await patch(
+      'code-reviewer',
+      '{"second_opinion":true}',
+      'code-reviewer',
+    );
+    expect(on.status).toBe(200);
+    expect(JSON.parse(on.text)).toMatchObject({
+      second_opinion: true,
+      backends: ['claude', 'openai_compat'],
+    });
+    const written = JSON.parse(
+      fs.readFileSync(
+        path.join(root, '.claude', 'wardens', 'config.json'),
+        'utf-8',
+      ),
+    );
+    expect(written).toEqual({
+      'code-reviewer': { backends: ['claude', 'openai_compat'] },
+    });
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'control_ui_warden_backend',
+        warden: 'code-reviewer',
+        from: false,
+        to: true,
+      }),
+      expect.any(String),
+    );
+    // Turning it off needs no confirm.
+    const off = await patch('code-reviewer', '{"second_opinion":false}');
+    expect(off.status).toBe(200);
+    expect(JSON.parse(off.text).second_opinion).toBe(false);
+  });
+
   it('backs off exponentially and never echoes the password', async () => {
     await boot();
     for (let i = 0; i < 3; i++) {

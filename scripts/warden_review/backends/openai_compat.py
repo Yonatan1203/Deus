@@ -35,7 +35,9 @@ import json
 import os
 import re
 import secrets
+import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import codex_review as cr  # PURE prompt helpers (build_rules_digest / build_prompt); no codex CLI here
 import httpx               # hard dep of the warden-review stack (codex_review requires it too)
@@ -47,6 +49,7 @@ from ..constants import (
     VERDICT_REVISE,
     VERDICT_SHIP,
 )
+from ..secret_scan import find_secret
 from .base import ModelReviewerBackend, ReviewRequest, Verdict
 
 # A real review outcome must be exactly one of these. Anything else (absent / null /
@@ -65,6 +68,67 @@ _REVIEW_VERDICTS = (VERDICT_SHIP, VERDICT_REVISE, VERDICT_BLOCK)
 # (fail-open + audit-logged) is an acceptable trade against the added quota cost and complexity
 # of fanning a huge diff across many calls. Add fan-out only if real oversize diffs appear.
 _MAX_PROMPT_CHARS = 200_000
+
+# The one other env var whose value may be used as the key, and only for OpenAI itself
+# (see _is_openai_api). Anything else never becomes a bearer token.
+ALLOWED_FALLBACK_KEY_ENV = "OPENAI_API_KEY"
+DEFAULT_MAX_TOKENS = 4000
+DEFAULT_MAX_CALLS_PER_DAY = 100
+# USD per 1M tokens (input, output), from OpenAI's pricing page 2026-09-29. Unknown model ->
+# cost logged as null.
+_PRICES = {"gpt-4.1-nano": (0.10, 0.40)}
+# One JSON line per call attempt: no prompt, no reply, no key. The env override is for tests.
+def _call_log() -> Path:
+    return Path(os.environ.get("DEUS_WARDEN_CALL_LOG")
+                or Path.home() / ".deus" / "warden-openai-calls.jsonl")
+
+
+def _is_openai_api(base_url: str) -> bool:
+    """True only for https://api.openai.com[:443]/... with no user info."""
+    try:
+        u = urlsplit(base_url)
+        port = u.port
+    except ValueError:
+        return False
+    return (u.scheme == "https" and u.hostname == "api.openai.com"
+            and u.username is None and u.password is None and port in (None, 443))
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        v = int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+    return v if v > 0 else default
+
+
+def _calls_today(backend: str) -> int:
+    """Requests this backend actually sent today (UTC), counted from the call log."""
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    tag = f'"backend": "{backend}"'
+    n = 0
+    try:
+        with _call_log().open(encoding="utf-8") as fh:
+            for line in fh:
+                if (line.startswith('{"day": "' + today + '"') and tag in line
+                        and '"sent": true' in line):
+                    n += 1
+    except OSError:
+        return 0
+    return n
+
+
+def _log_call(entry: dict) -> None:
+    """Append one line to the call log (0600). Logging never fails a review."""
+    path = _call_log()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def _shape_instruction() -> str:
@@ -137,6 +201,11 @@ class OpenAICompatBackend(ModelReviewerBackend):
     ENV_BASE_URL = "WARDEN_OPENAI_COMPAT_BASE_URL"
     ENV_MODEL = "WARDEN_OPENAI_COMPAT_MODEL"
     ENV_API_KEY = "WARDEN_OPENAI_COMPAT_API_KEY"
+    ENV_MAX_TOKENS = "WARDEN_OPENAI_COMPAT_MAX_TOKENS"
+    ENV_MAX_CALLS_PER_DAY = "WARDEN_OPENAI_COMPAT_MAX_CALLS_PER_DAY"
+    # The driver may hand over OPENAI_API_KEY on ReviewRequest.api_key; it is used only when
+    # the endpoint is OpenAI itself. Subclasses for other providers set this to None.
+    FALLBACK_KEY_ENV: str | None = ALLOWED_FALLBACK_KEY_ENV
     # Provider-specific defaults (empty = none; generic openai_compat must be env-configured).
     DEFAULT_BASE_URL = ""
     DEFAULT_MODEL = ""
@@ -159,7 +228,25 @@ class OpenAICompatBackend(ModelReviewerBackend):
                 category="auth",
             )
 
+        model = request.model or os.environ.get(self.ENV_MODEL, "").strip() or self.DEFAULT_MODEL
+        log = {"day": time.strftime("%Y-%m-%d", time.gmtime()),
+               "time": time.strftime("%H:%M:%SZ", time.gmtime()),
+               "backend": self.id(), "role": request.role, "model": model or None,
+               "host": urlsplit(base_url).hostname, "sent": False}
+
         api_key = os.environ.get(self.ENV_API_KEY, "").strip()
+        to_openai = _is_openai_api(base_url)
+        if (not api_key and to_openai and self.FALLBACK_KEY_ENV == ALLOWED_FALLBACK_KEY_ENV
+                and request.api_key):
+            api_key = request.api_key.strip()
+        if to_openai and not api_key:
+            _log_call({**log, "skipped": "no key"})
+            return Verdict(
+                VERDICT_COULD_NOT_RUN,
+                error=f"no API key for api.openai.com (set {ALLOWED_FALLBACK_KEY_ENV} or "
+                      f"{self.ENV_API_KEY}).",
+                category="auth",
+            )
         if self.REQUIRE_API_KEY and not api_key:
             # An authenticated endpoint with no key: abstain BEFORE building the prompt or
             # calling out (fail open, never SHIP) — guarantees a no-op when unconfigured.
@@ -169,14 +256,33 @@ class OpenAICompatBackend(ModelReviewerBackend):
                 category="auth",
             )
 
-        model = request.model or os.environ.get(self.ENV_MODEL, "").strip() or self.DEFAULT_MODEL
         rules_digest = cr.build_rules_digest(Path(request.rules_path))
+        # Nothing credential-shaped leaves the host: the diff, the cross-review context and
+        # the rules text are all checked. A hit, or any failure of the check, skips the call
+        # (COULD_NOT_RUN: the gate stays on Claude's review alone). Only the pattern NAME is
+        # ever reported.
+        try:
+            hit = find_secret(request.content, request.cross_context, rules_digest)
+        except Exception:  # noqa: BLE001 — a broken scan must never mean "send anyway"
+            hit = "secret scan failed"
+        if hit:
+            _log_call({**log, "skipped": f"secret: {hit}"})
+            return Verdict(VERDICT_COULD_NOT_RUN,
+                           error=f"not sent: the change looks like it holds a {hit}.")
+        max_calls = _int_env(self.ENV_MAX_CALLS_PER_DAY, DEFAULT_MAX_CALLS_PER_DAY)
+        if _calls_today(self.id()) >= max_calls:
+            _log_call({**log, "skipped": "daily cap"})
+            return Verdict(VERDICT_COULD_NOT_RUN,
+                           error=f"daily cap of {max_calls} reviews reached "
+                                 f"({self.ENV_MAX_CALLS_PER_DAY}).")
         sentinel = f"<<<UNTRUSTED-DIFF-{secrets.token_hex(16)}>>>"  # 128-bit, infeasible to forge
         prompt = (
             cr.build_prompt(request.content, rules_digest, sentinel, request.cross_context)
             + _shape_instruction()
         )
+        log["prompt_chars"] = len(prompt)
         if len(prompt) > _MAX_PROMPT_CHARS:
+            _log_call({**log, "skipped": "prompt too large"})
             return Verdict(
                 VERDICT_COULD_NOT_RUN,
                 error=f"assembled prompt is {len(prompt)} chars > {_MAX_PROMPT_CHARS} cap "
@@ -191,23 +297,39 @@ class OpenAICompatBackend(ModelReviewerBackend):
             "temperature": 0,
             "stream": False,
             "response_format": {"type": "json_object"},
+            "max_tokens": _int_env(self.ENV_MAX_TOKENS, DEFAULT_MAX_TOKENS),
         }
         if model:
             payload["model"] = model
 
         endpoint = f"{base_url}/chat/completions"
+        log["sent"] = True
         try:
             status, body = _post_chat_completion(endpoint, payload, headers, request.timeout)
-        except (httpx.HTTPError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 — review() must never raise into the gate
+            _log_call({**log, "outcome": "connection error"})
             # Transport failure (offline / DNS / timeout) OR a malformed base URL (some httpx
             # versions raise ValueError for a schemeless URL) — honor the backend contract:
             # fail open (COULD_NOT_RUN), NEVER let review() raise out into the gate driver.
             return Verdict(VERDICT_COULD_NOT_RUN, error=f"connection error to {endpoint}: {exc}")
 
+        usage = body.get("usage") if isinstance(body, dict) else None
+        if isinstance(usage, dict):
+            pin, pout = usage.get("prompt_tokens"), usage.get("completion_tokens")
+            log["tokens"] = {"in": pin, "out": pout}
+            price = _PRICES.get(str(model))
+            if price and isinstance(pin, int) and isinstance(pout, int):
+                log["cost_usd"] = round((pin * price[0] + pout * price[1]) / 1e6, 6)
         if status != 200:
+            _log_call({**log, "outcome": f"HTTP {status}"})
             category = ("auth" if status in (401, 403)
                         else "rate_limit" if status == 429 else "")
             snippet = body if isinstance(body, str) else json.dumps(body)
+            # Provider errors can echo a masked key ("sk-...abcd"); never pass it on.
+            snippet = re.sub(r"sk-[A-Za-z0-9*._-]+", "sk-…", snippet)
+            hit = find_secret(snippet)
+            if hit:
+                snippet = f"(body withheld: it looks like it holds a {hit})"
             return Verdict(
                 VERDICT_COULD_NOT_RUN,
                 error=f"HTTP {status} from {endpoint}: {snippet[:200]}",
@@ -217,15 +339,24 @@ class OpenAICompatBackend(ModelReviewerBackend):
         # Parse the model's JSON content into a Verdict. ANY anomaly -> COULD_NOT_RUN.
         try:
             content = body["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
+            finish = body["choices"][0].get("finish_reason")
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            _log_call({**log, "outcome": "unexpected response shape"})
             return Verdict(VERDICT_COULD_NOT_RUN, error=f"unexpected response shape: {exc}")
+        if finish == "length":
+            # Cut off at max_tokens: whatever parses is not a whole review.
+            _log_call({**log, "outcome": "truncated"})
+            return Verdict(VERDICT_COULD_NOT_RUN,
+                           error="the reply was cut off at the token limit; not a review.")
         raw = (content or "").strip()
         try:
             data = _parse_findings_json(raw)
             verdict = data["verdict"]
         except (ValueError, KeyError, TypeError) as exc:
+            _log_call({**log, "outcome": "unparseable reply"})
             return Verdict(VERDICT_COULD_NOT_RUN, raw=raw,
                            error=f"model output was not schema-conforming JSON: {exc}")
+        _log_call({**log, "outcome": str(verdict)})
         if verdict not in _REVIEW_VERDICTS:
             # Fail closed: a missing/invalid verdict is an anomaly, not an approval.
             return Verdict(VERDICT_COULD_NOT_RUN, raw=raw,

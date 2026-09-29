@@ -60,6 +60,9 @@ class ReviewRequest:
     max_files: int | None = None  # Per-file review cap. None = the engine's own default
                                # (codex_review.DEFAULT_MAX_FILES). Set explicitly to raise/disable
                                # the cap when a caller needs COMPLETE coverage of a large change.
+    api_key: str | None = field(default=None, repr=False)  # a key the driver read without
+                               # exporting it (openai_compat's OPENAI_API_KEY fallback). Never
+                               # in repr, so no log line or traceback can print it.
 
 
 class ModelReviewerBackend(ABC):

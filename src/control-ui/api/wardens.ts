@@ -1,5 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import { parseEnvText } from './config.js';
+
+/** Review roles that may get the GPT second opinion (diff reviews only). */
+export const SECOND_OPINION_ROLES = new Set(['code-reviewer', 'ai-eng-warden']);
+export const SECOND_OPINION_BACKEND = 'openai_compat';
+const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 
 export interface WardenInfo {
   name: string;
@@ -9,6 +15,8 @@ export interface WardenInfo {
   auto_threshold?: number;
   custom_instructions: string | null;
   rules_file: string | null;
+  /** Present only on roles that may get the GPT second opinion. */
+  second_opinion?: boolean;
 }
 
 type RawConfig = Record<string, Record<string, unknown>>;
@@ -69,6 +77,10 @@ function toInfo(
     rules_file: rulesFileFor(name, files),
   };
   if (Array.isArray(v.backends)) info.backends = v.backends.map(String);
+  if (SECOND_OPINION_ROLES.has(name))
+    info.second_opinion = (info.backends ?? []).includes(
+      SECOND_OPINION_BACKEND,
+    );
   if (typeof v.auto_threshold === 'number')
     info.auto_threshold = v.auto_threshold;
   return info;
@@ -122,4 +134,83 @@ export function setWardenEnabled(
   enabled: boolean,
 ): WardenInfo | null {
   return writeField(wardensDir, name, 'enabled', enabled);
+}
+
+/**
+ * Adds or removes the GPT second opinion on an allowed role. `claude` always
+ * stays first; any other backends already listed are kept.
+ */
+export function setWardenSecondOpinion(
+  wardensDir: string,
+  name: string,
+  on: boolean,
+): WardenInfo | null {
+  if (!SECOND_OPINION_ROLES.has(name)) return null;
+  const current = readLive(wardensDir).raw[name]?.backends;
+  const others = (Array.isArray(current) ? current.map(String) : []).filter(
+    (b) => b !== 'claude' && b !== SECOND_OPINION_BACKEND,
+  );
+  const backends = [
+    'claude',
+    ...others,
+    ...(on ? [SECOND_OPINION_BACKEND] : []),
+  ];
+  return writeField(wardensDir, name, 'backends', backends);
+}
+
+/** True when an executable named `codex` is on PATH. */
+export function codexOnPath(envPath = process.env.PATH ?? ''): boolean {
+  for (const dir of envPath.split(path.delimiter)) {
+    if (!dir) continue;
+    try {
+      fs.accessSync(path.join(dir, 'codex'), fs.constants.X_OK);
+      return true;
+    } catch {
+      // not here
+    }
+  }
+  return false;
+}
+
+/**
+ * Why a role's gate cannot pass as configured, or null: a `gpt` backend needs
+ * the codex CLI, and without it every commit waits for a verdict that never
+ * comes.
+ */
+export function backendWarning(
+  info: WardenInfo,
+  hasCodex = codexOnPath(),
+): string | null {
+  return (info.backends ?? []).includes('gpt') && !hasCodex
+    ? `${info.name} also lists the gpt backend, which needs the codex CLI (not installed here) — every commit will wait for it. Remove "gpt" from its backends in .claude/wardens/config.json.`
+    : null;
+}
+
+/**
+ * Whether the GPT reviewer is set up in the live .env, read as booleans plus
+ * the model name — no value of any key ever leaves this function.
+ */
+export function secondOpinionStatus(envPath: string | undefined): {
+  available: boolean;
+  model: string | null;
+} {
+  if (!envPath) return { available: false, model: null };
+  let text: string;
+  try {
+    text = fs.readFileSync(envPath, 'utf-8');
+  } catch {
+    return { available: false, model: null };
+  }
+  const env = new Map<string, string>();
+  for (const line of parseEnvText(text))
+    if (line.key) env.set(line.key, line.value ?? '');
+  const model = (env.get('WARDEN_OPENAI_COMPAT_MODEL') ?? '').trim();
+  const base = (env.get('WARDEN_OPENAI_COMPAT_BASE_URL') ?? '')
+    .trim()
+    .replace(/\/+$/, '');
+  const hasKey = (env.get('OPENAI_API_KEY') ?? '').trim().length > 0;
+  return {
+    available: base === OPENAI_BASE_URL && model.length > 0 && hasKey,
+    model: model || null,
+  };
 }

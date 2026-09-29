@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { listWardens, setWardenEnabled } from './wardens.js';
+import {
+  backendWarning,
+  codexOnPath,
+  listWardens,
+  secondOpinionStatus,
+  setWardenEnabled,
+  setWardenSecondOpinion,
+} from './wardens.js';
 
 const EXAMPLE = {
   'plan-reviewer': {
@@ -16,6 +23,7 @@ const EXAMPLE = {
     backends: ['claude', 'gpt'],
     custom_instructions: null,
   },
+  'ai-eng-warden': { enabled: true, tools: ['Bash'] },
   'session-retrospective': {
     enabled: false,
     auto_threshold: 20,
@@ -39,19 +47,20 @@ describe('control-ui wardens', () => {
   it('falls back to the example and resolves rules files', () => {
     const list = listWardens(fixture());
     expect(list.map((w) => w.name)).toEqual([
+      'ai-eng-warden',
       'code-reviewer',
       'plan-reviewer',
       'session-retrospective',
     ]);
-    expect(list[1]).toEqual({
+    expect(list[2]).toEqual({
       name: 'plan-reviewer',
       enabled: true,
       tools: ['Edit'],
       custom_instructions: null,
       rules_file: 'plan-review-rules.md',
     });
-    expect(list[2].rules_file).toBe('retrospective-schema.md');
-    expect(list[2].auto_threshold).toBe(20);
+    expect(list[3].rules_file).toBe('retrospective-schema.md');
+    expect(list[3].auto_threshold).toBe(20);
   });
 
   it('toggles into config.json, backs up on rewrite, rejects unknown names', () => {
@@ -80,6 +89,7 @@ describe('control-ui wardens', () => {
     expect(text).not.toContain('gpt');
     // Every example warden is still listed and can still be toggled.
     expect(listWardens(dir).map((w) => w.name)).toEqual([
+      'ai-eng-warden',
       'code-reviewer',
       'plan-reviewer',
       'session-retrospective',
@@ -98,6 +108,7 @@ describe('control-ui wardens', () => {
       }),
     );
     const cr = listWardens(dir).find((w) => w.name === 'code-reviewer');
+    expect(cr?.second_opinion).toBe(false);
     expect(cr?.backends).toEqual(['claude']);
     expect(cr?.tools).toEqual(['Bash']);
     expect(listWardens(dir).map((w) => w.name)).toContain('extra');
@@ -112,5 +123,89 @@ describe('control-ui wardens', () => {
       },
       extra: { enabled: true },
     });
+  });
+
+  it('adds and removes the GPT second opinion, keeping claude first', () => {
+    const dir = fixture();
+    const read = () =>
+      JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf-8'));
+    expect(setWardenSecondOpinion(dir, 'code-reviewer', true)).toMatchObject({
+      second_opinion: true,
+      backends: ['claude', 'openai_compat'],
+    });
+    expect(read()).toEqual({
+      'code-reviewer': { backends: ['claude', 'openai_compat'] },
+    });
+    setWardenSecondOpinion(dir, 'code-reviewer', false);
+    expect(read()['code-reviewer'].backends).toEqual(['claude']);
+    // Other backends already listed are kept; claude is put back first.
+    fs.writeFileSync(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ 'ai-eng-warden': { backends: ['gpt'] } }),
+    );
+    setWardenSecondOpinion(dir, 'ai-eng-warden', true);
+    expect(read()['ai-eng-warden'].backends).toEqual([
+      'claude',
+      'gpt',
+      'openai_compat',
+    ]);
+  });
+
+  it('offers the second opinion only on the two diff reviewers', () => {
+    const dir = fixture();
+    expect(setWardenSecondOpinion(dir, 'plan-reviewer', true)).toBeNull();
+    expect(setWardenSecondOpinion(dir, 'nope', true)).toBeNull();
+    expect(fs.existsSync(path.join(dir, 'config.json'))).toBe(false);
+    const names = listWardens(dir)
+      .filter((w) => w.second_opinion !== undefined)
+      .map((w) => w.name);
+    expect(names).toEqual(['ai-eng-warden', 'code-reviewer']);
+  });
+
+  it('reports whether .env is set up, never a value', () => {
+    const dir = fixture();
+    const env = path.join(dir, '.env');
+    const status = (text: string) => {
+      fs.writeFileSync(env, text);
+      return secondOpinionStatus(env);
+    };
+    const ok =
+      'OPENAI_API_KEY=sk-test-value\n' +
+      'WARDEN_OPENAI_COMPAT_BASE_URL=https://api.openai.com/v1/\n' +
+      'WARDEN_OPENAI_COMPAT_MODEL="gpt-4.1-nano"\n';
+    expect(status(ok)).toEqual({ available: true, model: 'gpt-4.1-nano' });
+    expect(JSON.stringify(status(ok))).not.toContain('sk-test');
+    expect(status(ok.replace('sk-test-value', '')).available).toBe(false);
+    expect(
+      status(ok.replace('https://api.openai.com', 'https://openrouter.ai'))
+        .available,
+    ).toBe(false);
+    expect(status('OPENAI_API_KEY=x\n').available).toBe(false);
+    expect(secondOpinionStatus(undefined)).toEqual({
+      available: false,
+      model: null,
+    });
+    expect(secondOpinionStatus(path.join(dir, 'missing'))).toEqual({
+      available: false,
+      model: null,
+    });
+  });
+
+  it('warns when a role also lists gpt and codex is missing', () => {
+    const dir = fixture();
+    fs.writeFileSync(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ 'code-reviewer': { backends: ['claude', 'gpt'] } }),
+    );
+    const info = setWardenSecondOpinion(dir, 'code-reviewer', true);
+    expect(info?.backends).toEqual(['claude', 'gpt', 'openai_compat']);
+    expect(backendWarning(info!, false)).toMatch(/codex CLI/);
+    expect(backendWarning(info!, true)).toBeNull();
+    const clean = setWardenSecondOpinion(dir, 'ai-eng-warden', true);
+    expect(backendWarning(clean!, false)).toBeNull();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ctl-bin-'));
+    expect(codexOnPath(bin)).toBe(false);
+    fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\n', { mode: 0o755 });
+    expect(codexOnPath(`/nonexistent${path.delimiter}${bin}`)).toBe(true);
   });
 });

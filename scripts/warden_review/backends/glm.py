@@ -36,6 +36,7 @@ class GLMBackend(OpenAICompatBackend):
     # Override WARDEN_GLM_MODEL to a cheaper tier (e.g. a GLM Flash) if review quality allows.
     DEFAULT_MODEL = "glm-5.2"
     REQUIRE_API_KEY = True  # authenticated endpoint → abstain (no-op) when no key is set
+    FALLBACK_KEY_ENV = None  # never use OPENAI_API_KEY for Z.ai
 
     def id(self) -> str:
         return BACKEND_GLM

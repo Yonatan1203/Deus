@@ -10,6 +10,11 @@
     "backends": ["claude", "gpt"],
     "custom_instructions": null
   },
+  "ai-eng-warden": {
+    "enabled": true,
+    "tools": ["Bash"],
+    "custom_instructions": null
+  },
   "threat-modeler": {
     "enabled": true,
     "tools": ["Edit", "Write", "MultiEdit", "apply_patch"],

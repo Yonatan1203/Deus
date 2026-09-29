@@ -2754,8 +2754,21 @@ def _role_backends(config: dict[str, Any], role: str) -> list[str]:
     entry = config.get(role)
     backends = entry.get("backends") if isinstance(entry, dict) else None
     if isinstance(backends, list) and backends:
-        return [str(b) for b in backends]
+        out = [str(b) for b in backends]
+        if BACKEND_CLAUDE not in out:
+            # A model backend never gates alone: the in-session Claude review always counts.
+            if role not in _CLAUDE_GUARD_WARNED:
+                _CLAUDE_GUARD_WARNED.add(role)
+                sys.stderr.write(
+                    f"[warden-backends-gate] WARNING: {role}.backends has no 'claude' -- "
+                    "added back; a model backend never gates on its own.\n"
+                )
+            out.insert(0, BACKEND_CLAUDE)
+        return out
     return [BACKEND_CLAUDE]
+
+
+_CLAUDE_GUARD_WARNED: set[str] = set()
 
 
 def _claude_backend_block_message(role: str, marker: str | None, repo_root: Path) -> str:

@@ -50,7 +50,7 @@ import codex_warden_hooks as whooks  # noqa: E402  (mark_warden, bucket resoluti
 from _agent_io import agent_output, is_agent_context  # noqa: E402
 from _exit_codes import INTERNAL_ERROR, SUCCESS, USAGE_ERROR  # noqa: E402
 from warden_review import model_family  # noqa: E402  (Claude-half model-family guard, LIA-560)
-from warden_review.constants import BACKEND_GPT, store_key  # noqa: E402
+from warden_review.constants import BACKEND_GPT, BACKEND_OPENAI_COMPAT, store_key  # noqa: E402
 from warden_hooks.verdict_store import _fresh_entry, _read_verdicts  # noqa: E402
 
 # Only the GPT-wired warden roles (warden_review.constants.WIRED_ROLES) have a model backend, so
@@ -89,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"per-call timeout for the GPT half, forwarded as --timeout "
                          f"(default {cr.DEFAULT_TIMEOUT:.0f})")
     ap.add_argument("--gpt-model", help="GPT backend model id (default: backend/config default)")
+    ap.add_argument("--backend", choices=[BACKEND_GPT, BACKEND_OPENAI_COMPAT], default=BACKEND_GPT,
+                    help="model backend for the second half: gpt (the codex CLI, default) or "
+                         "openai_compat (one HTTP call; for OpenAI it uses OPENAI_API_KEY). The "
+                         "JSON keeps the key gpt_verdict for this half and adds `backend`.")
     ap.add_argument("--skip-gpt", action="store_true",
                     help="mark the Claude verdict only; do NOT run the GPT half (advisory/testing)")
     ap.add_argument("--max-files", type=int, default=None,
@@ -152,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     #    forwarding the timeout. (Skipped for the advisory/test path.)
     gpt_rc = SUCCESS
     if not args.skip_gpt:
-        gpt_argv = ["--role", args.role, "--backend", BACKEND_GPT, "--warden-mark",
+        gpt_argv = ["--role", args.role, "--backend", args.backend, "--warden-mark",
                     "--worktree-root", str(wt), "--timeout", str(args.gpt_timeout)]
         if args.gpt_model:
             gpt_argv += ["--model", args.gpt_model]
@@ -176,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             # LIA-382: route through _fresh_entry (not a raw dict read) so a stale
             # GPT SHIP — the worktree edited since GPT reviewed it — doesn't read
             # as a live PASS here.
-            gpt_entry = _fresh_entry(_read_verdicts(marker_root), store_key(args.role, BACKEND_GPT), wt)
+            gpt_entry = _fresh_entry(_read_verdicts(marker_root), store_key(args.role, args.backend), wt)
             gpt_verdict = gpt_entry.get("verdict") if isinstance(gpt_entry, dict) else None
 
     # Outcome
@@ -198,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {
         "role": args.role, "outcome": outcome, "exit_code": exit_code,
-        "claude_verdict": claude_verdict, "gpt_verdict": gpt_verdict,
+        "claude_verdict": claude_verdict, "gpt_verdict": gpt_verdict, "backend": args.backend,
         "bucket": str(bucket) if bucket else None,
     }
     out = agent_output(payload, use_json=args.json or is_agent_context(),
@@ -207,14 +211,16 @@ def main(argv: list[str] | None = None) -> int:
         print(out)
     else:
         print(f"═══ co-gate {args.role} — {outcome} ═══")
-        print(f"  claude: {claude_verdict}   gpt: {gpt_verdict if not args.skip_gpt else '(skipped)'}")
+        print(f"  claude: {claude_verdict}   {args.backend}: "
+              f"{gpt_verdict if not args.skip_gpt else '(skipped)'}")
         if bucket:
             print(f"  bucket: {bucket}")
         if gpt_could_not_run:
             sys.stderr.write(
-                "[cogate] WARNING: the GPT backend COULD NOT RUN — the real co-gate fails OPEN "
-                "(it will not block the commit), but no GPT review actually happened. "
-                "Investigate (auth/rate/timeout) before relying on this verdict.\n"
+                f"[cogate] SKIPPED: the {args.backend} backend COULD NOT RUN — the real co-gate "
+                "fails OPEN (it will not block the commit), but no second review happened. The "
+                "reason is printed above (auth/rate/timeout, or a change that looks like it holds "
+                "a key, which is never sent).\n"
             )
     return exit_code
 

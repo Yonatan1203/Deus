@@ -77,5 +77,7 @@ def isolate_memory_tree_paths(tmp_path, monkeypatch):
     # NOT created here, so automation is OFF by default (tests needing it on
     # create the DB).
     monkeypatch.setenv("DEUS_MEMORY_TREE_DB", str(tmp_db))
+    # The openai_compat warden backend's call log (and its daily cap) must never see tests.
+    monkeypatch.setenv("DEUS_WARDEN_CALL_LOG", str(tmp_path / "warden-calls.jsonl"))
     monkeypatch.delenv("DEUS_MEMORY_TREE", raising=False)
     yield

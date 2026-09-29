@@ -49,7 +49,13 @@ import {
   TASK_ID_RE,
   updateTaskFromBody,
 } from './api/tasks.js';
-import { listWardens, setWardenEnabled } from './api/wardens.js';
+import {
+  backendWarning,
+  listWardens,
+  secondOpinionStatus,
+  setWardenEnabled,
+  setWardenSecondOpinion,
+} from './api/wardens.js';
 import {
   createBuildRunner,
   listContainers,
@@ -858,14 +864,62 @@ export function createControlServer(
   router.add('GET', '/api/v1/wardens', (ctx) =>
     writeJson(ctx.res, 200, listWardens(wardensDir)),
   );
+  // Whether the GPT reviewer is set up in .env: booleans and the model name only.
+  router.add('GET', '/api/v1/wardens/second-opinion', (ctx) =>
+    writeJson(ctx.res, 200, secondOpinionStatus(deps.envPath)),
+  );
   router.add('PATCH', '/api/v1/wardens/:name', (ctx) => {
-    const enabled = (ctx.body as { enabled?: unknown } | undefined)?.enabled;
-    if (typeof enabled !== 'boolean') {
-      return writeJson(ctx.res, 400, { error: 'enabled must be a boolean' });
-    }
+    const body = (ctx.body ?? {}) as {
+      enabled?: unknown;
+      second_opinion?: unknown;
+    };
+    const hasEnabled = 'enabled' in body;
+    const hasSecond = 'second_opinion' in body;
+    if (hasEnabled === hasSecond)
+      return writeJson(ctx.res, 400, {
+        error: 'send either enabled or second_opinion',
+      });
     const name = ctx.params.name;
     if (!NAME_RE.test(name))
       return writeJson(ctx.res, 404, { error: 'not found' });
+    if (hasSecond) {
+      const on = body.second_opinion;
+      if (typeof on !== 'boolean')
+        return writeJson(ctx.res, 400, {
+          error: 'second_opinion must be a boolean',
+        });
+      // Turning it on sends every commit's diff to OpenAI and adds a gate:
+      // typed confirm, and only once .env is set up. Turning it off does not.
+      if (on && header(ctx.req, 'x-confirm') !== name)
+        return writeJson(ctx.res, 428, { error: 'confirmation required' });
+      if (on && !secondOpinionStatus(deps.envPath).available)
+        return writeJson(ctx.res, 409, {
+          error: 'set up the GPT reviewer in .env first',
+        });
+      const before = listWardens(wardensDir).find(
+        (w) => w.name === name,
+      )?.second_opinion;
+      const info = setWardenSecondOpinion(wardensDir, name, on);
+      if (!info) return writeJson(ctx.res, 404, { error: 'not found' });
+      logger.info(
+        {
+          event: 'control_ui_warden_backend',
+          warden: name,
+          from: before ?? false,
+          to: on,
+          remoteAddr: ctx.remoteAddr,
+          actor: actor(ctx.session),
+        },
+        'Control UI warden second opinion changed',
+      );
+      hub.broadcast('warden', info);
+      const warning = backendWarning(info);
+      return writeJson(ctx.res, 200, warning ? { ...info, warning } : info);
+    }
+    const enabled = body.enabled;
+    if (typeof enabled !== 'boolean') {
+      return writeJson(ctx.res, 400, { error: 'enabled must be a boolean' });
+    }
     if (!enabled && header(ctx.req, 'x-confirm') !== name) {
       return writeJson(ctx.res, 428, { error: 'confirmation required' });
     }

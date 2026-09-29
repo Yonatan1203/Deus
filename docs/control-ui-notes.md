@@ -2554,3 +2554,52 @@ together (config.json's values win), a switch writes just that warden's `enabled
 |-------|----------|----------|-------------|
 | `wardens.test.ts` | toggle without config.json writes only `{role: {enabled}}`, no `gpt`; every example warden still listed and switchable; config.json's backends shown, example's not; a write keeps other fields and roles | 4 passed (the old assertion that expected the example's backends in the written file was the bug; rewritten) | PASS |
 | `npx vitest run src/control-ui` | green | 459 passed | PASS |
+
+## GPT second opinion for code reviews (#78 part 2, 2026-09-29)
+
+Operator: GPT models only as a very low-cost second reviewer, using the existing `OPENAI_API_KEY`. The Wardens
+tab's **code-reviewer** and **ai-eng-warden** rows get a "GPT second opinion" switch (off by default; not on
+plan-reviewer, whose input is whole plans). On means those roles' commit gate also needs a SHIP from
+`gpt-4.1-nano` ($0.10 / $0.40 per 1M tokens in/out, about $0.003 a review), produced by
+`python3 scripts/cogate.py --role code-reviewer --backend openai_compat --claude-verdict SHIP --claude-reason "…"`.
+The switch writes `<role>.backends = ["claude", …, "openai_compat"]` into `.claude/wardens/config.json`, the
+one file the hooks read for **every** worktree and the pipeline — so every commit then needs that run. Rollback:
+switch off, or delete the role's `backends` entry.
+
+- **Key**: nothing new in `.env` but `WARDEN_OPENAI_COMPAT_BASE_URL=https://api.openai.com/v1` and
+  `WARDEN_OPENAI_COMPAT_MODEL=gpt-4.1-nano` (`OPENAI_BASE_URL`, also in `.env`, is unrelated). The backend uses
+  `OPENAI_API_KEY` only when the endpoint is exactly https://api.openai.com (no other host, no http, no user
+  info); `codex_warden.run_review` reads it for this backend alone and hands it over on
+  `ReviewRequest.api_key` (never exported, never in a repr). The GLM backend never uses it.
+- **What leaves the host**: the diff, the cross-review context and the role's rules text. All three are scanned
+  first for 17 credential shapes (`warden_review/secret_scan.py`); a hit, or a failing scan, sends nothing —
+  the review is SKIPPED (COULD_NOT_RUN), which lets the commit through on Claude's review alone. Diffs that add
+  key-shaped test fixtures are skipped the same way.
+- **Cost and record**: replies capped at 4000 tokens (a reply cut off there is not a review — COULD_NOT_RUN); 100 calls a day for this backend (`…_MAX_CALLS_PER_DAY`); every call
+  appends one line to `~/.deus/warden-openai-calls.jsonl` (0600): role, model, host, prompt size, tokens, cost,
+  verdict or skip reason — never content or key. The cap counts that file, so deleting it resets the count
+  (accepted; the OpenAI project budget is the backstop). The key is shared with the rest of Deus, so this spend
+  is not separately capped.
+- **Gate**: a role's backends always include `claude` (added back with a warning if missing). `cogate.py`
+  gains `--backend {gpt,openai_compat}` (default `gpt`); its JSON keeps `gpt_verdict` for the second half and
+  adds `backend`.
+- **Dashboard**: `GET /api/v1/wardens/second-opinion` → `{available, model}` read from `.env` (booleans and the
+  model name only). `PATCH /api/v1/wardens/:name` takes exactly one of `{enabled}` or `{second_opinion}`;
+  turning the second opinion on needs the typed confirm and a set-up `.env` (409 otherwise); off needs neither.
+  Audit `control_ui_warden_backend`. `ai-eng-warden` is added to the example config so it has a row.
+  If the role still lists `gpt` (the codex CLI, not installed here) the response carries a `warning`, shown as an
+  error toast, because every commit would wait for a verdict nothing can produce. Deviation from the plan: the
+  set-up status is its own `GET …/second-opinion` instead of a field on `GET /api/v1/wardens` (which stays a
+  plain array).
+  Cache v58.
+- Follow-up: `scripts/wardens.py` (the CLI) still seeds config.json from the whole example (task #79).
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `test_gpt_second_opinion.py` (network mocked) | 17 patterns hit their sample; `task-granularity`/`risk-level`/`v1//path`/short `sk-1` don't; both roles' rules clean; key only to https api.openai.com (http, `.evil.tld`, user info, :8443, other hosts refused); no key → no call; GLM never uses it; key not in repr; key in diff / rules / cross-context or a failing scan → no call, name only; payload `max_tokens` 4000 + model; log line with tokens and cost, 0600; daily cap counts only today and this backend; a reply cut off at the token limit is never a verdict; an unexpected send error is logged, not raised; a provider error never echoes a key; `.env` `export` lines read; loader loads only its vars, never exports the key, exported wins; `run_review` loads it only for openai_compat; cogate `--backend` marks under that backend, default still `gpt`; claude always kept | 38 passed | PASS |
+| Existing warden / cogate / hooks tests (test_warden_review, test_codex_warden, test_codex_warden_hooks, test_cogate, test_cogate_family_guard, test_phase3_cogate_oracle) | no new failures | 502 passed, 3 failed, 1 skipped (540 passed + the same 3 with the new file); the 3 are test_warden_review's worktree-bucket tests (`test_worktree_override_makes_write_path_equal_gate_read_path`, `test_run_pins_store_to_event_cwd_worktree`, `test_run_falls_back_to_getcwd_when_event_cwd_absent`), which fail identically on a clean HEAD checkout in a combined run and pass when test_warden_review.py runs alone (84 passed); one earlier run here saw them pass (505) — order/environment dependent | PASS (pre-existing) |
+| Full `scripts/tests` | no new failures | 10 failures, the same 10 on a clean worktree at HEAD (cockpit macOS probe, drift-check bench labels, embedding provider ×2, sync-agent-skills ×2, deus-cmd identity, 3 warden_review order-dependent) | PASS (pre-existing) |
+| `wardens.test.ts`, server route test, `npx vitest run src/control-ui` | writer, allowlist, env status never shows a value, gpt-without-codex warning, 400 / 428 / 409 / 404, audit, off without confirm | 464 passed | PASS |
+| Drive (stubbed; 1280, 390, not set up) | switch only on ai-eng-warden + code-reviewer; label names model and cost; cancel sends nothing; confirm text; PATCH with X-Confirm on, none off; not set up → disabled with the reason; no sideways scroll; no page errors | 20 / 20 | PASS |
+| Live call (advisory, nothing marked) | real review of commit 58afacf7 via gpt-4.1-nano | SHIP, 0 findings; 2887 tokens in, 60 out, $0.000313 logged | PASS |
+| Live skip | working tree holding key-shaped test fixtures | COULD_NOT_RUN "not sent: … key/token/secret/password assignment"; log `sent: false` | PASS |
