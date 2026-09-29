@@ -189,7 +189,11 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 .offline-cmd { display: block; font-family: var(--mono, monospace); font-size: 13px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow-wrap: anywhere; user-select: all; }
 
 /* Shell */
-.app { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr; }
+.app { min-height: 100dvh; display: grid; grid-template-rows: auto auto 1fr; }
+/* One row each: a hidden bar takes no height, and with both bars shown neither stretches (#69). */
+.app > #banner { grid-row: 1; }
+.app > #update { grid-row: 2; }
+.app > #view { grid-row: 3; }
 .rail { display: none; }
 .view {
   padding: 20px var(--gutter) calc(var(--tabbar) + 24px + env(safe-area-inset-bottom));
@@ -252,7 +256,7 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 @media (min-width: 768px) {
   .app { grid-template-columns: var(--rail) 1fr; }
   .rail {
-    display: flex; flex-direction: column; gap: 16px; grid-row: 1 / span 2;
+    display: flex; flex-direction: column; gap: 16px; grid-row: 1 / -1;
     padding: 18px 12px 14px; border-right: 1px solid var(--line); background: var(--bg);
     position: sticky; top: 0; height: 100dvh; overflow-y: auto;
   }
@@ -296,7 +300,7 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
   .rail-foot { margin-top: auto; display: grid; gap: 6px; padding: 12px 8px 0; border-top: 1px solid var(--line); }
 
 
-  .banner { grid-column: 2; }
+  .banner, .update-bar { grid-column: 2; }
   .view { grid-column: 2; padding: 32px 24px 40px; animation: none; }
   .tabbar { display: none; }
   .toast { bottom: 24px; }
@@ -977,10 +981,6 @@ button.signout:hover { background: color-mix(in srgb, var(--bad) 10%, transparen
    update bar takes its own row; shorter or narrower windows scroll as before. */
 @media (min-width: 1100px) and (min-height: 640px) {
   .app:has(> .view[data-view="claude"]) { height: 100dvh; grid-template-rows: auto auto minmax(0, 1fr); }
-  .app:has(> .view[data-view="claude"]) > .rail { grid-row: 1 / -1; }
-  .app:has(> .view[data-view="claude"]) > #banner { grid-row: 1; grid-column: 2; }
-  .app:has(> .view[data-view="claude"]) > #update { grid-row: 2; grid-column: 2; }
-  .app:has(> .view[data-view="claude"]) > #view { grid-row: 3; grid-column: 2; }
   .view[data-view="claude"] { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding-bottom: 16px; }
   .view[data-view="claude"] > .view-slot > .claude-layout { flex: 1; min-height: 0; }
   .claude-side { min-height: 0; overflow-y: auto; }

@@ -2388,3 +2388,18 @@ maximize the screen". Desktop widths only (a phone already uses the whole screen
 | Page errors | none | none | PASS |
 Found while driving, not changed here: with the banner and the update bar shown at the same time the
 update bar stretches down the page (the app grid has two rows); logged as its own task.
+
+## Banner and update bar together no longer fill the screen (#69, 2026-09-29)
+
+The app grid had two rows (`auto 1fr`) for three things — the banner, the update bar and the page. With both
+bars shown the update bar took the stretchy row and filled the window, and the page dropped below it. Each now
+has its own row (`auto auto 1fr`; a hidden bar takes no height), on every tab — the rule the Claude tab already
+used for itself, whose own copy is removed. The left menu spans all three rows. Cache v52.
+The Chat tab is a window-high view, so with a bar shown the page scrolls by the bar's height — as before.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Both bars, 6 tabs × 390/1280/1920 px | update bar as tall as its content; page starts right under it | with the real update bar (message + Reload): 55 px everywhere (before: 172–1038 px); page top 97 px (before: 900–1080 px, i.e. off-screen) | PASS |
+| Banner only / update only | page starts under the bar | all 36 cases | PASS |
+| No bar, 8 tabs × 390/1280/1920 px vs the previous version | unchanged | every element box identical; full-page screenshots 22 of 24 pixel-identical, 2 differ by 8 px of the brand logo's rounded corners (colour Δ ≤ 12, invisible). The page box is now window-high, but it has no background or border | PASS |
+| Claude tab one window high at 1100×640, 1280×900, 1920×1080 with each bar state | page ends at the window bottom, no page scroll | layout box identical to the previous version in all 12 cases | PASS |
