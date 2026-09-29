@@ -56,6 +56,7 @@
   --bad: #f0655c;
   --info: #6ea8ff;
   --scrim: rgba(0, 0, 0, 0.62);
+  --selection: #4a4843;
   --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius: 12px;
@@ -89,8 +90,33 @@
     --bad: #c9362b;
     --info: #2f6fd6;
     --scrim: rgba(0, 0, 0, 0.4);
+    --selection: #e3d9cf;
     color-scheme: light;
   }
+}
+/* Light chosen in the dashboard: the same tokens as above (a test keeps the two blocks equal). */
+:root[data-theme="light"] {
+  --bg: #faf9f5;
+  --surface: #ffffff;
+  --surface-2: #f0eee6;
+  --surface-3: #e8e6dc;
+  --line: rgba(20, 20, 19, 0.09);
+  --line-strong: rgba(20, 20, 19, 0.18);
+  --text: #141413;
+  --muted: #6b6a64;
+  --faint: #8f8d85;
+  --fg-inverse: #ffffff;
+  --primary: #b85a39;
+  --accent: #b85a39;
+  --accent-text: #ae5630;
+  --accent-soft: rgba(184, 90, 57, 0.12);
+  --ok: #1a9e5c;
+  --warn: #b7791f;
+  --bad: #c9362b;
+  --info: #2f6fd6;
+  --scrim: rgba(0, 0, 0, 0.4);
+  --selection: #e3d9cf;
+  color-scheme: light;
 }
 :root[data-theme="dark"] { color-scheme: dark; }
 
@@ -309,6 +335,13 @@ label > span.hint { font-family: var(--mono); font-size: 11px; color: var(--fain
 }
 
 /* Status line (rail foot + More sheet) */
+.theme-switch { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); width: max-content; }
+.theme-switch .theme-opt { min-height: 30px; width: 34px; padding: 0; background: none; border-color: transparent; color: var(--muted); }
+.theme-switch .theme-opt:hover { color: var(--text); }
+.theme-switch .theme-opt[aria-pressed="true"] { background: var(--surface-3); border-color: var(--line-strong); color: var(--text); }
+.sheet-theme { margin: 8px 8px 0; }
+.sheet-theme .theme-opt { min-height: 44px; width: 48px; } /* touch target */
+@media (min-width: 768px) { .sheet-theme { display: none; } }
 .status-line { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); min-height: 20px; }
 
 /* Live dot */

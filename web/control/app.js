@@ -40,6 +40,7 @@ const ALIASES = { containers: 'system' }; // old links keep working
 const MOBILE_PRIMARY = ['chat', 'claude', 'artifacts', 'tasks'];
 const ADVANCED_KEY = 'deus-control.nav-advanced';
 const RAIL_KEY = 'deus-control.rail-hidden';
+const THEME_KEY = 'deus-control.theme'; // read before first paint by theme-init.js
 const DEFAULT_VIEW = 'chat';
 
 // Page header shared by every view: eyebrow (group), title, optional count
@@ -330,6 +331,43 @@ for (const id of ['rail-hide', 'rail-show']) $(id).append(icon('sidebar', { size
 $('rail-hide').addEventListener('click', () => setRail(true, { focus: true }));
 $('rail-show').addEventListener('click', () => setRail(false, { focus: true }));
 try { document.body.classList.toggle('rail-hidden', localStorage.getItem(RAIL_KEY) === '1'); } catch { /* shown */ }
+
+// Theme: follow the device, or force Light/Dark (remembered in this browser only).
+// The browser bar colour: forced → one colour; device → the two media-scoped defaults from index.html.
+const THEME_METAS = [{ content: '#1f1e1d' }, { content: '#faf9f5', media: '(prefers-color-scheme: light)' }];
+const THEMES = [['system', 'monitor', 'Match system'], ['light', 'sun', 'Light'], ['dark', 'moon', 'Dark']];
+function currentTheme() {
+  const t = document.documentElement.dataset.theme;
+  return t === 'light' || t === 'dark' ? t : 'system';
+}
+function setTheme(choice) {
+  const root = document.documentElement;
+  if (choice === 'system') delete root.dataset.theme; else root.dataset.theme = choice;
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m, i) => {
+    const d = THEME_METAS[i] || THEME_METAS[0];
+    m.setAttribute('content', choice === 'system' ? d.content : (choice === 'light' ? '#faf9f5' : '#1f1e1d'));
+    if (choice === 'system' && d.media) m.setAttribute('media', d.media); else m.removeAttribute('media');
+  });
+  try { localStorage.setItem(THEME_KEY, choice); } catch { /* remembered for this page only */ }
+  drawThemeSwitches();
+  document.dispatchEvent(new CustomEvent('deus-theme')); // the live terminal re-reads its colours
+}
+function drawThemeSwitches() {
+  const now = currentTheme();
+  for (const id of ['theme-rail', 'theme-sheet']) {
+    const box = $(id);
+    clear(box);
+    for (const [value, ic, label] of THEMES) {
+      box.append(h('button', { type: 'button', class: 'theme-opt', 'aria-label': label, title: label, 'aria-pressed': String(value === now),
+        onclick: () => setTheme(value) }, icon(ic, { size: 16 })));
+    }
+  }
+}
+drawThemeSwitches();
+// Following the device: tell the terminal when the device switches.
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+  if (currentTheme() === 'system') document.dispatchEvent(new CustomEvent('deus-theme'));
+});
 $('more-logout').addEventListener('click', logout);
 $('more').addEventListener('click', (e) => { if (e.target === $('more')) $('more').close(); });
 

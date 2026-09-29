@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#1f1e1d">
   <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+  <script src="/theme-init.js"></script>
   <title>Deus Control</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
@@ -40,6 +41,7 @@
       <nav id="nav" class="nav" aria-label="Sections"></nav>
       <div class="rail-foot">
         <div class="status-line"><span id="live-dot" class="dot" aria-hidden="true"></span><span id="status-text">connecting</span></div>
+        <div id="theme-rail" class="theme-switch" role="group" aria-label="Theme"></div>
         <span id="mode-pill" class="pill" hidden>read-only</span>
         <button id="logout" class="signout" type="button">Sign out</button>
       </div>
@@ -53,6 +55,7 @@
       <div class="sheet-body">
         <div class="grip" aria-hidden="true"></div>
         <div id="more-list"></div>
+        <div id="theme-sheet" class="theme-switch sheet-theme" role="group" aria-label="Theme"></div>
         <div class="sheet-foot">
           <span id="more-status" class="status-line"></span>
           <button id="more-logout" class="signout" type="button">Sign out</button>

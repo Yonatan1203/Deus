@@ -2403,3 +2403,27 @@ The Chat tab is a window-high view, so with a bar shown the page scrolls by the 
 | Banner only / update only | page starts under the bar | all 36 cases | PASS |
 | No bar, 8 tabs × 390/1280/1920 px vs the previous version | unchanged | every element box identical; full-page screenshots 22 of 24 pixel-identical, 2 differ by 8 px of the brand logo's rounded corners (colour Δ ≤ 12, invisible). The page box is now window-high, but it has no background or border | PASS |
 | Claude tab one window high at 1100×640, 1280×900, 1920×1080 with each bar state | page ends at the window bottom, no page scroll | layout box identical to the previous version in all 12 cases | PASS |
+
+## Light, Dark or Match system (#70 part 1 of 3, 2026-09-29)
+
+Operator: "Add light mode to the app like in this artifact." The dashboard already followed the device;
+now it can also be set. A three-way switch (screen / sun / moon icons, each labelled) sits in the menu
+footer and, on a phone, in the More sheet; the choice is remembered in this browser only.
+- `theme-init.js` is a plain script in `<head>` (the CSP allows no inline script, and the module app.js
+  runs too late) that replays a stored Light/Dark before the page draws, so it never flashes the other theme.
+- Chosen Light uses exactly the device-Light colours (a test keeps the two blocks equal); the browser bar
+  colour follows, and going back to Match system restores its two device-scoped colours.
+- The live terminal takes its colours from the theme and re-colours on a switch (and on a device switch
+  while matching the system). Light gets its own ANSI colours — xterm's defaults assume a dark background —
+  and the selection colour is now a theme token instead of a fixed dark grey.
+- `web-shell.test.ts`: every dashboard script is in the offline shell; the two Light blocks match; the
+  theme loads in `<head>`. Cache v53.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Device light and device dark × Match system / Light / Dark | background, `color-scheme`, pressed button and browser-bar colours right in all 6 | all 6 | PASS |
+| Reload after choosing | choice applied before the page's own script runs (checked at DOMContentLoaded) | Light and Dark both, on both device settings | PASS |
+| Back to Match system | both browser-bar colours restored, one of them light-only | exactly the original pair | PASS |
+| Terminal told about a switch | `deus-theme` fires | on every switch | PASS |
+| Phone | switch in the More sheet, comfortable tap targets | shown; buttons 48×44 px | PASS |
+| Page errors | none | none | PASS |

@@ -87,6 +87,20 @@ const enc = new TextEncoder();
 const toB64 = (u8) => { let s = ''; for (const b of u8) s += String.fromCharCode(b); return btoa(s); };
 const fromB64 = (b64) => { const s = atob(b64); const u8 = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i); return u8; };
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// The terminal's colours come from the theme. xterm's default ANSI colours assume a dark background,
+// so light gets its own set (white text would vanish on a light terminal).
+const ANSI_LIGHT = {
+  black: '#1f1e1d', red: '#c0392b', green: '#1f7a45', yellow: '#8a6400', blue: '#2a5db0', magenta: '#9b3a9b', cyan: '#16727a', white: '#6b6a64',
+  brightBlack: '#8f8d85', brightRed: '#d9412f', brightGreen: '#239a55', brightYellow: '#a67800', brightBlue: '#2f6fd6', brightMagenta: '#b04ab0', brightCyan: '#1b8a93', brightWhite: '#3a3935',
+};
+function termTheme() {
+  const light = getComputedStyle(document.documentElement).colorScheme.includes('light');
+  return {
+    background: cssVar('--surface') || '#131316', foreground: cssVar('--text') || '#ededef',
+    cursor: cssVar('--text') || '#ededef', selectionBackground: cssVar('--selection') || '#4a4843',
+    ...(light ? ANSI_LIGHT : {}),
+  };
+}
 
 // Keys a phone keyboard cannot send. Bytes are exactly what a terminal sends.
 const KEYBAR = [
@@ -110,7 +124,7 @@ async function openLive(api, host, session, onEnd) {
     fontFamily: '"Cascadia Mono NF", "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, SFMono-Regular, Menlo, "DejaVu Sans Mono", "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols 2", monospace',
     fontSize: 14, lineHeight: 1.15, cursorBlink: true, scrollback: 5000,
     allowProposedApi: false,
-    theme: { background: cssVar('--surface') || '#131316', foreground: cssVar('--text') || '#ededef', cursor: cssVar('--text') || '#ededef', selectionBackground: '#3a3a44' },
+    theme: termTheme(),
     // Only real web links, opened without handing this page to the target.
     linkHandler: { activate: (_e, text) => {
       try { const u = new URL(text); if (u.protocol === 'https:' || u.protocol === 'http:') window.open(u.href, '_blank', 'noopener,noreferrer'); } catch { /* not a link */ }
@@ -222,7 +236,11 @@ async function openLive(api, host, session, onEnd) {
   });
   ro.observe(host);
 
+  const onTheme = () => { term.options.theme = termTheme(); };
+  document.addEventListener('deus-theme', onTheme);
+
   function cleanup() {
+    document.removeEventListener('deus-theme', onTheme);
     if (touchScroll) {
       host.removeEventListener('touchstart', onTouchStart, { capture: true });
       host.removeEventListener('touchmove', onTouchMove, { capture: true });
