@@ -2641,3 +2641,17 @@ driving the view, which reads an xterm screen.
 | New tests (menu-screen suite) | typed list in the box (plain, with `[Image #11]`, with two images on one row, with a hint after the chips, with pasted-text chip, followed by "thanks", by a blank row, box last on screen) → none; sent list with `● reply` / `⎿` tool line / input box below → none; a real permission menu with a closing rule below, and one with the agents panel below → menu, cursor on 1 | as expected; parser suites 30 passed | PASS |
 | Old vs new parser, same screens | old: menu for typed+image, typed+thanks, echo+reply; new: none; real menu: menu in both | as expected | PASS |
 | `npx vitest run src/control-ui` | green | 464 passed | PASS |
+
+## Enter in a typed-confirm box confirms (#76, 2026-09-30)
+
+The confirm dialog is a `<form method="dialog">` whose first button is Cancel, and pressing Enter in a form
+presses its first submit button — so Enter cancelled even when the typed name matched, silently. `confirmTyped`
+now handles Enter itself: it confirms when the text matches and does nothing otherwise (Enter never cancels);
+Escape and the buttons are unchanged. An Enter that only ends an IME composition is ignored (`isComposing`,
+Safari's keyCode 229). Applies to every typed confirm (Stop, Delete, agent model, warden switches, …). Cache v61.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Drive (Agents model change, stubbed; 1280 and 390) | wrong name + Enter: stays open, nothing sent; Escape: closes, nothing sent, select back; right name + Enter: closes, change sent; Cancel click: cancels | as expected at both widths, no page errors | PASS |
+| Instrumented drive on HEAD (before) | right name + Enter confirms | closed with `returnValue=cancel`, nothing sent — the bug (the Confirm button itself worked) | reproduced |
+| `npx vitest run src/control-ui` | green | 464 passed | PASS |

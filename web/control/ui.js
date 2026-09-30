@@ -32,6 +32,14 @@ export function confirmTyped(expected, message, details) {
   input.value = '';
   ok.disabled = true;
   input.oninput = () => { ok.disabled = input.value !== expected; };
+  // Enter would submit the form with its first button, Cancel. It confirms
+  // when the text matches and otherwise does nothing; Escape still cancels.
+  // (keyCode 229: Safari's Enter that ends an IME composition.)
+  input.onkeydown = (e) => {
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    if (!ok.disabled) dlg.close('ok');
+  };
   return new Promise((resolve) => {
     dlg.onclose = () => resolve(dlg.returnValue === 'ok' && input.value === expected);
     dlg.showModal();
