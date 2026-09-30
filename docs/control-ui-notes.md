@@ -2603,3 +2603,16 @@ switch off, or delete the role's `backends` entry.
 | Drive (stubbed; 1280, 390, not set up) | switch only on ai-eng-warden + code-reviewer; label names model and cost; cancel sends nothing; confirm text; PATCH with X-Confirm on, none off; not set up → disabled with the reason; no sideways scroll; no page errors | 20 / 20 | PASS |
 | Live call (advisory, nothing marked) | real review of commit 58afacf7 via gpt-4.1-nano | SHIP, 0 findings; 2887 tokens in, 60 out, $0.000313 logged | PASS |
 | Live skip | working tree holding key-shaped test fixtures | COULD_NOT_RUN "not sent: … key/token/secret/password assignment"; log `sent: false` | PASS |
+
+## Pages button showed "null" (2026-09-30)
+
+Reported by the operator with a screenshot: in the Claude tab's bar, a session with exactly one page showed the
+Pages icon followed by the word "null". `pagesBtn.replaceChildren(icon, cond ? badge : null)` — native
+`replaceChildren`/`append` turn a `null` argument into the text "null" (the `h()` helper skips it, which is why
+the pattern looked safe). The badge is now spread in only when there are two or more pages. Every other native
+insert in `web/control` was checked: none passes a conditional `null`. Cache v59.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Drive (stubbed; one-page and two-page sessions) | one page: icon only, label "Page"; two pages: badge "2", label "Pages (2)"; no "null" anywhere; no page errors | as expected | PASS |
+| `npx vitest run src/control-ui` | green | 464 passed | PASS |

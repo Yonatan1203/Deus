@@ -578,7 +578,8 @@ export async function render(root, api, bus, me) {
       pagesBtn.hidden = list.length === 0;
       const pagesLabel = list.length > 1 ? `Pages (${list.length})` : 'Page';
       pagesBtn.setAttribute('aria-label', pagesLabel); pagesBtn.title = pagesLabel;
-      pagesBtn.replaceChildren(icon('pages', { size: 16 }), list.length > 1 ? h('span', { class: 'btn-count', 'aria-hidden': 'true' }, String(list.length)) : null);
+      // replaceChildren() would render a null argument as the text "null".
+      pagesBtn.replaceChildren(icon('pages', { size: 16 }), ...(list.length > 1 ? [h('span', { class: 'btn-count', 'aria-hidden': 'true' }, String(list.length))] : []));
       pagesMenu.replaceChildren(...list.map((a) => h('button', { type: 'button', class: 'pages-item', role: 'menuitem', onclick: () => { closeMenu(); openArtifact(a); } },
         h('span', { class: 'pages-title', dir: 'auto' }, a.title), h('span', { class: 'muted small' }, a.added_at ? fmtTime(a.added_at) : ''))));
       if (!list.length) closeMenu();
