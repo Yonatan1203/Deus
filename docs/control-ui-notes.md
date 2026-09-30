@@ -2671,3 +2671,22 @@ Claude tab, as it did before. Cache v62.
 | Drive (Chat idle, Chat replying, Claude working; 1280 dark, 390 light, 360 dark, 320 light) | 34 × 34 desktop, 44 × 44 phones; title = label; busy icon = filled square, no circle; no sideways scroll; no page errors | 1280: 34 × 34; 390/360/320: 44 × 44 on all three; titles "Send" / "Stop Test" / "Stop Claude"; busy svg = rect, filled, 14 px; overflow 0; errors 0 | PASS |
 | Same drive on HEAD (before) | — | no title; busy icon circle + rect, unfilled; Claude tab at 320: 23 × 34 | the reported issues, reproduced |
 | `npx vitest run src/control-ui` (includes the icon-file check) | green | 464 passed | PASS |
+
+## The wardens CLI writes only what changed (#79, 2026-09-30)
+
+`scripts/wardens.py` had the bug fixed in the dashboard earlier (58afacf7), and worse: with no
+`.claude/wardens/config.json` it copied the whole example into it on *any* command (even `show`), every command
+then rewrote the whole file (turning example values such as plan-reviewer's `tools` — without `ExitPlanMode` —
+into live settings), and `reset` copied the example entry, `backends: ["claude","gpt"]` included. Now `show` and
+friends only read (example ∪ config.json, config.json wins, the example's `backends` never shown); each change
+writes one key of one warden into config.json, read fresh, with a `config.json.bak-<stamp>` backup (now
+git-ignored); `reset` removes the warden's entry so the hooks' own defaults apply; the first `triggers
+plan-reviewer add` starts from the hook's default list (`PLAN_REVIEWER_DEFAULT_TOOLS`, now a named constant in
+`codex_warden_hooks.py` — no behaviour change there), so `ExitPlanMode` stays gated. The terminal UI package
+(`packages/tui/src/wardens-config.ts`) has the same seeding and is task #80.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `scripts/tests/test_wardens_cli.py` (new, 16) | show writes nothing; example backends never shown; disable writes `{role: {enabled}}`; toggle back writes the start value; other roles/fields kept + backup; first plan-reviewer `add` = hook default + tool (ExitPlanMode kept); other roles start from the view; threshold one key; manual roles refuse; reset removes the entry, never writes backends; reset with no entry writes nothing; reset of a config-only role; non-object entry ignored then replaced; malformed config exits 1; unknown warden exits 1; no example still works | 16 passed | PASS |
+| Same tests against HEAD's `wardens.py` | the bug shows | 14 failed, 2 passed (malformed config exits 1; missing example) | reproduced |
+| `test_codex_warden_hooks.py` | unchanged | passed (375 with the new file, 1 skipped) | PASS |

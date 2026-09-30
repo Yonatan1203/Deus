@@ -1447,14 +1447,18 @@ def run_plan_mode_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     return 0
 
 
+# The tools plan-reviewer gates when config.json names none (also the base the
+# wardens CLI extends on its first `triggers plan-reviewer add`).
+PLAN_REVIEWER_DEFAULT_TOOLS = ["Edit", "Write", "MultiEdit", "apply_patch", "ExitPlanMode"]
+
+
 def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     config = _wardens_config(repo_root)
     if not _warden_enabled(config, "plan-reviewer"):
         return 0
     tool_name = str(event.get("tool_name") or "")
     if tool_name and not _warden_has_tool(
-        config, "plan-reviewer", tool_name,
-        ["Edit", "Write", "MultiEdit", "apply_patch", "ExitPlanMode"],
+        config, "plan-reviewer", tool_name, PLAN_REVIEWER_DEFAULT_TOOLS,
     ):
         return 0
 

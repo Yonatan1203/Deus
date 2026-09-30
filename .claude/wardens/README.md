@@ -235,7 +235,7 @@ python3 scripts/wardens.py reset <name>       — reset a warden to defaults
 python3 scripts/wardens.py customize <name>   — launch Claude to set custom instructions
 ```
 
-Configuration is stored in `config.json` (gitignored, per-user). Defaults come from `config.json.example` (tracked). If `config.json` doesn't exist, all wardens run with default settings.
+Configuration is stored in `config.json` (gitignored, per-user). It is created on the first change and holds only your overrides — the CLI and the dashboard write just the key you change and never copy `config.json.example` into it (the example's `backends` would add a gate). `reset <name>` removes that warden's entry, so the hooks' own defaults apply. If `config.json` doesn't exist, all wardens run with default settings.
 
 Hooks read `config.json` at runtime:
 - If a warden is disabled, its gate hook exits 0 (no block/warning)

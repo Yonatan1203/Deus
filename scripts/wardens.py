@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -61,23 +62,63 @@ def _yellow(text: str) -> str:
     return _c("33", text)
 
 
-def _load_config() -> dict[str, Any]:
-    if not CONFIG_PATH.exists():
-        if EXAMPLE_PATH.exists():
-            shutil.copy2(EXAMPLE_PATH, CONFIG_PATH)
-        else:
-            print(_red("Error: config.json.example not found"))
-            sys.exit(1)
+# The gate hooks read only config.json, and a missing file (or key) means their
+# own defaults. So this CLI never seeds config.json from the example — the
+# example's `backends` would add a codex gate nothing here can pass — and every
+# change writes just the one key it changes.
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
     try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
     except (OSError, json.JSONDecodeError) as exc:
-        print(_red(f"Error reading config: {exc}"))
+        print(_red(f"Error reading {path.name}: {exc}"))
         sys.exit(1)
     return data if isinstance(data, dict) else {}
 
 
-def _save_config(config: dict[str, Any]) -> None:
-    CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+def _read_live() -> dict[str, Any]:
+    """config.json as it is on disk; {} when there is none."""
+    return _read_json(CONFIG_PATH) or {}
+
+
+def _write_live(data: dict[str, Any]) -> None:
+    if CONFIG_PATH.exists():
+        stamp = time.strftime("%Y%m%d%H%M%S")
+        shutil.copy2(CONFIG_PATH, CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak-{stamp}"))
+    CONFIG_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _load_config() -> dict[str, Any]:
+    """What to show: every warden in the example or config.json, config.json's
+    values over the example's. The example's `backends` are left out — the
+    hooks never read them. Nothing is written."""
+    example = _read_json(EXAMPLE_PATH) or {} if EXAMPLE_PATH.exists() else {}
+    live = _read_live()
+    view: dict[str, Any] = {}
+    for name in [*example, *[n for n in live if n not in example]]:
+        base = dict(example.get(name) or {}) if isinstance(example.get(name), dict) else {}
+        base.pop("backends", None)
+        entry = live.get(name)
+        if entry is not None and not isinstance(entry, dict):
+            print(_yellow(f"Ignoring config.json entry for {name}: not an object"))
+            entry = None
+        view[name] = {**base, **(entry or {})}
+    return view
+
+
+def _write_field(config: dict[str, Any], name: str, key: str, value: Any) -> None:
+    """Set one key of one warden in config.json (read fresh) and in the view."""
+    live = _read_live()
+    entry = live.get(name)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry[key] = value
+    live[name] = entry
+    _write_live(live)
+    config[name][key] = value
 
 
 def _validate_name(config: dict[str, Any], name: str) -> None:
@@ -117,8 +158,7 @@ def cmd_show(config: dict[str, Any]) -> None:
 
 def cmd_enable(config: dict[str, Any], name: str) -> None:
     _validate_name(config, name)
-    config[name]["enabled"] = True
-    _save_config(config)
+    _write_field(config, name, "enabled", True)
     print(f"{name}: {_green('enabled')}")
 
 
@@ -131,8 +171,7 @@ def cmd_disable(config: dict[str, Any], name: str) -> None:
                 "Source edits/commits will proceed without warden review until re-enabled."
             )
         )
-    config[name]["enabled"] = False
-    _save_config(config)
+    _write_field(config, name, "enabled", False)
     print(f"{name}: {_red('disabled')}")
 
 
@@ -157,12 +196,21 @@ def cmd_triggers(
         except ValueError:
             print(_red("Threshold must be a positive integer"))
             sys.exit(1)
-        warden["auto_threshold"] = n
-        _save_config(config)
+        _write_field(config, name, "auto_threshold", n)
         print(f"{name} auto_threshold: {n}")
         return
 
-    if "tools" not in warden:
+    live_entry = _read_live().get(name)
+    live_tools = live_entry.get("tools") if isinstance(live_entry, dict) else None
+    if isinstance(live_tools, list):
+        tools = list(live_tools)
+    elif name == "plan-reviewer":
+        # the hook's own default, so a first `add` keeps ExitPlanMode gated
+        from codex_warden_hooks import PLAN_REVIEWER_DEFAULT_TOOLS
+        tools = list(PLAN_REVIEWER_DEFAULT_TOOLS)
+    elif isinstance(warden.get("tools"), list):
+        tools = list(warden["tools"])
+    else:
         print(_red(f"{name} uses manual/auto triggers, not tool-based triggers."))
         sys.exit(1)
 
@@ -171,34 +219,33 @@ def cmd_triggers(
         sys.exit(1)
 
     if action == "add":
-        if value not in warden["tools"]:
-            warden["tools"].append(value)
-            _save_config(config)
-        print(f"{name} triggers: {', '.join(warden['tools'])}")
+        if value not in tools:
+            tools.append(value)
+            _write_field(config, name, "tools", tools)
+        print(f"{name} triggers: {', '.join(tools)}")
     elif action == "remove":
-        if value not in warden["tools"]:
+        if value not in tools:
             print(_red(f"{value} not in triggers for {name}"))
             sys.exit(1)
-        warden["tools"].remove(value)
-        _save_config(config)
-        print(f"{name} triggers: {', '.join(warden['tools'])}")
+        tools.remove(value)
+        _write_field(config, name, "tools", tools)
+        print(f"{name} triggers: {', '.join(tools)}")
     else:
         print(_red(f"Unknown trigger action: {action} (use add/remove)"))
         sys.exit(1)
 
 
 def cmd_reset(config: dict[str, Any], name: str) -> None:
+    """Back to the hooks' own defaults: drop this warden's entry from config.json
+    (its enabled, tools, backends and custom instructions)."""
     _validate_name(config, name)
-    if not EXAMPLE_PATH.exists():
-        print(_red("Error: config.json.example not found"))
-        sys.exit(1)
-    defaults = json.loads(EXAMPLE_PATH.read_text(encoding="utf-8"))
-    if name not in defaults:
-        print(_red(f"{name} not found in defaults"))
-        sys.exit(1)
-    config[name] = defaults[name]
-    _save_config(config)
-    print(f"Reset {name} to defaults.")
+    live = _read_live()
+    if name not in live:
+        print(f"{name} is already at defaults.")
+        return
+    live.pop(name)
+    _write_live(live)
+    print(f"Reset {name} to defaults (its settings and custom instructions were removed).")
 
 
 def cmd_customize(config: dict[str, Any], name: str) -> None:
@@ -215,7 +262,8 @@ def cmd_customize(config: dict[str, Any], name: str) -> None:
         f"I want to set custom instructions for the {name} warden. "
         f"{current_note} "
         f"Help me write effective custom instructions for {name}, then save them to "
-        f"{CONFIG_PATH} under the key [\"{name}\"][\"custom_instructions\"]. "
+        f"{CONFIG_PATH} under the key [\"{name}\"][\"custom_instructions\"] "
+        "(create the file if it is absent; change only that key and keep every other warden). "
         "Ask me what behavior I want to customize."
     )
     subprocess.run(["claude", "-p", prompt], check=False)
@@ -314,8 +362,7 @@ def _tui(stdscr: curses.window) -> None:
             cursor += 1
         elif key in (ord(" "), ord("\n"), curses.KEY_ENTER, 10, 13):
             name = names[cursor]
-            config[name]["enabled"] = not config[name].get("enabled", True)
-            _save_config(config)
+            _write_field(config, name, "enabled", not config[name].get("enabled", True))
 
 
 def cmd_interactive() -> None:

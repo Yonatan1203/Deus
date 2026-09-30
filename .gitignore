@@ -39,6 +39,8 @@ dist/
 
 # Warden config (user-local toggle state and custom instructions)
 .claude/wardens/config.json
+# its backups (the dashboard and scripts/wardens.py write config.json.bak-<stamp>)
+.claude/wardens/config.json.bak-*
 # OPA shadow-observer toggle (absent == off; deliberately NOT in config.json so
 # nothing iterating warden entries sees a pseudo-warden)
 .claude/wardens/opa-shadow.json
