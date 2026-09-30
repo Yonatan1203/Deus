@@ -2737,3 +2737,22 @@ and `own-send.test.ts` pins them, including a check that every `sock.sendMessage
 | `packages/mcp-whatsapp` vitest (new `own-send.test.ts`, 4) | prefix on every send; echo flagged; operator's unprefixed message not flagged; only prefixed sends | 31 passed (4 files) | PASS |
 | `tsc --noEmit -p packages/mcp-whatsapp` | clean | clean | PASS |
 | social-publish skill vitest (local) | own-account approval accepted; bot-flagged, prefixed and name-unknown rows refused | 47 passed (5 files) | PASS |
+
+## Channels drop inbound items for chats they don't own (#60, 2026-09-30)
+
+Each MCP channel child (WhatsApp, Gmail, Telegram, Slack, Discord, Teams, Outlook) reported inbound messages and
+reactions with a `chat_id` the host trusted as-is, so a faulty or compromised child could write into another
+channel's chat, including the WhatsApp main group. `McpChannelAdapter` now drops any item whose `chat_id` is not
+a non-empty string its own `ownsJid` accepts, before any callback. The first drop per chat warns once; later ones
+log at debug; at most 500 ids are remembered and ids over 256 characters never are. WhatsApp's `ownsJid` is now
+the anchored `isWhatsAppJid` (`src/whatsapp-jid.ts`): groups, phone DMs and untranslated `@lid` DMs, with an
+optional device suffix. Channel posts (`@newsletter`), broadcast lists and legacy `@c.us` are dropped on purpose;
+they never had a reply route. Still open (#85): a child can forge `sender` and the from-me/bot flags inside its
+own chats.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `npx vitest run src/channels src/whatsapp-jid.test.ts` (new tests: foreign message/reaction dropped, non-string id, warn once, long id; WhatsApp id forms) | pass | 53 passed (7 files) | PASS |
+| Full `npx vitest run` | no new failures | 2849 passed, 2 failed in `control-ui-markdown.test.ts`; the same 2 fail on HEAD without this change (#86) | PASS (pre-existing) |
+| `tsc --noEmit` | clean | clean | PASS |
+| All 35 WhatsApp chat ids in `data/ipc/*/available_groups.json` against `isWhatsAppJid` | all match | 35 of 35 (none printed) | PASS |

@@ -41,8 +41,14 @@ export interface McpChannelAdapterOpts {
   ownsJid: (jid: string) => boolean;
 }
 
+/** Distinct dropped chat ids remembered per adapter, so each warns once (bounded: a child controls them). */
+const DROP_WARN_CAP = 500;
+const DROP_ID_MAX = 256;
+
 export class McpChannelAdapter implements Channel {
   readonly name: string;
+
+  private droppedWarned = new Set<string>();
 
   private client: Client;
   private transport: StdioClientTransport;
@@ -93,6 +99,13 @@ export class McpChannelAdapter implements Channel {
         const params = notification.params;
         const data = params.data as Record<string, unknown> | undefined;
         if (!data) return;
+
+        if (
+          params.logger === 'incoming_reaction' ||
+          params.logger === 'incoming_message'
+        ) {
+          if (!this.owns(data.chat_id)) return;
+        }
 
         if (params.logger === 'incoming_reaction') {
           if (!opts.onReaction) return;
@@ -145,6 +158,36 @@ export class McpChannelAdapter implements Channel {
         opts.onMessage(chatJid, msg);
       },
     );
+  }
+
+  /**
+   * The channel child is a separate trust zone (third-party credentials, untrusted network input):
+   * its inbound items may only name chats this channel owns, or it could write into another
+   * channel's chat, e.g. the WhatsApp main group from a Telegram child (#60).
+   */
+  private owns(chatId: unknown): chatId is string {
+    if (typeof chatId === 'string' && chatId && this.opts.ownsJid(chatId)) {
+      return true;
+    }
+    const id = typeof chatId === 'string' ? chatId : String(chatId);
+    const shown = id.length > 64 ? `${id.slice(0, 64)}…` : id;
+    const first =
+      id.length <= DROP_ID_MAX &&
+      this.droppedWarned.size < DROP_WARN_CAP &&
+      !this.droppedWarned.has(id);
+    if (first) {
+      this.droppedWarned.add(id);
+      logger.warn(
+        { channel: this.name, chatJid: shown },
+        'Dropped inbound item for a chat this channel does not own',
+      );
+    } else {
+      logger.debug(
+        { channel: this.name, chatJid: shown },
+        'Dropped inbound item for a chat this channel does not own',
+      );
+    }
+    return false;
   }
 
   async connect(): Promise<void> {

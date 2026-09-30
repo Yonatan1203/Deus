@@ -22,7 +22,7 @@ const { capturedHandlers } = vi.hoisted(() => ({
 }));
 
 vi.mock('../logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
 vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
@@ -55,7 +55,7 @@ function makeOpts() {
     onMessage: vi.fn(),
     onReaction: vi.fn(),
     onChatMetadata: vi.fn(),
-    ownsJid: vi.fn().mockReturnValue(false),
+    ownsJid: vi.fn().mockReturnValue(true),
   };
 }
 

@@ -12,7 +12,7 @@ const { mockCallTool, mockConnect, mockClose, capturedHandlers } = vi.hoisted(
 );
 
 vi.mock('../logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
 vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
@@ -38,6 +38,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
 }));
 
 const { McpChannelAdapter } = await import('./mcp-adapter.js');
+const { logger } = await import('../logger.js');
 
 function makeOpts() {
   return {
@@ -47,7 +48,7 @@ function makeOpts() {
     onMessage: vi.fn(),
     onReaction: vi.fn(),
     onChatMetadata: vi.fn(),
-    ownsJid: vi.fn().mockReturnValue(false),
+    ownsJid: vi.fn().mockReturnValue(true),
   };
 }
 
@@ -118,6 +119,69 @@ describe('McpChannelAdapter', () => {
       }),
     ).not.toThrow();
     expect(opts.onMessage).not.toHaveBeenCalled();
+  });
+
+  describe('inbound items for chats the channel does not own (#60)', () => {
+    function foreign() {
+      const opts = {
+        ...makeOpts(),
+        ownsJid: vi.fn((jid: string) => jid.endsWith('@mine')),
+      };
+      new McpChannelAdapter(opts);
+      return { opts, handler: capturedHandlers[capturedHandlers.length - 1] };
+    }
+    const msg = (chat_id: unknown) => ({
+      params: {
+        logger: 'incoming_message',
+        data: { chat_id, id: 'm1', sender: 's', content: 'hi', timestamp: '1' },
+      },
+    });
+
+    it('drops a message for a foreign chat before any callback', () => {
+      const { opts, handler } = foreign();
+      handler(msg('120363000000000000@g.us'));
+      expect(opts.onChatMetadata).not.toHaveBeenCalled();
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      handler(msg('a@mine'));
+      expect(opts.onMessage).toHaveBeenCalledTimes(1);
+      expect(opts.onChatMetadata).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops a reaction for a foreign chat', () => {
+      const { opts, handler } = foreign();
+      handler({
+        params: {
+          logger: 'incoming_reaction',
+          data: { chat_id: 'gmail-triage:inbox', sender: 's', emoji: 'x' },
+        },
+      });
+      expect(opts.onReaction).not.toHaveBeenCalled();
+    });
+
+    it('drops a non-string chat_id', () => {
+      const { opts, handler } = foreign();
+      handler(msg({ toString: () => 'a@mine' }));
+      handler(msg(42));
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.ownsJid).not.toHaveBeenCalled();
+    });
+
+    it('warns once per chat, then logs at debug; a very long id never warns', () => {
+      const { handler } = foreign();
+      vi.mocked(logger.warn).mockClear();
+      vi.mocked(logger.debug).mockClear();
+      handler(msg('x@g.us'));
+      handler(msg('x@g.us'));
+      handler(msg('y@g.us'));
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(logger.debug).toHaveBeenCalledTimes(1);
+      handler(msg('z'.repeat(300)));
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      const shown = vi.mocked(logger.debug).mock.calls.at(-1)?.[0] as {
+        chatJid: string;
+      };
+      expect(shown.chatJid.length).toBeLessThanOrEqual(65);
+    });
   });
 
   it('maps metadata.audio to msg.audio with a minimal shape check', () => {

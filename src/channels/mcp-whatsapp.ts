@@ -13,6 +13,7 @@ import {
   PROJECT_ROOT,
   STORE_DIR,
 } from '../config.js';
+import { isWhatsAppJid } from '../whatsapp-jid.js';
 import { McpChannelAdapter } from './mcp-adapter.js';
 import { registerChannel } from './registry.js';
 
@@ -48,6 +49,6 @@ registerChannel('whatsapp', (opts) => {
     onMessage: opts.onMessage,
     onReaction: opts.onReaction,
     onChatMetadata: opts.onChatMetadata,
-    ownsJid: (jid) => jid.endsWith('@g.us') || jid.endsWith('@s.whatsapp.net'),
+    ownsJid: isWhatsAppJid,
   });
 });
