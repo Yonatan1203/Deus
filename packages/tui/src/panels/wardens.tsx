@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { truncate } from '../formatting.js';
 import { StatusIndicator } from '../components/status-indicator.js';
 import {
   loadWardensConfig,
-  saveWardensConfig,
+  setWardenEnabled,
   WARDEN_DESCRIPTIONS,
   WARDEN_TYPES,
   BLOCKING_WARDENS,
@@ -16,27 +16,41 @@ export function WardensPanel() {
   const [config, setConfig] = useState<WardensConfig>(loadWardensConfig);
   const [cursor, setCursor] = useState(0);
   const [warning, setWarning] = useState('');
+  // One message at a time; its timer is replaced by the next and cleared on unmount.
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flash = (text: string) => {
+    if (timer.current) clearTimeout(timer.current);
+    setWarning(text);
+    timer.current = setTimeout(() => setWarning(''), 3000);
+  };
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
 
   const names = Object.keys(config);
   const enabledCount = names.filter((name) => config[name]?.enabled).length;
-  const blockingActive = names.filter((name) => config[name]?.enabled && BLOCKING_WARDENS.has(name)).length;
+  const blockingActive = names.filter(
+    (name) => config[name]?.enabled && BLOCKING_WARDENS.has(name),
+  ).length;
 
   useInput((input, key) => {
     if (key.upArrow && cursor > 0) setCursor(cursor - 1);
     if (key.downArrow && cursor < names.length - 1) setCursor(cursor + 1);
     if (input === ' ' || key.return) {
       const name = names[cursor]!;
-      const warden = config[name]!;
-      const newEnabled = !warden.enabled;
-
-      if (!newEnabled && BLOCKING_WARDENS.has(name)) {
-        setWarning(`⚠ Disabling ${name} removes a safety gate`);
-        setTimeout(() => setWarning(''), 3000);
+      const newEnabled = !config[name]!.enabled;
+      try {
+        setConfig(setWardenEnabled(name, newEnabled));
+        if (!newEnabled && BLOCKING_WARDENS.has(name))
+          flash(`⚠ Disabling ${name} removes a safety gate`);
+      } catch (err) {
+        flash(
+          `⚠ Not saved: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-
-      const updated = { ...config, [name]: { ...warden, enabled: newEnabled } };
-      saveWardensConfig(updated);
-      setConfig(updated);
     }
   });
 
@@ -51,7 +65,8 @@ export function WardensPanel() {
         </Text>
         <Text dimColor>
           {' '}
-          {enabledCount}/{names.length} enabled · {blockingActive} blocking active
+          {enabledCount}/{names.length} enabled · {blockingActive} blocking
+          active
         </Text>
       </Box>
 
@@ -59,11 +74,19 @@ export function WardensPanel() {
         {names.map((name, i) => {
           const warden = config[name]!;
           const isSelected = i === cursor;
-          const description = WARDEN_DESCRIPTIONS[name] ?? 'No description available';
+          const description =
+            WARDEN_DESCRIPTIONS[name] ?? 'No description available';
           return (
             <Box key={name}>
-              <StatusIndicator status={warden.enabled ? 'on' : 'off'} label={truncate(name, 24)} />
-              <Text color={isSelected ? 'cyan' : undefined} bold={isSelected} dimColor={!isSelected}>
+              <StatusIndicator
+                status={warden.enabled ? 'on' : 'off'}
+                label={truncate(name, 24)}
+              />
+              <Text
+                color={isSelected ? 'cyan' : undefined}
+                bold={isSelected}
+                dimColor={!isSelected}
+              >
                 {isSelected ? '▸ ' : '  '}
                 {truncate(description, 42)}
               </Text>
@@ -73,13 +96,24 @@ export function WardensPanel() {
       </Box>
 
       {warning && (
-        <Box marginTop={1} borderStyle="round" borderColor="yellow" paddingX={1}>
+        <Box
+          marginTop={1}
+          borderStyle="round"
+          borderColor="yellow"
+          paddingX={1}
+        >
           <Text color="yellow">{warning}</Text>
         </Box>
       )}
 
       {selected && (
-        <Box marginTop={1} borderStyle="round" borderColor="gray" paddingX={1} paddingY={0}>
+        <Box
+          marginTop={1}
+          borderStyle="round"
+          borderColor="gray"
+          paddingX={1}
+          paddingY={0}
+        >
           <Box flexDirection="column">
             <Box>
               <Text color="cyan" bold>
@@ -97,9 +131,7 @@ export function WardensPanel() {
             {selected.custom_instructions && (
               <Text>
                 <Text dimColor>Instructions: </Text>
-                <Text>
-                  {truncate(selected.custom_instructions, 56)}
-                </Text>
+                <Text>{truncate(selected.custom_instructions, 56)}</Text>
               </Text>
             )}
           </Box>

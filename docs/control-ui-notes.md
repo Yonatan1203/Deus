@@ -2690,3 +2690,21 @@ plan-reviewer add` starts from the hook's default list (`PLAN_REVIEWER_DEFAULT_T
 | `scripts/tests/test_wardens_cli.py` (new, 16) | show writes nothing; example backends never shown; disable writes `{role: {enabled}}`; toggle back writes the start value; other roles/fields kept + backup; first plan-reviewer `add` = hook default + tool (ExitPlanMode kept); other roles start from the view; threshold one key; manual roles refuse; reset removes the entry, never writes backends; reset with no entry writes nothing; reset of a config-only role; non-object entry ignored then replaced; malformed config exits 1; unknown warden exits 1; no example still works | 16 passed | PASS |
 | Same tests against HEAD's `wardens.py` | the bug shows | 14 failed, 2 passed (malformed config exits 1; missing example) | reproduced |
 | `test_codex_warden_hooks.py` | unchanged | passed (375 with the new file, 1 skipped) | PASS |
+
+## The TUI's Wardens panel no longer seeds the gate config (#80, 2026-09-30)
+
+Third copy of the bug fixed in the dashboard (58afacf7) and the CLI (#79, ac0b31f6):
+`packages/tui/src/wardens-config.ts` wrote `config.json.example` into `.claude/wardens/config.json` whenever the
+TUI loaded it (at start and when the Wardens panel opened) — adding the example's `code-reviewer.backends:
+["claude","gpt"]` to every commit's gate — and each toggle rewrote the whole file via a temp file in `/tmp`
+(a rename that can fail when /tmp is a separate mount). Now `loadWardensConfig(dir?)` only reads (example ∪
+config.json, config.json wins, example `backends` dropped; a broken or non-object config.json shows nothing);
+`setWardenEnabled(name, enabled, dir?)` writes just that warden's `enabled`, read fresh, with a backup and a
+same-directory temp file (unlinked on failure), throwing for a broken file (the error names config.json) or an unknown warden; the temp-file pattern is git-ignored. The panel shows
+the safety-gate warning only after a successful write, or the error instead; one timer, cleared on unmount.
+The TUI package is not in CI — its tests run locally (`cd packages/tui && npm test`).
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `packages/tui` `npm test` (new `wardens-config.test.ts`, 8) | load writes nothing, no example backends; toggle writes one key and toggling back the start value; other wardens/fields kept, only config.json + backups remain, no temp file; non-object entry ignored then replaced; `{nope`, `[1,2]`, `null` → load `{}`, set throws, file unchanged; unknown warden throws, nothing written | 15 passed (8 new + 7 existing) | PASS |
+| `npx tsc --noEmit -p packages/tui` | clean | clean | PASS |
