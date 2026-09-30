@@ -2722,3 +2722,18 @@ to the hooks' constant. No code changed; nothing reads the example as live confi
 | `test_wardens_cli.py` (new drift test) | example tools == `PLAN_REVIEWER_DEFAULT_TOOLS` | 17 passed | PASS |
 | `python3 scripts/wardens.py show` | plan-reviewer triggers include ExitPlanMode; writes nothing | "Edit, Write, MultiEdit, apply_patch, ExitPlanMode"; `config.json` still absent | PASS |
 | `packages/tui` tests, `src/control-ui/api/wardens.test.ts` | unchanged | 15 passed, 8 passed | PASS |
+
+## Deus's own sends are pinned as bot messages (#61, 2026-09-30)
+
+Deus's WhatsApp runs on the operator's own number. His own messages are stored with `is_from_me = 1`, so the
+social-publish approval check (local skill code, not in this repo) now accepts his own-account rows the way the
+story-flight intake already does: a row counts only if it is not `is_bot_message` and does not start with
+`<ASSISTANT_NAME>:`. That is safe only while every send carries the prefix and its echo is flagged. The two rules
+now live in `outgoingText()` and `isOwnSend()` in `packages/mcp-whatsapp/src/whatsapp.ts` (behaviour unchanged),
+and `own-send.test.ts` pins them, including a check that every `sock.sendMessage` call sends the prefixed text.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `packages/mcp-whatsapp` vitest (new `own-send.test.ts`, 4) | prefix on every send; echo flagged; operator's unprefixed message not flagged; only prefixed sends | 31 passed (4 files) | PASS |
+| `tsc --noEmit -p packages/mcp-whatsapp` | clean | clean | PASS |
+| social-publish skill vitest (local) | own-account approval accepted; bot-flagged, prefixed and name-unknown rows refused | 47 passed (5 files) | PASS |

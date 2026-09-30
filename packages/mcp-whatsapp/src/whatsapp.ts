@@ -79,6 +79,30 @@ export function classifyDisconnect(
   return 'reconnect';
 }
 
+/**
+ * What Deus actually sends for `text`. On a shared number (the default) every send carries the
+ * "<name>: " prefix, and isOwnSend() below recognises the echo by it. Host-side approvals
+ * (social-publish posts, story-flight commands) accept the operator's own-account messages only
+ * because of this pair: an unprefixed send here would let Deus's output count as his approval.
+ */
+export function outgoingText(
+  text: string,
+  assistantName: string,
+  hasOwnNumber: boolean,
+): string {
+  return hasOwnNumber ? text : `${assistantName}: ${text}`;
+}
+
+/** Whether a received message is Deus's own send (stored as is_bot_message). */
+export function isOwnSend(
+  content: string,
+  fromMe: boolean,
+  assistantName: string,
+  hasOwnNumber: boolean,
+): boolean {
+  return hasOwnNumber ? fromMe : content.startsWith(`${assistantName}:`);
+}
+
 export class WhatsAppProvider implements ChannelProvider {
   readonly name = 'whatsapp';
 
@@ -466,9 +490,12 @@ export class WhatsAppProvider implements ChannelProvider {
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
           const fromMe = msg.key.fromMe || false;
-          const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
-            ? fromMe
-            : content.startsWith(`${ASSISTANT_NAME}:`);
+          const isBotMessage = isOwnSend(
+            content,
+            fromMe,
+            ASSISTANT_NAME,
+            ASSISTANT_HAS_OWN_NUMBER,
+          );
 
           const metadata: Record<string, unknown> = {
             is_bot_message: isBotMessage,
@@ -498,9 +525,11 @@ export class WhatsAppProvider implements ChannelProvider {
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {
-    const prefixed = ASSISTANT_HAS_OWN_NUMBER
-      ? text
-      : `${ASSISTANT_NAME}: ${text}`;
+    const prefixed = outgoingText(
+      text,
+      ASSISTANT_NAME,
+      ASSISTANT_HAS_OWN_NUMBER,
+    );
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid: chatId, text: prefixed });
