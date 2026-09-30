@@ -147,3 +147,10 @@ def test_no_example_still_works(paths, tmp_path, monkeypatch):
     monkeypatch.setattr(w, "EXAMPLE_PATH", tmp_path / "missing.example")
     paths.write_text(json.dumps({"plan-reviewer": {"enabled": True}}))
     assert w.main(["show"]) == 0
+
+
+def test_the_example_shows_the_hooks_real_plan_reviewer_tools():
+    """The example is what every warden list shows; it must match what the gate
+    actually uses when config.json names no tools (#81)."""
+    example = Path(_SCRIPTS).parent / ".claude" / "wardens" / "config.json.example"
+    assert json.loads(example.read_text())["plan-reviewer"]["tools"] == PLAN_REVIEWER_DEFAULT_TOOLS

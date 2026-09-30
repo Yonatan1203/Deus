@@ -2708,3 +2708,17 @@ The TUI package is not in CI — its tests run locally (`cd packages/tui && npm 
 |-------|----------|----------|-------------|
 | `packages/tui` `npm test` (new `wardens-config.test.ts`, 8) | load writes nothing, no example backends; toggle writes one key and toggling back the start value; other wardens/fields kept, only config.json + backups remain, no temp file; non-object entry ignored then replaced; `{nope`, `[1,2]`, `null` → load `{}`, set throws, file unchanged; unknown warden throws, nothing written | 15 passed (8 new + 7 existing) | PASS |
 | `npx tsc --noEmit -p packages/tui` | clean | clean | PASS |
+
+## The warden lists show every tool plan-reviewer gates (#81, 2026-09-30)
+
+With no `config.json` entry, the plan-reviewer hook gates `PLAN_REVIEWER_DEFAULT_TOOLS` (Edit, Write, MultiEdit,
+apply_patch, **ExitPlanMode**; `scripts/codex_warden_hooks.py`). But every warden list shows the tools from
+`.claude/wardens/config.json.example`: the dashboard's Wardens tab, `scripts/wardens.py show`, and the TUI panel.
+The example's plan-reviewer entry left out ExitPlanMode. The example now lists all five, and a test keeps it equal
+to the hooks' constant. No code changed; nothing reads the example as live config.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `test_wardens_cli.py` (new drift test) | example tools == `PLAN_REVIEWER_DEFAULT_TOOLS` | 17 passed | PASS |
+| `python3 scripts/wardens.py show` | plan-reviewer triggers include ExitPlanMode; writes nothing | "Edit, Write, MultiEdit, apply_patch, ExitPlanMode"; `config.json` still absent | PASS |
+| `packages/tui` tests, `src/control-ui/api/wardens.test.ts` | unchanged | 15 passed, 8 passed | PASS |

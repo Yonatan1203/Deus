@@ -1,7 +1,7 @@
 {
   "plan-reviewer": {
     "enabled": true,
-    "tools": ["Edit", "Write", "MultiEdit", "apply_patch"],
+    "tools": ["Edit", "Write", "MultiEdit", "apply_patch", "ExitPlanMode"],
     "custom_instructions": null
   },
   "code-reviewer": {
