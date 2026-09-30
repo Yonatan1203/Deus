@@ -33,6 +33,7 @@ export const MAP = {
   // actions
   send: 'ArrowUp',
   stop: 'CircleStop',
+  'stop-square': 'Square',
   plus: 'Plus',
   pin: 'Pin',
   external: 'ExternalLink',

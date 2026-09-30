@@ -100,7 +100,7 @@ export function createComposer(o) {
   const token = h('div', { class: 'conv-token', hidden: true });
   const slash = h('div', { class: 'conv-slash', role: 'listbox', 'aria-label': 'Commands', hidden: true });
   const pickers = new Map((o.pickers || []).map((p) => [p.id, pillMenu(p.initial, p.options, p.onPick, p.note)]));
-  const sendBtn = h('button', { type: 'button', class: 'conv-send', 'aria-label': 'Send' }, icon('send', { size: 16 }));
+  const sendBtn = h('button', { type: 'button', class: 'conv-send', 'aria-label': 'Send', title: 'Send' }, icon('send', { size: 16 }));
   const el = h('div', { class: 'conv-box' }, slash, token, input,
     h('div', { class: 'conv-foot' }, o.lead || null, h('span', { class: 'sp' }), ...[...pickers.values()].map((p) => p.wrap), sendBtn));
 
@@ -179,8 +179,10 @@ export function createComposer(o) {
     /** Send ↔ Stop. */
     setBusy(b) {
       busy = b;
-      sendBtn.replaceChildren(icon(b ? 'stop' : 'send', { size: 16 }));
-      sendBtn.setAttribute('aria-label', b ? (o.stopLabel || 'Stop') : 'Send');
+      sendBtn.replaceChildren(b ? icon('stop-square', { size: 14 }) : icon('send', { size: 16 }));
+      const label = b ? (o.stopLabel || 'Stop') : 'Send';
+      sendBtn.setAttribute('aria-label', label);
+      sendBtn.title = label;
       sendBtn.classList.toggle('busy', b);
     },
     picker: (id) => pickers.get(id),

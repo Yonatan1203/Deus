@@ -2655,3 +2655,19 @@ Safari's keyCode 229). Applies to every typed confirm (Stop, Delete, agent model
 | Drive (Agents model change, stubbed; 1280 and 390) | wrong name + Enter: stays open, nothing sent; Escape: closes, nothing sent, select back; right name + Enter: closes, change sent; Cancel click: cancels | as expected at both widths, no page errors | PASS |
 | Instrumented drive on HEAD (before) | right name + Enter confirms | closed with `returnValue=cancel`, nothing sent — the bug (the Confirm button itself worked) | reproduced |
 | `npx vitest run src/control-ui` | green | 464 passed | PASS |
+
+## Composer Send/Stop: 44 px on phones, a tooltip, a plain stop square (#77, 2026-09-30)
+
+The composer's Send button (Chat tab and the Claude tab's conversation) was 34 × 34 on phones — the last icon
+button under the 44 px touch size — had no tooltip, and while busy showed a circled stop inside the round button.
+On the Claude tab the foot's flex row also squeezed it (32 px wide at 390, 29 at 360, 23 at 320 — an oval). Now: `flex: none`, 44 × 44
+at ≤ 767 px (34 on desktop, as before), `title` = the label ("Send", or "Stop <name>" / "Stop Claude" while
+busy), and the busy icon is Lucide `Square` at 14 px filled with the text colour (`stop-square`, added to the icon
+set; `stop` keeps `circle-stop` for the Stop buttons elsewhere). The Model/Effort row still wraps at 320 px on the
+Claude tab, as it did before. Cache v62.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| Drive (Chat idle, Chat replying, Claude working; 1280 dark, 390 light, 360 dark, 320 light) | 34 × 34 desktop, 44 × 44 phones; title = label; busy icon = filled square, no circle; no sideways scroll; no page errors | 1280: 34 × 34; 390/360/320: 44 × 44 on all three; titles "Send" / "Stop Test" / "Stop Claude"; busy svg = rect, filled, 14 px; overflow 0; errors 0 | PASS |
+| Same drive on HEAD (before) | — | no title; busy icon circle + rect, unfilled; Claude tab at 320: 23 × 34 | the reported issues, reproduced |
+| `npx vitest run src/control-ui` (includes the icon-file check) | green | 464 passed | PASS |

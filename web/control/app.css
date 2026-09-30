@@ -862,6 +862,9 @@ button.icon-btn.danger { color: var(--bad); margin-left: 6px; } /* a little apar
 .conv-send { display: grid; place-items: center; width: 34px; height: 34px; min-height: 34px; padding: 0; border: 0; border-radius: 50%; background: var(--primary); color: var(--fg-inverse); }
 .conv-send:hover { filter: brightness(1.08); background: var(--primary); }
 .conv-send.busy { background: var(--surface-3); color: var(--text); }
+.conv-send { flex: none; }
+.conv-send.busy svg { fill: currentColor; } /* a solid stop square */
+@media (max-width: 767px) { .conv-send { width: 44px; height: 44px; min-height: 44px; } } /* touch */
 @media (prefers-reduced-motion: reduce) { .conv-fold .chev { transition: none; } }
 @media (min-width: 900px) { .claude-stage { height: calc(100dvh - 220px); } }
 /* No title row on the Claude tab (#74): 80 px more for the stage in short windows, where the page scrolls
