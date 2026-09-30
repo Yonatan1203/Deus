@@ -133,6 +133,9 @@ const MENU_NUM_RE = /^(\s*)(❯)?\s*(\d{1,2})\.\s+(.*)$/;
 const MENU_RULE_RE = /^\s*[─╌▔━]/;
 const MENU_BORDER_RE = /^\s*[╭│╰]/;
 const MENU_ESC_RE = /\besc\b/i;
+// One or more attachment chips on a row (images sit side by side), optionally
+// followed by a hint in parentheses.
+const CHIP_RE = /^\s*(?:\[(?:Image #\d+|Pasted text #\d+[^\]]*)\]\s*)+(?:\(.*\)\s*)?$/;
 const PROMPT_MAX = 8;
 export function parseMenuScreen(lines) {
   const rows = lines.slice(-60);
@@ -167,6 +170,17 @@ export function parseMenuScreen(lines) {
   run[run.length - 1].hints = own;
   if (run.some((r, k) => Number(r.m[3]) !== k + 1)) return null;
   if (run.filter((r) => r.m[2]).length !== 1) return null;
+  // 2c. not a menu when it is the operator's own words: a numbered list typed
+  // into the input box (a rule right above the ❯ row, attachment chips aside,
+  // and a rule somewhere below), or that message echoed in the conversation
+  // with the reply or the input box under it. A real dialog has only footer
+  // text below its options. Seen live 2026-09-30.
+  let above = buf.slice(top, anchor.i + 1).findIndex((l) => MENU_NUM_RE.exec(l)?.[2]) + top - 1;
+  while (above >= 0 && CHIP_RE.test(buf[above])) above--;
+  if (above >= 0 && MENU_RULE_RE.test(buf[above]) && rows.slice(below).some((l) => MENU_RULE_RE.test(l))) return null;
+  // Replies and the input box start at column 0; the background-agents panel
+  // under the box (`  ● main`) is indented and may sit under a real dialog.
+  if (buf.slice(below).some((l) => /^(?:●|❯(?:\s|$)|\s*⎿)/.test(l))) return null;
   // 3. footer: esc offered?
   let esc = false;
   for (let i = below; i < buf.length; i++) if (MENU_ESC_RE.test(buf[i])) esc = true;

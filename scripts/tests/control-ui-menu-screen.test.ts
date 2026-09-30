@@ -395,3 +395,106 @@ describe('parseMenuScreen', () => {
     expect(parseMenuScreen(['Pick one', '  2. a', '❯ 3. b'])).toBeNull();
   });
 });
+
+// The operator's own numbered message is never a menu (seen live 2026-09-30:
+// a two-item list with an image showed as "Claude is asking").
+describe('parseMenuScreen: the operator’s own numbered list', () => {
+  const RULE = '─'.repeat(80);
+  const FOOT = '  ⏵⏵ auto mode on (shift+tab to cycle) · 6 agents';
+  const box = (inner: string[]) => [
+    '● Done with the photos.',
+    '',
+    RULE,
+    ...inner,
+    RULE,
+    FOOT,
+  ];
+  const LIST = [
+    '❯ 1. No close-up image for each one.',
+    '  2. go ahead with the no input needed do them all.',
+  ];
+
+  it('ignores a list typed into the input box', () => {
+    expect(parseMenuScreen(box(LIST))).toBeNull();
+    expect(parseMenuScreen(box(['[Image #11]', ...LIST]))).toBeNull();
+    expect(
+      parseMenuScreen(box(['[Pasted text #2 +40 lines]', ...LIST])),
+    ).toBeNull();
+    expect(
+      parseMenuScreen(box(['[Image #11] [Image #12]', ...LIST])),
+    ).toBeNull();
+    expect(
+      parseMenuScreen(box(['[Image #11] [Image #12] (↑ to select)', ...LIST])),
+    ).toBeNull();
+    expect(parseMenuScreen(box([...LIST, '  thanks']))).toBeNull();
+    expect(parseMenuScreen(box([...LIST, '']))).toBeNull();
+    // the box's closing rule last on screen (no footer row)
+    expect(parseMenuScreen(['● hi', RULE, ...LIST, RULE])).toBeNull();
+  });
+
+  it('ignores the list once sent, with the reply or the input box below', () => {
+    const echoed = ['', ...LIST, ''];
+    expect(
+      parseMenuScreen([
+        ...echoed,
+        '● Understood, no close-ups.',
+        '',
+        RULE,
+        '❯ ',
+        RULE,
+        FOOT,
+      ]),
+    ).toBeNull();
+    expect(
+      parseMenuScreen([
+        ...echoed,
+        '  ⎿  Read 3 files',
+        '',
+        RULE,
+        '❯ ',
+        RULE,
+        FOOT,
+      ]),
+    ).toBeNull();
+    expect(parseMenuScreen([...echoed, RULE, '❯ ', RULE, FOOT])).toBeNull();
+  });
+
+  it('still reads a real menu with the background-agents panel below it', () => {
+    const m = parseMenuScreen([
+      '● Bash(ls)',
+      '',
+      RULE,
+      ' Bash command',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No (esc)',
+      '',
+      ' Esc to cancel',
+      '  ● main',
+      '  ◯ plan-reviewer  2m',
+    ]);
+    expect(m).toMatchObject({ kind: 'menu', selected: 1 });
+  });
+
+  it('still reads a real menu with a closing rule below it', () => {
+    const m = parseMenuScreen([
+      '● Bash(ls)',
+      '',
+      RULE,
+      ' Bash command',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No, and tell Claude what to do differently (esc)',
+      '',
+      RULE,
+      ' Esc to cancel',
+    ]);
+    expect(m).toMatchObject({
+      kind: 'menu',
+      selected: 1,
+      options: [{ n: 1, label: 'Yes' }, { n: 2 }],
+    });
+  });
+});

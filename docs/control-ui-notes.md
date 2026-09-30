@@ -2616,3 +2616,28 @@ insert in `web/control` was checked: none passes a conditional `null`. Cache v59
 |-------|----------|----------|-------------|
 | Drive (stubbed; one-page and two-page sessions) | one page: icon only, label "Page"; two pages: badge "2", label "Pages (2)"; no "null" anywhere; no page errors | as expected | PASS |
 | `npx vitest run src/control-ui` | green | 464 passed | PASS |
+
+## A numbered message the operator typed showed as "Claude is asking" (2026-09-30)
+
+Reported with a screenshot: the card read "[Image #11]" with the options "No close-up image for each one…" and
+"go ahead with the no input needed do them all." — the operator's own message, a two-item numbered list with an
+image. Claude Code shows it as `❯ 1. …` / `  2. …`, in the input box while typed and in the conversation once
+sent, which is exactly the shape of a menu with the cursor on option 1. `parseMenuScreen` runs on every poll and
+took the bottommost numbered run with one `❯` as a menu, with nothing required below it; the card's buttons would
+have typed `1`/`2` + Enter into the session.
+
+`parseMenuScreen` now returns null when (1) the `❯` row has a rule right above it (attachment chips such as
+`[Image #N]`, `[Pasted text #N …]` aside — several side by side, optionally with a hint in parentheses) and a
+rule somewhere below — the input box; or (2) anything below the options is conversation: a `●` reply or a `❯`
+prompt line starting at column 0, or a `⎿` tool line — a real dialog has only footer text there. The indented
+background-agents panel (`  ● main`) does not count, so a real dialog above it still shows. No real menu
+fixture has a rule directly above its `❯ 1.` row, so that shape is treated as the input box. Cache v60.
+
+Deviation: verified at the parser (the card is drawn only from `parseMenuScreen`'s result) rather than by
+driving the view, which reads an xterm screen.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| New tests (menu-screen suite) | typed list in the box (plain, with `[Image #11]`, with two images on one row, with a hint after the chips, with pasted-text chip, followed by "thanks", by a blank row, box last on screen) → none; sent list with `● reply` / `⎿` tool line / input box below → none; a real permission menu with a closing rule below, and one with the agents panel below → menu, cursor on 1 | as expected; parser suites 30 passed | PASS |
+| Old vs new parser, same screens | old: menu for typed+image, typed+thanks, echo+reply; new: none; real menu: menu in both | as expected | PASS |
+| `npx vitest run src/control-ui` | green | 464 passed | PASS |
