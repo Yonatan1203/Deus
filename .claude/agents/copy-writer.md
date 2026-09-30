@@ -1,7 +1,7 @@
 ---
 name: copy-writer
 description: Reviews all user-facing text — error messages, help text, status indicators, onboarding copy, system messages. Ensures text is clear, human, actionable, and consistent in tone. NOT about code quality — about how the product speaks to the user. Advisory (not a commit gate). Use after changes that add or modify user-visible strings. <example>Context: Just implemented new error handling for container failures. user: "Review the error messages." assistant: "Running copy-writer to audit user-facing text quality." <commentary>Error messages are user-facing text = this agent's job.</commentary></example> <example>Context: Added onboarding flow for new channel setup. user: "Does this read well?" assistant: "Running copy-writer — tone, clarity, and actionability audit."</example>
-model: sonnet
+model: haiku
 color: cyan
 ---
 
