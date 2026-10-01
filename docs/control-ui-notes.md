@@ -2771,3 +2771,14 @@ own chats.
 | Full `npx vitest run` | no new failures | 2849 passed, 2 failed in `control-ui-markdown.test.ts`; the same 2 fail on HEAD without this change (#86) | PASS (pre-existing) |
 | `tsc --noEmit` | clean | clean | PASS |
 | All 35 WhatsApp chat ids in `data/ipc/*/available_groups.json` against `isWhatsAppJid` | all match | 35 of 35 (none printed) | PASS |
+
+## The "Open beside" markdown tests match the icon-only button again (#86, 2026-10-01)
+
+Since `bc514aac` made page-link buttons icon-only, the button's class is `md-open-beside icon-btn`. Two tests in
+`scripts/tests/control-ui-markdown.test.ts` still looked for a class equal to `md-open-beside`, found no button, and
+failed on every run. The test's finder now checks that the class list contains `md-open-beside`. No product change.
+
+| Check | Expected | Observed | Disposition |
+|-------|----------|----------|-------------|
+| `npx vitest run scripts/tests/control-ui-markdown.test.ts` | 6 pass | 6 passed (was 2 failed) | PASS |
+| Same, with the class removed from the button in `markdown.js` | the tests catch it | 2 failed, then restored | PASS |

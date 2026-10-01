@@ -86,7 +86,12 @@ describe('markdown: page links open beside', () => {
     renderBlocks(parseMarkdown(md), h, handlers).map((b: unknown) => b);
   const buttons = (nodes: unknown[]) =>
     nodes.flatMap((n) =>
-      find(n, (x) => x.tag === 'button' && x.attrs.class === 'md-open-beside'),
+      find(
+        n,
+        (x) =>
+          x.tag === 'button' &&
+          String(x.attrs.class).split(/\s+/).includes('md-open-beside'),
+      ),
     );
   const opened: unknown[] = [];
   const handlers = {
