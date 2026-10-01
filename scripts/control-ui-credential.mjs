@@ -4,10 +4,15 @@
 //   node scripts/control-ui-credential.mjs            random password
 //   node scripts/control-ui-credential.mjs --choose   type your own
 //
-// Random: printed once on a TTY; otherwise written to
-// <credential file>.first-password (0600) and only that path is printed, so
-// the secret never lands in an agent transcript. The server deletes that file
-// after the first successful login.
+// Random: printed once on a TTY. Without a terminal it is first-time setup
+// only: the password is written to <credential file>.first-password (0600)
+// and only that path is printed, so the secret never lands in an agent
+// transcript; the server deletes that file after the first successful login.
+// Once a credential file exists, changing it needs an interactive terminal,
+// so a session cannot quietly reset the password and sign in. This only
+// removes the easy route: every process here can delete the file first, or
+// write it directly. The real control is in the server, which announces every
+// sign-in and every password change in the control group.
 //
 // --choose: asks twice at a hidden prompt and never prints it. It works only
 // from an interactive terminal, and there is deliberately no way to pass the
@@ -51,6 +56,13 @@ const file =
   process.env.CONTROL_UI_CREDENTIAL_FILE ||
   path.join(os.homedir(), '.config', 'deus', 'control-ui.json');
 const once = `${file}.first-password`;
+if (!choose && fs.existsSync(file) && !(process.stdin.isTTY && process.stdout.isTTY)) {
+  console.error(
+    'A dashboard password is already set. Changing it needs an interactive terminal,\n' +
+      'so run this from one (with no flag for a random password, or --choose). Nothing was changed.',
+  );
+  process.exit(2);
+}
 let auth;
 try {
   auth = await import(pathToFileURL(path.join(here, '..', 'dist', 'control-ui', 'auth.js')).href);

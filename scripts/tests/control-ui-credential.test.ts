@@ -57,4 +57,28 @@ describe('control-ui-credential.mjs refusals', () => {
       untouched();
     }
   });
+
+  it('refuses to replace an existing password without a terminal and changes nothing', () => {
+    const r = run([]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('interactive terminal');
+    expect(r.stderr).toContain('Nothing was changed');
+    untouched();
+  });
+
+  it('still does first-time setup without a terminal: credential and one-time file, both 0600', () => {
+    fs.rmSync(file);
+    const r = run([]);
+    expect(r.status).toBe(0);
+    const once = `${file}.first-password`;
+    expect(r.stdout).toContain(once);
+    const password = fs.readFileSync(once, 'utf-8').trim();
+    expect(password.length).toBeGreaterThan(0);
+    expect(r.stdout).not.toContain(password);
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8')).scrypt).toBeTruthy();
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(once).mode & 0o777).toBe(0o600);
+    }
+  });
 });

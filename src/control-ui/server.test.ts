@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import http from 'http';
 
 vi.mock('../container-runner.js', () => ({
@@ -5741,5 +5742,205 @@ describe('control-ui server — phone access through tailscale serve', () => {
     });
     const revoke = calls(warnSpy, 'control_ui_revoke_all')[0];
     expect(revoke).toMatchObject({ actor: { login: 'b@y.com' } });
+  });
+});
+
+describe('control-ui server — operator notices', () => {
+  const TN = 'dash.tail0000.ts.net:8443';
+  const tn = (login: string) => ({
+    ...H,
+    Host: TN,
+    'Tailscale-User-Login': login,
+    'X-Forwarded-For': '100.64.0.7',
+  });
+  const fakeChannel = (send?: () => Promise<void>) => {
+    const sendMessage = vi.fn(send ?? (async () => {}));
+    const channel = {
+      name: 'fake',
+      ownsJid: (j: string) => j === 'main@x',
+      sendMessage,
+    } as unknown as Channel;
+    const sent = () =>
+      sendMessage.mock.calls.map((c) => c as unknown as [string, string]);
+    return { channel, sendMessage, sent };
+  };
+  const bootWith = (ch: Channel, overrides: Partial<ControlDeps> = {}) =>
+    boot({
+      runtime: fakeRuntime().runtime,
+      channels: () => [ch],
+      tailnetHost: TN,
+      tailnetLogins: ['a@x.com', 'b@y.com'],
+      ...overrides,
+    });
+  const tnLogin = (login: string) =>
+    request({
+      method: 'POST',
+      path: '/auth/login',
+      headers: tn(login),
+      body: JSON.stringify({ password: PASSWORD }),
+    });
+  const rotate = (password: string) => {
+    writeCredentialFile(credFile, password);
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(credFile, later, later);
+  };
+  let warnSpy: MockInstance<typeof logger.warn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    warnSpy.mockClear();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    warnSpy.mockRestore();
+  });
+  const noticeWarns = () =>
+    warnSpy.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((o) => o?.event === 'control_ui_operator_notice');
+
+  it('a failed login sends nothing; a successful one is announced at once to the control group', async () => {
+    const { channel, sent } = fakeChannel();
+    await bootWith(channel);
+    expect((await login('wrong-password')).reply.status).toBe(401);
+    expect(sent()).toHaveLength(0);
+    clock += 2_000; // past the failed attempt's backoff
+    expect((await login()).reply.status).toBe(200);
+    // clock = 1_002_000 ms after the epoch = 00:16 UTC.
+    expect(sent()).toEqual([
+      [
+        'main@x',
+        "someone signed in to the dashboard at 00:16 UTC (from this server). If this wasn't you, change the password from a terminal.",
+      ],
+    ]);
+  });
+
+  it('a burst is one notice and one trailing "and N more" line listing each reported identity', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { channel, sent } = fakeChannel();
+    await bootWith(channel);
+    expect((await login()).reply.status).toBe(200);
+    clock += 10_000;
+    expect((await tnLogin('a@x.com')).status).toBe(200);
+    clock += 10_000;
+    expect((await tnLogin('b@y.com')).status).toBe(200);
+    expect(sent()).toHaveLength(1);
+    vi.advanceTimersByTime(60_000);
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toEqual([
+      'main@x',
+      '…and 2 more dashboard sign-ins in the last minute (reported as a@x.com, reported as b@y.com).',
+    ]);
+    // The digest closed the window; the next sign-in is announced at once.
+    expect((await tnLogin('a@x.com')).status).toBe(200);
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2][1]).toContain(
+      'someone signed in to the dashboard at 00:17 UTC (reported as a@x.com).',
+    );
+    expect(sent()[2][1]).not.toContain('by a@x.com');
+  });
+
+  it('a sign-in after the window (injected clock) is a fresh immediate notice', async () => {
+    const { channel, sent } = fakeChannel();
+    await bootWith(channel);
+    expect((await login()).reply.status).toBe(200);
+    clock += 61_000;
+    expect((await login()).reply.status).toBe(200);
+    expect(sent().map((s) => s[1].split(' at ')[0])).toEqual([
+      'someone signed in to the dashboard',
+      'someone signed in to the dashboard',
+    ]);
+    expect(sent()[1][1]).toContain('00:17 UTC');
+  });
+
+  it('a pending digest is sent when the server closes', async () => {
+    const { channel, sent } = fakeChannel();
+    await bootWith(channel);
+    expect((await login()).reply.status).toBe(200);
+    expect((await login()).reply.status).toBe(200);
+    expect(sent()).toHaveLength(1);
+    await new Promise<void>((r) => server.close(() => r()));
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1][1]).toBe(
+      '…and 1 more dashboard sign-in in the last minute (from this server).',
+    );
+  });
+
+  it('a password change is announced once, from the first request, and does not suppress the sign-in notice', async () => {
+    const { channel, sent } = fakeChannel();
+    await bootWith(channel);
+    // No request before the change: the baseline was seeded at creation.
+    rotate('new-password');
+    expect(
+      (await request({ method: 'GET', path: '/api/v1/agents' })).status,
+    ).toBe(401);
+    expect(
+      (await request({ method: 'GET', path: '/api/v1/agents' })).status,
+    ).toBe(401);
+    expect(sent()).toEqual([
+      [
+        'main@x',
+        "the dashboard password was changed at 00:16 UTC and every dashboard sign-in was ended. If this wasn't you, change it again from a terminal.",
+      ],
+    ]);
+    expect((await login('new-password')).reply.status).toBe(200);
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1][1]).toContain('someone signed in to the dashboard');
+  });
+
+  it('a password change that deletes the file first is still announced', async () => {
+    const { channel, sent } = fakeChannel();
+    await bootWith(channel);
+    fs.rmSync(credFile);
+    expect((await login()).reply.status).toBe(503);
+    rotate('new-password');
+    expect((await login('new-password')).reply.status).toBe(200);
+    expect(sent().map((s) => s[1])).toEqual([
+      expect.stringContaining('the dashboard password was changed'),
+      expect.stringContaining('someone signed in to the dashboard'),
+    ]);
+  });
+
+  it('logs the credential creation time at start, never hash material', async () => {
+    const infoSpy = vi
+      .spyOn(logger, 'info')
+      .mockImplementation(() => undefined);
+    infoSpy.mockClear();
+    const { channel } = fakeChannel();
+    await bootWith(channel);
+    const loaded = infoSpy.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((o) => o?.event === 'control_ui_credential_loaded');
+    expect(loaded).toEqual([
+      {
+        event: 'control_ui_credential_loaded',
+        created_at: JSON.parse(fs.readFileSync(credFile, 'utf-8')).created_at,
+      },
+    ]);
+    infoSpy.mockRestore();
+  });
+
+  it('no control group: the login works, nothing is sent, one warn', async () => {
+    const { channel, sendMessage } = fakeChannel();
+    await bootWith(channel, {
+      runtime: {
+        ...fakeRuntime().runtime,
+        registeredGroups: () => ({}),
+      } as WebTurnDeps,
+    });
+    expect((await login()).reply.status).toBe(200);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(noticeWarns().map((w) => w.outcome)).toEqual(['no_control_group']);
+  });
+
+  it('a failing send never fails the login', async () => {
+    const { channel, sendMessage } = fakeChannel(async () => {
+      throw new Error('offline');
+    });
+    await bootWith(channel);
+    expect((await login()).reply.status).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(noticeWarns().map((w) => w.outcome)).toEqual(['send_failed']),
+    );
   });
 });

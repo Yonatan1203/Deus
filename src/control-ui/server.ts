@@ -202,6 +202,7 @@ import {
   type SessionStore,
 } from './auth.js';
 import { createEventHub, type EventHub } from './events.js';
+import { notifyOperator } from './operator-notice.js';
 import { createRouter, type RequestContext } from './router.js';
 import { SECURITY_HEADERS, serveStatic } from './static.js';
 
@@ -286,6 +287,7 @@ const BIND_HOST = '127.0.0.1';
 const MAX_BODY_BYTES = 256 * 1024;
 const LOGIN_RATE_MAX = 10;
 const LOGIN_RATE_WINDOW_MS = 60_000;
+const SIGN_IN_DIGEST_MS = 60_000;
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const TURN_ID_RE = /^[0-9a-f]{16}$/;
 const CLAUDE_MD_MAX_BYTES = 1024 * 1024;
@@ -507,6 +509,18 @@ export function createControlServer(
   const hub = opts.hub ?? createEventHub();
   const credentials =
     opts.credentials ?? createCredentialSource(deps.credentialFile);
+  // Seed the rotation baseline now, so a change made while running is a
+  // rotation from the first request on, not the silent first load.
+  const seeded = credentials.current();
+  if (seeded.ok) {
+    logger.info(
+      {
+        event: 'control_ui_credential_loaded',
+        created_at: seeded.cred.created_at,
+      },
+      'Control UI credential loaded',
+    );
+  }
   const staticHandler = opts.staticHandler ?? serveStatic;
   const loginLimiter = createRateLimiter(LOGIN_RATE_MAX, LOGIN_RATE_WINDOW_MS);
   const claudeMdLimiter = createRateLimiter(CLAUDE_MD_WRITES_PER_MIN, 60_000);
@@ -656,6 +670,47 @@ export function createControlServer(
   const wardensDir = path.join(deps.repoRoot, '.claude', 'wardens');
   const firstPasswordFile = `${deps.credentialFile}.first-password`;
 
+  const utcTime = () => `${new Date(now()).toISOString().slice(11, 16)} UTC`;
+  const reportedAs = (login: string | undefined) =>
+    login ? `reported as ${login}` : 'from this server';
+
+  // Every sign-in is announced in the control group. The first is sent at
+  // once; later ones within a fixed window from it are collapsed into one
+  // trailing line, so a burst is quiet but never hidden. The identity is only
+  // what the request reported (a local process can set those headers).
+  let signIns: {
+    start: number;
+    timer: NodeJS.Timeout;
+    count: number;
+    who: Set<string>;
+  } | null = null;
+  const flushSignIns = () => {
+    if (!signIns) return;
+    const { timer, count, who } = signIns;
+    signIns = null;
+    clearTimeout(timer);
+    if (count === 0) return;
+    notifyOperator(
+      deps,
+      `…and ${count} more dashboard sign-in${count === 1 ? '' : 's'} in the last minute (${[...who].join(', ')}).`,
+    );
+  };
+  const announceSignIn = (login: string | undefined) => {
+    if (signIns && now() - signIns.start >= SIGN_IN_DIGEST_MS) flushSignIns();
+    if (signIns) {
+      signIns.count++;
+      signIns.who.add(reportedAs(login));
+      return;
+    }
+    notifyOperator(
+      deps,
+      `someone signed in to the dashboard at ${utcTime()} (${reportedAs(login)}). If this wasn't you, change the password from a terminal.`,
+    );
+    const timer = setTimeout(flushSignIns, SIGN_IN_DIGEST_MS);
+    timer.unref();
+    signIns = { start: now(), timer, count: 0, who: new Set() };
+  };
+
   // Rotation is detected here (every login and every authenticated request)
   // so a new password takes effect without restarting the assistant.
   const credentialState = () => {
@@ -670,6 +725,10 @@ export function createControlServer(
       logger.warn(
         { event: 'control_ui_credential_rotated' },
         'Control UI credential rotated; all sessions revoked',
+      );
+      notifyOperator(
+        deps,
+        `the dashboard password was changed at ${utcTime()} and every dashboard sign-in was ended. If this wasn't you, change it again from a terminal.`,
       );
     }
     return state;
@@ -740,6 +799,7 @@ export function createControlServer(
         ctx.tailnetLogin,
       );
       fs.rmSync(firstPasswordFile, { force: true });
+      announceSignIn(ctx.tailnetLogin);
       logger.info(
         {
           event: 'control_ui_login',
@@ -3528,6 +3588,7 @@ export function createControlServer(
   });
 
   server.on('close', () => {
+    flushSignIns();
     clearInterval(queuePoll);
     clearInterval(systemPoll);
     clearInterval(claudePoll);

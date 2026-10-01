@@ -371,7 +371,22 @@ behind the tunnel with login backoff. Any unrecognised option exits 2 before
 anything is written, because the old script ignored its arguments and a typo
 like `--chose` silently rotated to a random password. The running server picks
 up the change on the next request and signs every session out; no restart.
-Forgotten? Run the script with no flag from a terminal for a fresh random one.
+Forgotten? Run the script with no flag from an interactive terminal for a fresh
+random one.
+
+Without a terminal, the script's random path is first-time setup only: it
+writes the one-time `.first-password` file when no credential exists yet, and
+once one exists it exits 2 and changes nothing. Changing a password always
+needs a terminal. That only removes the easy route — every process on the host
+runs as the same user and can delete or write the credential file directly —
+so the control is detection: every successful sign-in and every detected
+password change is announced in the control group, with the time and the
+reported tailnet login (or "from this server"). The first sign-in is announced
+at once; further sign-ins within the next minute arrive as one "and N more"
+line, so a burst is collapsed but never hidden. The reported login is whatever
+the request carried, so treat it as a hint, not proof. A notice that cannot be
+sent (no control group, no channel, a failed send) is a warning in the log, not
+a retry.
 
 ## Phase 5 — deployment record (generic)
 
